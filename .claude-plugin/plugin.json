@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "tech-lead",
+  "version": "0.1.0",
+  "description": "Model-tiered orchestration: Fable orchestrates and reasons, Sonnet does mechanical work, Opus + Codex give parallel independent second opinions on high-stakes decisions",
+  "author": {
+    "name": "Juba",
+    "email": "juba.kitiashvili@gmail.com"
+  },
+  "skills": [
+    "./"
+  ]
+}
