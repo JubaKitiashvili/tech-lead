@@ -60,7 +60,8 @@ Backlog item fields: `class:` ∈ `mechanical | hard | high-stakes | unclassifie
 `status:` ∈ `— | waiting-decision | waiting-level`; `blocked-by:` names another
 item or `—`.
 
-`## Done` item format: `- [x] <title> · <sha> · <YYYY-MM-DD>`.
+`## Done` item format: `- [x] <title> · <sha> · <YYYY-MM-DD>` (`—` in the
+sha slot when `commits: []`).
 `## Blocked` item format: `- [ ] <title> · attempts: <n> · <one-line reason>`.
 
 `## Needs decision` entry format:

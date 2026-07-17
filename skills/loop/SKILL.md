@@ -73,26 +73,27 @@ else that fits in one self-contained brief. Write the class back to the item.
 
 - **Level 1 (`mechanical`/`hard`):** write the complete would-do plan
   (chosen delegate, brief outline, verify plan) into `## Last run`; outcome
-  `report-only`. Promotion: if this is the 2nd consecutive clean
-  `report-only` run, set `level: 2` in `LOOP.md` and record the promotion
-  in `## Last run` and the ledger note — clean = the two most recent ledger
-  entries are both outcome `report-only`. Never change `level` in any other
+  `report-only`. Dispatch nothing and modify no project files at L1.
+  Promotion: clean = the previous ledger entry is `report-only` and this
+  firing's outcome will be `report-only` — two consecutive counting this
+  run; then set `level: 2` in `LOOP.md` and record the promotion in
+  `## Last run` and the ledger note. Never change `level` in any other
   case — promotion to 3 is the human's edit alone.
 - **L2+, `mechanical`:** ensure the loop worktree exists, on a branch for
-  today. Start-point for any new dated branch: the project's default-branch
-  HEAD if it contains all previously merged loop commits; if unmerged loop
-  commits would be orphaned, chain from the existing dated branch's head
-  instead and note the divergence in `## Last run`. If the worktree is
-  missing, create it with `git worktree add -b
-  <branch_prefix>/<YYYY-MM-DD> .tech-lead/worktree <start-point>`; if it
-  exists on an older dated branch, create today's branch there from the
-  same start-point instead. After creating the worktree or a new dated
+  today. Start-point: start today's branch from the project's current
+  default-branch HEAD when no unmerged loop commits exist; otherwise chain
+  from the newest dated loop branch and note the divergence in
+  `## Last run`. If the worktree is missing, create it with `git worktree
+  add -b <branch_prefix>/<YYYY-MM-DD> .tech-lead/worktree <start-point>`;
+  if it exists on an older dated branch, create today's branch there from
+  the same start-point instead. After creating the worktree or a new dated
   branch, install dependencies there (e.g. `npm ci`) before dispatching; a
-  dependency-install failure is an incident in `## Last run`, not a task
-  failure. Dispatch `tech-lead:fast-worker` with a self-contained brief
-  that states the worktree's absolute path as the working directory and
-  tells the delegate to ignore the worktree's own stale committed
-  `.tech-lead/` copy. Its verify commands run inside the worktree.
+  dependency-install failure is an incident — write it to `## Last run`,
+  outcome `skipped`, note "worktree deps" (not a task failure). Dispatch
+  `tech-lead:fast-worker` with a self-contained brief that states the
+  worktree's absolute path as the working directory and tells the delegate
+  to ignore the worktree's own stale committed `.tech-lead/` copy. Its
+  verify commands run inside the worktree.
 - **L2, `hard` or parked-by-level work:** write the plan into `## Last run`,
   mark the item `status: waiting-level`, outcome `report-only`, note
   "waiting-level".
@@ -109,10 +110,11 @@ else that fits in one self-contained brief. Write the class back to the item.
   concludes the iteration — the loop never executes a high-stakes decision
   itself.
 
-Any branch that ends the iteration without reaching §6 or §7
-(`report-only`, `waiting-level`, `needs-decision`) → return the item from
-`## Now` to the top of `## Backlog` with its `status:` set (at L1 return it
-unchanged); `## Now` must be empty when the firing ends.
+Any branch that ends the iteration without reaching §6 or §7 (e.g.
+`report-only`, `waiting-level`, `needs-decision`, `skipped`) → return the
+item from `## Now` to the top of `## Backlog` with its `status:` set (at
+L1 return it with `status: —`, keeping its recorded class); `## Now` must
+be empty when the firing ends.
 
 ## 6 · Verify & commit (after dispatch)
 
@@ -121,8 +123,8 @@ command inside the worktree. All pass and files changed → commit there on
 the loop branch (no Co-Authored-By line), move the item from `## Now` to
 `## Done` with the SHA, outcome `done`, `verify: "pass"`. All pass and
 nothing changed → outcome `done`, `commits: []`, note "no changes needed",
-and still move the item to `## Done`. Either way, trim `## Done` to the 20
-most recent entries. Any verify failure → §7.
+and still move the item to `## Done`, using `—` in the sha slot. Either
+way, trim `## Done` to the 20 most recent entries. Any verify failure → §7.
 
 ## 7 · Failure path
 
@@ -137,16 +139,15 @@ The firing ends; the next firing takes the next item.
 
 Always: update `## Last run` (timestamp, level, what happened, next planned
 action) and append exactly one ledger entry — including failed and halted
-firings. No silent runs.
+firings. No silent runs. All delegate dispatches are synchronous within a
+firing — v1 never dispatches background jobs.
 
 - `/loop` dynamic mode: work remains and budget allows → ScheduleWakeup
   60–120s; dry / halted / paused / budget → `stop: true` with the reason.
-  Background dispatch is `/loop`-mode only — record the job id under
-  `## Now`, and on wakeup collect it via `/codex:status` before anything
-  else; cron firings never dispatch in background. Also narrate a
-  one-paragraph summary to the user.
+  Also narrate a one-paragraph summary to the user.
 - Cron: exit; cron refires on schedule. Never ask questions — anything
-  needing input goes to `STATE.md` and the iteration ends.
+  needing input goes to `STATE.md` and the iteration ends (§0's bootstrap
+  confirmation question is the sole exception).
 - Manual invocation: report the summary and the suggested next step.
 
 ## Safety rails (absolute, all levels)
