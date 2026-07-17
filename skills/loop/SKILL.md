@@ -16,6 +16,10 @@ File formats: `references/loop-templates.md`. Briefing rules:
 
 ## 0 · Bootstrap (only when `.tech-lead/` is missing)
 
+- Unsure whether a user is attending: ask one confirmation question and
+  scaffold only on an affirmative reply — in a cron session the question
+  goes unanswered and the firing simply ends, which is the correct headless
+  outcome.
 - Headless (cron, no user attending): print an error naming the missing
   spine and exit. Never scaffold unattended.
 - Interactive: create `LOOP.md` and `STATE.md` from the templates. Detect
@@ -35,19 +39,24 @@ of `LEDGER.jsonl`.
 
 1. `paused: true` → outcome `halted`, note "paused"; stop the runner (§8).
 2. The last `max_consecutive_failures` ledger outcomes are all `failed` →
-   write an incident to `## Last run` (which task, both failure notes),
-   outcome `halted`; stop the runner.
-3. Ledger entries dated today ≥ `max_iterations_per_day` → outcome
-   `skipped`, note "daily budget"; stop the runner (cron refires tomorrow;
-   in `/loop` mode stop and tell the user why).
+   write an incident to `## Last run` (which task(s) and their failure
+   notes), outcome `halted`, and set `paused: true` in `LOOP.md` so
+   subsequent cron firings stay halted until the human unpauses; stop the
+   runner.
+3. Ledger entries whose `ts` date (UTC) is today ≥ `max_iterations_per_day`
+   → outcome `skipped`, note "daily budget"; stop the runner (cron refires
+   tomorrow; in `/loop` mode stop and tell the user why).
 
 ## 3 · Pick
 
-1. Any `## Needs decision` entry whose `Decision:` line is filled → move it
-   to the top of `## Backlog` with the decision attached and clear its
-   `status:`; it becomes the pick.
-2. Else: the first `## Backlog` item with no `blocked-by` and no parked
-   `status:`.
+1. Any `## Needs decision` entry whose `Decision:` line is filled → copy the
+   decision onto the matching `## Backlog` item (recreate it at the top of
+   `## Backlog` if missing), clear its `status:`, and delete the entry from
+   `## Needs decision`; it becomes the pick.
+2. Else: the first `## Backlog` item whose `blocked-by:` is `—` (or names an
+   item already in `## Done`) and whose `status:` is `—` — or
+   `waiting-level` when the current `level` now permits its class (clear
+   the `status:` on pick).
 3. Backlog dry → write "backlog dry" to `## Last run`, outcome `skipped`;
    stop the runner.
 
@@ -62,19 +71,28 @@ else that fits in one self-contained brief. Write the class back to the item.
 
 ## 5 · Execute (level × class)
 
-- **Level 1 (any class):** write the complete would-do plan (chosen
-  delegate, brief outline, verify plan) into `## Last run`; outcome
-  `report-only`; touch nothing else. Promotion: if this is the 2nd
-  consecutive clean `report-only` run, set `level: 2` in `LOOP.md` and
-  record the promotion in `## Last run` and the ledger note. Never change
-  `level` in any other case — promotion to 3 is the human's edit alone.
-- **L2+, `mechanical`:** ensure the loop worktree exists —
-  `git worktree add .tech-lead/worktree <branch_prefix>/<YYYY-MM-DD>`
-  (create the branch from the current HEAD if new; if the worktree exists on
-  an older dated branch, create today's branch from that branch's head).
-  Dispatch `tech-lead:fast-worker` with a self-contained brief whose stated
-  working directory is the worktree path. Its verify commands run inside the
-  worktree.
+- **Level 1 (`mechanical`/`hard`):** write the complete would-do plan
+  (chosen delegate, brief outline, verify plan) into `## Last run`; outcome
+  `report-only`. Promotion: if this is the 2nd consecutive clean
+  `report-only` run, set `level: 2` in `LOOP.md` and record the promotion
+  in `## Last run` and the ledger note — clean = the two most recent ledger
+  entries are both outcome `report-only`. Never change `level` in any other
+  case — promotion to 3 is the human's edit alone.
+- **L2+, `mechanical`:** ensure the loop worktree exists, on a branch for
+  today. Start-point for any new dated branch: the project's default-branch
+  HEAD if it contains all previously merged loop commits; if unmerged loop
+  commits would be orphaned, chain from the existing dated branch's head
+  instead and note the divergence in `## Last run`. If the worktree is
+  missing, create it with `git worktree add -b
+  <branch_prefix>/<YYYY-MM-DD> .tech-lead/worktree <start-point>`; if it
+  exists on an older dated branch, create today's branch there from the
+  same start-point instead. After creating the worktree or a new dated
+  branch, install dependencies there (e.g. `npm ci`) before dispatching; a
+  dependency-install failure is an incident in `## Last run`, not a task
+  failure. Dispatch `tech-lead:fast-worker` with a self-contained brief
+  that states the worktree's absolute path as the working directory and
+  tells the delegate to ignore the worktree's own stale committed
+  `.tech-lead/` copy. Its verify commands run inside the worktree.
 - **L2, `hard` or parked-by-level work:** write the plan into `## Last run`,
   mark the item `status: waiting-level`, outcome `report-only`, note
   "waiting-level".
@@ -84,24 +102,36 @@ else that fits in one self-contained brief. Write the class back to the item.
 - **Any level, `high-stakes`:** run the panel per the parent skill —
   `tech-lead:deep-reasoner` + `codex:codex-rescue`, same brief, same
   message, no cross-contamination; single seat if Codex is unavailable
-  (say so). Write the synthesized recommendation to `## Needs decision`
-  using the template format, mark the item `status: waiting-decision`,
-  outcome `needs-decision`. This concludes the iteration — the loop never
-  executes a high-stakes decision itself.
+  (say so). This runs at every level including L1 — the panel writes only
+  to the spine, never to project files. Write the synthesized
+  recommendation to `## Needs decision` using the template format, mark
+  the item `status: waiting-decision`, outcome `needs-decision`. This
+  concludes the iteration — the loop never executes a high-stakes decision
+  itself.
 
-## 6 · Verify & commit (only when files changed)
+Any branch that ends the iteration without reaching §6 or §7
+(`report-only`, `waiting-level`, `needs-decision`) → return the item from
+`## Now` to the top of `## Backlog` with its `status:` set (at L1 return it
+unchanged); `## Now` must be empty when the firing ends.
 
-Run every `verify:` command inside the worktree. All pass → commit there on
+## 6 · Verify & commit (after dispatch)
+
+Stage only paths the delegate reported touching, then run every `verify:`
+command inside the worktree. All pass and files changed → commit there on
 the loop branch (no Co-Authored-By line), move the item from `## Now` to
-`## Done` with the SHA, outcome `done`, `verify: "pass"`. Any fail → §7.
+`## Done` with the SHA, outcome `done`, `verify: "pass"`. All pass and
+nothing changed → outcome `done`, `commits: []`, note "no changes needed",
+and still move the item to `## Done`. Either way, trim `## Done` to the 20
+most recent entries. Any verify failure → §7.
 
 ## 7 · Failure path
 
 First failure: one retry — revise the brief using the failure output, same
 delegate. Second failure: revert uncommitted worktree changes
-(`git -C .tech-lead/worktree checkout -- .`), move the item to `## Blocked`
-with both failure notes, outcome `failed`, `verify: "fail"`. The firing ends;
-the next firing takes the next item.
+(`git -C .tech-lead/worktree checkout -- .`) and delete untracked files the
+delegate created (individual `rm`, never `rm -rf`), move the item to
+`## Blocked` with both failure notes, outcome `failed`, `verify: "fail"`.
+The firing ends; the next firing takes the next item.
 
 ## 8 · Report & runner handling
 
@@ -110,9 +140,11 @@ action) and append exactly one ledger entry — including failed and halted
 firings. No silent runs.
 
 - `/loop` dynamic mode: work remains and budget allows → ScheduleWakeup
-  60–120s; a long background delegate is still running → fallback 1200s+;
-  dry / halted / paused / budget → `stop: true` with the reason. Also
-  narrate a one-paragraph summary to the user.
+  60–120s; dry / halted / paused / budget → `stop: true` with the reason.
+  Background dispatch is `/loop`-mode only — record the job id under
+  `## Now`, and on wakeup collect it via `/codex:status` before anything
+  else; cron firings never dispatch in background. Also narrate a
+  one-paragraph summary to the user.
 - Cron: exit; cron refires on schedule. Never ask questions — anything
   needing input goes to `STATE.md` and the iteration ends.
 - Manual invocation: report the summary and the suggested next step.

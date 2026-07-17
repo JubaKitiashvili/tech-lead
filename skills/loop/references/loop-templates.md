@@ -60,6 +60,9 @@ Backlog item fields: `class:` ∈ `mechanical | hard | high-stakes | unclassifie
 `status:` ∈ `— | waiting-decision | waiting-level`; `blocked-by:` names another
 item or `—`.
 
+`## Done` item format: `- [x] <title> · <sha> · <YYYY-MM-DD>`.
+`## Blocked` item format: `- [ ] <title> · attempts: <n> · <one-line reason>`.
+
 `## Needs decision` entry format:
 
 ```markdown
@@ -82,8 +85,9 @@ One JSON object per line, appended every firing without exception:
 ```
 
 `iteration` is the previous entry's iteration + 1 (1 when the file is empty).
-The circuit breaker reads consecutive `failed` outcomes; the daily budget
-counts entries whose `ts` falls on today's date.
+`delegate` for panel firings (the `high-stakes` path running both seats) is
+the literal string `"panel"`. The circuit breaker reads consecutive `failed`
+outcomes; the daily budget counts entries whose `ts` date is today in UTC.
 
 ## Project .gitignore addition (bootstrap)
 
