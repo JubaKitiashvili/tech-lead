@@ -34,9 +34,31 @@ Explicit invocation:
 
 It also triggers automatically on phrases like "act as tech lead", "orchestrate this", "get a second opinion", "run a panel on this decision", or when handing over a large multi-part goal.
 
+## Loop mode
+
+`/tech-lead:loop [project-path]` runs ONE iteration of a backlog-executor
+loop driven entirely by a per-project `.tech-lead/` state spine (`LOOP.md`
+config, `STATE.md` backlog, `LEDGER.jsonl` run log). Because all memory is
+on disk, the same skill runs three ways:
+
+- in-session: `/loop /tech-lead:loop` (self-paced, stops when the backlog is dry)
+- daily cron: a scheduled session with the prompt `Run /tech-lead:loop <path>`
+- manual: invoke it whenever you want one iteration
+
+Safety: maturity ladder (L1 report-only → L2 mechanical-only → L3 full,
+L3 manual-only), circuit breaker on consecutive failures, daily iteration
+budget, `paused: true` kill switch, commits only on a `tech-lead-loop/<date>`
+branch inside a dedicated worktree — never on your working tree, never pushed.
+High-stakes items always stop at a human decision gate in `STATE.md`.
+
+First run on a project bootstraps the spine interactively.
+Methodology credit: [loop-engineering](https://github.com/cobusgreyling/loop-engineering).
+
 ## What's inside
 
 - `SKILL.md` — the orchestration workflow: delegation rules, high-stakes panel protocol, briefing discipline, context hygiene.
 - `agents/deep-reasoner.md` — Opus-pinned, read-only analysis agent.
 - `agents/fast-worker.md` — Sonnet-pinned execution agent (stops and reports back on any judgment call instead of guessing).
 - `references/briefing-template.md` — reusable brief template and parallel panel dispatch example.
+- `skills/loop/SKILL.md` — the loop iteration skill (backlog executor).
+- `skills/loop/references/loop-templates.md` — canonical state spine templates.
