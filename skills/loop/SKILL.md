@@ -51,8 +51,11 @@ of `LEDGER.jsonl`.
 
 1. Any `## Needs decision` entry whose `Decision:` line is filled → copy the
    decision onto the matching `## Backlog` item (recreate it at the top of
-   `## Backlog` if missing), clear its `status:`, and delete the entry from
-   `## Needs decision`; it becomes the pick.
+   `## Backlog` if missing), clear its `status:`, **reclassify it to `hard`
+   (or `mechanical` only if the decided follow-up is fully specified with
+   zero remaining design decisions) — never leave it `high-stakes`, or §5
+   re-panels the same item forever and the decision is never consumed**, and
+   delete the entry from `## Needs decision`; it becomes the pick.
 2. Else: the first `## Backlog` item whose `blocked-by:` is `—` (or names an
    item already in `## Done`) and whose `status:` is `—` — or
    `waiting-level` when the current `level` now permits its class (clear
@@ -121,28 +124,34 @@ be empty when the firing ends.
 
 ## 6 · Verify & commit (after dispatch)
 
-Stage only paths the delegate reported touching that also fall under
-`LOOP.md`'s `scope:` (`.tech-lead/` spine writes stay uncommitted as
-before). If the delegate reported touching any path outside `scope:`, do
-not stage or commit it — treat the attempt as a failure (§7's path),
-naming the out-of-scope path in the failure note. Otherwise, run every
-`verify:` command inside the worktree. All pass and files changed →
-commit there on the loop branch (no Co-Authored-By line), move the item
+Verify BEFORE staging anything — a failing task must never leave a staged
+index for the next firing. First, take the delegate's reported touched
+paths and confirm every one falls under `LOOP.md`'s `scope:` (`.tech-lead/`
+spine writes are exempt and are never committed by the loop). If any
+touched path is outside `scope:`, stage nothing — treat the attempt as a
+failure (§7's path), naming the out-of-scope path in the failure note.
+Otherwise run every `verify:` command inside the worktree with nothing
+staged. Any verify failure → §7. All pass and files changed → stage only
+the in-scope touched paths (`git -C .tech-lead/worktree add -- <paths>`),
+then commit on the loop branch (no Co-Authored-By line), move the item
 from `## Now` to `## Done` with the SHA, outcome `done`, `verify:
 "pass"`. All pass and nothing changed → outcome `done`, `commits: []`,
 note "no changes needed", and still move the item to `## Done`, using
 `—` in the sha slot. Either way, trim `## Done` to the 20 most recent
-entries. Any verify failure → §7.
+entries.
 
 ## 7 · Failure path
 
 First failure: one retry — revise the brief using the failure output, same
-delegate. Second failure: revert uncommitted worktree changes
-(`git -C .tech-lead/worktree checkout -- .`) and delete untracked files the
-delegate created (individual `rm`, never `rm -rf`), move the item to
-`## Blocked` with a one-line reason summarizing both attempts, outcome
-`failed`, `verify: "fail"`. The firing ends; the next firing takes the
-next item.
+delegate. Second failure: reset the worktree to a clean baseline before the
+next firing — unstage everything (`git -C .tech-lead/worktree restore
+--staged .`), revert tracked changes (`git -C .tech-lead/worktree checkout
+-- .`), and delete untracked files the delegate created (individual `rm`,
+never `rm -rf`); the worktree's index and tracked tree must match the loop
+branch HEAD afterward, so no failed-task change survives into the next
+task's commit. Move the item to `## Blocked` with a one-line reason
+summarizing both attempts, outcome `failed`, `verify: "fail"`. The firing
+ends; the next firing takes the next item.
 
 ## 8 · Report & runner handling
 
