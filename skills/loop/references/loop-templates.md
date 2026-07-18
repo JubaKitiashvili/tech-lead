@@ -61,7 +61,9 @@ Backlog item fields: `class:` ∈ `mechanical | hard | high-stakes | unclassifie
 item or `—`.
 
 `## Done` item format: `- [x] <title> · <sha> · <YYYY-MM-DD>` (`—` in the
-sha slot when `commits: []`).
+sha slot when `commits: []`). Ordered newest-first: prepend each completion
+above the previous, so the "trim to 20 most recent" step drops from the
+bottom.
 `## Blocked` item format: `- [ ] <title> · attempts: <n> · <one-line reason>`.
 
 `## Needs decision` entry format:
