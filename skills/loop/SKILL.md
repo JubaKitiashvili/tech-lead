@@ -55,7 +55,9 @@ of `LEDGER.jsonl`.
    (or `mechanical` only if the decided follow-up is fully specified with
    zero remaining design decisions) — never leave it `high-stakes`, or §5
    re-panels the same item forever and the decision is never consumed**, and
-   delete the entry from `## Needs decision`; it becomes the pick.
+   delete every entry for that item from `## Needs decision` (the panel
+   upserts, so there is normally one, but delete any duplicates too); it
+   becomes the pick.
 2. Else: the first `## Backlog` item whose `blocked-by:` is `—` (or names an
    item already in `## Done`) and whose `status:` is `—` — or
    `waiting-level` when the current `level` now permits its class (clear
@@ -95,7 +97,13 @@ else that fits in one self-contained brief. Write the class back to the item.
   write it to `## Last run`, outcome `skipped`, note "worktree deps" (not
   a task failure). If the same worktree-deps incident repeats across
   firings, flag it prominently in `## Last run` as chronic — it silently
-  consumes the daily budget until a human fixes the worktree. Dispatch
+  consumes the daily budget until a human fixes the worktree. **Before
+  dispatching, ensure the worktree's index and tracked tree are clean
+  against the loop branch HEAD** (`git -C .tech-lead/worktree diff --quiet
+  && git -C .tech-lead/worktree diff --cached --quiet`); if a prior firing
+  was interrupted after staging, reset them first (`git -C
+  .tech-lead/worktree restore --staged .` then `git -C .tech-lead/worktree
+  checkout -- .`) and note the recovery in `## Last run`. Dispatch
   `tech-lead:fast-worker` with a self-contained brief that states the
   worktree's absolute path as the working directory and tells the delegate
   to ignore the worktree's own stale committed `.tech-lead/` copy. Its
@@ -111,16 +119,22 @@ else that fits in one self-contained brief. Write the class back to the item.
   message, no cross-contamination; single seat if Codex is unavailable
   (say so). This runs at every level including L1 — the panel writes only
   to the spine, never to project files. Write the synthesized
-  recommendation to `## Needs decision` using the template format, mark
-  the item `status: waiting-decision`, outcome `needs-decision`. This
-  concludes the iteration — the loop never executes a high-stakes decision
-  itself.
+  recommendation to `## Needs decision` using the template format as an
+  **upsert** — replace any existing `## Needs decision` entry for this item
+  rather than appending a second — and mark the item
+  `status: waiting-decision`, outcome `needs-decision`. This concludes the
+  iteration — the loop never executes a high-stakes decision itself.
 
 Any branch that ends the iteration without reaching §6 or §7 (e.g.
 `report-only`, `waiting-level`, `needs-decision`, `skipped`) → return the
-item from `## Now` to the top of `## Backlog` with its `status:` set (at
-L1 return it with `status: —`, keeping its recorded class); `## Now` must
-be empty when the firing ends.
+item from `## Now` to the top of `## Backlog`, **preserving the `status:`
+that branch set** (`waiting-decision` for a `needs-decision` panel at any
+level, `waiting-level` for a parked L2 `hard` item). The sole exception is
+an L1 `report-only` item, which returns with `status: —` keeping its
+recorded class so L2 re-picks it — this reset applies to `report-only`
+only, **never to a `needs-decision` panel that ran at L1** (that item must
+keep `waiting-decision`, or the next firing re-panels it and stacks
+duplicate decision entries). `## Now` must be empty when the firing ends.
 
 ## 6 · Verify & commit (after dispatch)
 
@@ -131,14 +145,18 @@ spine writes are exempt and are never committed by the loop). If any
 touched path is outside `scope:`, stage nothing — treat the attempt as a
 failure (§7's path), naming the out-of-scope path in the failure note.
 Otherwise run every `verify:` command inside the worktree with nothing
-staged. Any verify failure → §7. All pass and files changed → stage only
-the in-scope touched paths (`git -C .tech-lead/worktree add -- <paths>`),
-then commit on the loop branch (no Co-Authored-By line), move the item
-from `## Now` to `## Done` with the SHA, outcome `done`, `verify:
-"pass"`. All pass and nothing changed → outcome `done`, `commits: []`,
-note "no changes needed", and still move the item to `## Done`, using
-`—` in the sha slot. Either way, trim `## Done` to the 20 most recent
-entries.
+staged (assert this — `git -C .tech-lead/worktree diff --cached --quiet`;
+if a prior interruption left the index dirty, clean it per §7 first). Any
+verify failure → §7. All pass and files changed → stage only the in-scope
+touched paths (`git -C .tech-lead/worktree add -- <paths>`), then commit
+on the loop branch (no Co-Authored-By line). **If the `add` or `commit`
+itself fails (e.g. a rejecting pre-commit hook), do not leave a partial
+index — run §7's cleanup and treat the item as a failure.** On a clean
+commit, move the item from `## Now` to `## Done` with the SHA, outcome
+`done`, `verify: "pass"`. All pass and nothing changed → outcome `done`,
+`commits: []`, note "no changes needed", and still move the item to
+`## Done`, using `—` in the sha slot. Either way, trim `## Done` to the 20
+most recent entries.
 
 ## 7 · Failure path
 
