@@ -33,7 +33,13 @@ File formats: `references/loop-templates.md`. Briefing rules:
 ## 1 · Rehydrate
 
 Read `LOOP.md` (config), all sections of `STATE.md`, and the last 10 entries
-of `LEDGER.jsonl`.
+of `LEDGER.jsonl`. If `## Now` is non-empty at rehydrate (a prior firing was
+interrupted before it cleared), reconcile before anything else: move that
+item back to the top of `## Backlog` with its recorded `status:` and
+`class:`, and fold a "recovered stale Now" note into this firing's
+`## Last run` update and its single §8 ledger entry (do not append a
+separate entry — one firing, one entry). A firing always begins with
+`## Now` empty.
 
 ## 2 · Gate checks (in order — first hit wins, each appends a ledger entry)
 
@@ -146,7 +152,10 @@ touched path is outside `scope:`, stage nothing — treat the attempt as a
 failure (§7's path), naming the out-of-scope path in the failure note.
 Otherwise run every `verify:` command inside the worktree with nothing
 staged (assert this — `git -C .tech-lead/worktree diff --cached --quiet`;
-if a prior interruption left the index dirty, clean it per §7 first). Any
+if the index is unexpectedly non-empty, unstage it WITHOUT reverting the
+working tree — `git -C .tech-lead/worktree restore --staged .` — so the
+current delegate's unstaged edits survive, then re-assert; never run §7's
+working-tree revert here, which would discard the current task's work). Any
 verify failure → §7. All pass and files changed → stage only the in-scope
 touched paths (`git -C .tech-lead/worktree add -- <paths>`), then commit
 on the loop branch (no Co-Authored-By line). **If the `add` or `commit`
