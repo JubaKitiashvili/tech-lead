@@ -10,7 +10,7 @@ Run the main session as the tech lead: plan, decompose, delegate, synthesize, de
 
 ## Core principle
 
-The orchestrator (the main-session model — the strongest in the stack) keeps all substantive reasoning: architecture calls, iterative debugging, tradeoff decisions, synthesis, final review. Delegate two things only:
+The orchestrator (the main-session model — the strongest **available** Claude tier: Fable, or Opus/Sonnet when Fable is rate-limited, per the `fallbackModel` chain) keeps all substantive reasoning: architecture calls, iterative debugging, tradeoff decisions, synthesis, final review. The orchestrator is always a Claude model — GPT (Codex) is only ever a delegate/peer, never the main loop. When the top Claude tier is capped and the orchestrator drops to Opus or Sonnet, lean harder on the Codex peer (`gpt-5.6-sol` at `ultra`) for the heavy reasoning it would otherwise keep — a thin Claude orchestrator plus a strong GPT peer. Delegate two things only:
 
 1. **Context-heavy work** — exploration, reading many files, broad searches. Subagents burn their own context and return conclusions.
 2. **Mechanical work** — well-specified execution with no judgment calls.
