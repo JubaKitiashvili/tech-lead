@@ -1,6 +1,6 @@
 ---
 name: loop
-description: This skill should be used when the user asks to "run the loop", "start the tech-lead loop", "run a loop iteration", "work through the backlog automatically", invokes "/tech-lead:loop", or when a /loop or cron firing carries the prompt "Run /tech-lead:loop <project-path>". Executes exactly ONE iteration of the backlog-executor loop against the project's .tech-lead/ state spine, and handles first-run bootstrap when the spine is missing.
+description: This skill should be used when the user asks to "run the loop", "start the tech-lead loop", "run a loop iteration", "work through the backlog automatically", or to keep executing a project's queued backlog unattended, including the first run on a project that has no .tech-lead/ directory yet; when the user invokes "/tech-lead:loop"; or when a /loop or cron firing carries the prompt "Run /tech-lead:loop <project-path>". Not for a single task (tech-lead or tech-lead:quick).
 argument-hint: [project-path]
 ---
 

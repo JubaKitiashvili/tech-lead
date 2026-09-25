@@ -1,6 +1,6 @@
 ---
 name: tech-lead
-description: This skill should be used when the user asks to "orchestrate" a task, "act as tech lead", "delegate this", "run the model-tiered workflow", "run this as a workflow", or hands over a large multi-part goal (feature, refactor, migration, audit) and asks for it to be split across subagents while keeping the main session's context and usage lean. Also applies when the user asks how to split work between Opus/Sonnet/Haiku/Codex. A single decision that needs independent second opinions belongs to tech-lead:panel instead.
+description: This skill should be used when the user hands over a multi-part goal (a feature, refactor, migration, or audit that touches 3+ files or 2+ subsystems, such as backend and frontend, API server and mobile client, or the whole repo), including when a design or plan is already approved and only execution remains. Also when the user asks to "orchestrate" a task, "act as tech lead", "delegate this", "run the model-tiered workflow", "run this as a workflow", or to split work across subagents, or asks how to split work between Opus/Sonnet/Haiku/Codex. Not for questions, explanations, single-file edits, debugging, or trivial tasks, and not from inside a subagent, workflow agent, or teammate. A single expensive-to-reverse decision belongs to tech-lead:panel, and a small change shipped as a PR to tech-lead:quick.
 argument-hint: [goal or task to orchestrate]
 ---
 

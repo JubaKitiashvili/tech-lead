@@ -38,6 +38,8 @@ different model family, not from a different Claude tier.
 | `/tech-lead:research <subject>` | Multi-lane research (primary source, ecosystem, alternatives, fit), with an adversarial fact-check of every lane against primary sources |
 | `/tech-lead:loop [path]` | One iteration of the backlog-executor loop (see below) |
 
+**Task-type routing (0.3.1).** The skill descriptions trigger on the task type (a multi-part goal, one expensive-to-reverse decision, vetting an external dependency, a small change shipped as a PR, a backlog run), not only on exact phrases; for always-on routing with a do-not-route list and recursion safety (only the top-level session routes), pair them with a user rule such as `~/.claude/rules/tech-lead.md`.
+
 ## Workflow mode
 
 When Workflow is opted in, the plugin runs its own Workflow scripts instead
