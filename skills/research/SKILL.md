@@ -1,0 +1,90 @@
+---
+name: research
+description: This skill should be used when the user invokes "/tech-lead:research", or explicitly asks to research, vet, or deeply evaluate an external library, tool, model, dataset, or repository before adopting it or borrowing from it ("research X before we adopt it", "vet this repo", "evaluate X against alternatives"). Not for quick factual questions or for questions answerable from the local codebase alone.
+argument-hint: [what to research]
+---
+
+# tech-lead Research — verified evaluation
+
+Web research routinely invents names, numbers, features, and integrations.
+This skill runs every research lane past an independent fact-checker, and
+you synthesize only from what survived.
+
+**Cost check.** A research run spends many agents: 4 lanes and 4
+fact-checkers by default, with repository clones and web searches.
+
+**Workflow opt-in.** Run §2 as a Workflow in these cases:
+
+- the user typed `/tech-lead:research`;
+- ultracode is on;
+- the user asked for a workflow or deep research.
+
+When this skill was picked from a phrase alone, first offer the run in one
+line, with its scope and cost. A "yes" to that offer opts in. On a "no",
+answer from a single Explore or general-purpose Agent call instead, and mark
+the answer unverified.
+
+## 1 · Scope
+
+- **Pin down the subject.** Identify each subject exactly: names and URLs. If
+  the name is ambiguous, ask one clarifying question.
+- **Write the evaluation context.** State:
+  - what we would use the subject for;
+  - the relevant local files, as absolute paths;
+  - our constraints: stack, machine, data egress, cost.
+
+## 2 · Run
+
+```
+Workflow({name: "tech-lead:research",
+          args: {question: "<subject + what we want to know>",
+                 context: "<evaluation context>",
+                 scratch: "<scratchpad>/research-<slug>"}})
+```
+
+- **Default lanes:** `primary`, `ecosystem`, `alternatives`, `fit`.
+- **Custom lanes:** pass `args.lanes: [{key, prompt}]` only when the defaults
+  do not fit. For example, with two subjects, use one `primary` lane per
+  subject.
+- **If the Workflow tool is not available, or says "not found":** dispatch the same lanes as
+  general-purpose Agent calls in one message. Then dispatch one verifier
+  Agent per lane, using the lane and fact-check prompts in
+  `../../workflows/research.js`.
+
+## 3 · Synthesize
+
+- Build the synthesis only from each lane's `corrected_summary`,
+  `confirmed_facts` (claims with their sources), `verified_ideas` and
+  `verified_risks`.
+- Treat anything from `unverified_lanes` as unverified.
+- Refuted claims never enter the synthesis. Label unverifiable claims as
+  unverified.
+- Separate hype signals (stars, launch threads) from evidence of real use
+  (dependents, code-search hits, issues from real users).
+
+## 4 · Recommend
+
+Pick one of four recommendations:
+
+- **adopt:** use the subject as a dependency;
+- **borrow ideas:** take mechanisms without taking the dependency;
+- **ignore:** neither;
+- **build our own.**
+
+Then:
+
+- For each borrowed idea, name the concrete mechanism and where it plugs in.
+- Say what evidence would change the recommendation.
+- If adopting is expensive to reverse, offer `/tech-lead:panel` with a brief
+  built from the verified findings.
+
+## Report shape
+
+The report has six parts:
+
+1. **What it is:** verified facts only.
+2. **Evidence of real use:** separate from hype.
+3. **Alternatives:** including building our own.
+4. **Fit and recommendation.**
+5. **Refuted or unverified claims:** so nobody repeats them.
+6. **Sources.**

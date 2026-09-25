@@ -1,14 +1,17 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "tech-lead",
-  "version": "0.2.0",
-  "description": "Model-tiered orchestration: Fable orchestrates and reasons, Sonnet does mechanical work, Opus + Codex give parallel independent second opinions on high-stakes decisions",
+  "version": "0.3.0",
+  "description": "Model-tiered orchestration: the main session (Opus 5.5) plans and decides; Sonnet/Haiku do mechanical and exploration work; a fresh-context Opus seat + Codex give independent second opinions; Workflow scripts make panels, fan-outs and research deterministic; a Direct lane ships small changes as draft PRs",
   "author": {
     "name": "Juba",
     "email": "juba.kitiashvili@gmail.com"
   },
   "skills": [
     "./",
-    "./skills/loop"
+    "./skills/loop",
+    "./skills/quick",
+    "./skills/panel",
+    "./skills/research"
   ]
 }
