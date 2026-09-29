@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'panel',
+  name: 'panel-seats',
   description: 'Independent two-seat panel: fresh-context Claude deep-reasoner + Codex on the same brief file, typed verdicts, agreement computed in code',
   whenToUse: 'High-stakes, expensive-to-reverse decisions under the tech-lead panel protocol. args: {briefPath, options:[{id,label}], seatModel?, seatEffort?, codexEffort?}',
   phases: [

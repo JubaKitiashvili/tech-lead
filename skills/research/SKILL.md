@@ -36,7 +36,7 @@ the answer unverified.
 ## 2 · Run
 
 ```
-Workflow({name: "tech-lead:research",
+Workflow({name: "tech-lead:research-lanes",
           args: {question: "<subject + what we want to know>",
                  context: "<evaluation context>",
                  scratch: "<scratchpad>/research-<slug>"}})

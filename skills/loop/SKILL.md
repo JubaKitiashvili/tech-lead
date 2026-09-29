@@ -207,7 +207,7 @@ includes a class set in §3.
      ```
 
   3. **Run the seats:**
-     - Workflow opted in → `Workflow({name: "tech-lead:panel", args:
+     - Workflow opted in → `Workflow({name: "tech-lead:panel-seats", args:
        {briefPath, options}})`;
      - otherwise, or if the workflow is "not found" → the protocol's Agent
        form.

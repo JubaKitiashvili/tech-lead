@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'research',
+  name: 'research-lanes',
   description: 'Multi-lane research with an adversarial fact-check of every lane against primary sources',
   whenToUse: 'Evaluating a library, tool, model, repo, dataset, or technique before adopting or borrowing from it. args: {question, context, scratch, lanes?, model?}',
   phases: [

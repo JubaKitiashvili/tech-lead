@@ -56,5 +56,5 @@ Process skills come before execution skills:
 <workflow_opt_in>
 Routing to a tech-lead skill is not an opt-in to the Workflow tool. Use Workflow only under the opt-in rules the tech-lead skill already has: ultracode is on, the user asked in their own words for a workflow or multi-agent orchestration, the user typed a `/tech-lead…` slash command, or the user said yes when the skill offered one.
 
-For a task that matches the routing table, do not hand-write your own Workflow script in place of the skill. Load the skill first; it names the registered workflow (`tech-lead:panel`, `tech-lead:fanout`, `tech-lead:research`, `tech-lead:triage`) when one applies.
+For a task that matches the routing table, do not hand-write your own Workflow script in place of the skill. Load the skill first; it names the registered workflow (`tech-lead:panel-seats`, `tech-lead:fanout`, `tech-lead:research-lanes`, `tech-lead:triage`) when one applies.
 </workflow_opt_in>

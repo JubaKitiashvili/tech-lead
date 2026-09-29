@@ -207,9 +207,9 @@ When Workflow is opted in and the shape matches, the call is:
 
 | Shape | Call |
 |-------|------|
-| High-stakes panel | `Workflow({name: "tech-lead:panel", args: {briefPath, options: [{id, label}, …]}})` |
+| High-stakes panel | `Workflow({name: "tech-lead:panel-seats", args: {briefPath, options: [{id, label}, …]}})` |
 | 3+ independent mechanical tasks with disjoint file sets | `Workflow({name: "tech-lead:fanout", args: {repo, tasks: [{id, brief, files: [abs paths]}]}})` |
-| Evaluating an external tool, library, model, or repo | `/tech-lead:research`, which runs `Workflow({name: "tech-lead:research", …})` |
+| Evaluating an external tool, library, model, or repo | `/tech-lead:research`, which runs `Workflow({name: "tech-lead:research-lanes", …})` |
 | Loop §4 triage check | `Workflow({name: "tech-lead:triage", …})` (see `/tech-lead:loop`) |
 | A single delegate whose output you read as prose | A plain Agent call. A one-agent workflow adds nothing unless you need its schema or code-side policy. |
 
@@ -331,4 +331,4 @@ delegate's report.
   follow-ups.
 - **`references/decision-contracts.md`**: the reflex rules and the JSON
   contracts used by the workflows and the triage agent.
-- **`workflows/`**: `panel.js`, `fanout.js`, `research.js`, `triage.js` (registered as `tech-lead:panel|fanout|research|triage`).
+- **`workflows/`**: `panel.js`, `fanout.js`, `research.js`, `triage.js` (registered as `tech-lead:panel-seats`, `tech-lead:fanout`, `tech-lead:research-lanes` and `tech-lead:triage`; the panel and research workflows carry their own names so they never shadow the `/tech-lead:panel` and `/tech-lead:research` skills).

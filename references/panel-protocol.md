@@ -20,7 +20,7 @@ Both seats read the same file.
 ## 2 · Seats (in parallel)
 
 - **Workflow opted in:**
-  `Workflow({name: "tech-lead:panel", args: {briefPath, options}})`.
+  `Workflow({name: "tech-lead:panel-seats", args: {briefPath, options}})`.
   - **Seat A** is `tech-lead:deep-reasoner` on Opus at effort `xhigh`, in a
     fresh context. Pass `seatEffort: "max"` only for a decision where you
     want the extra depth despite the documented overthinking risk, such as a
