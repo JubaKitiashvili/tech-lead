@@ -1,17 +1,22 @@
 # tech-lead
 
 A model-tiered orchestration plugin for Claude Code. The main session (Opus
-5.5, falling back to Sonnet 5) stays the tech lead: it plans, reasons,
-synthesizes, and decides. Cheaper delegates, or delegates with different
-skills, do the work that would waste its context or usage.
+5.5, or Sonnet 5.5 after a manual `/model sonnet`) stays the tech lead: it
+plans, reasons, synthesizes, and decides. Cheaper delegates, or delegates
+with different skills, do the work that would waste its context or usage.
 
 | Delegate | Model | Role |
 |----------|-------|------|
-| `Explore` (built-in) | Pass `model: "sonnet"` or `"haiku"`; otherwise it inherits Opus | Codebase search fan-out; returns conclusions, not file dumps |
-| `tech-lead:fast-worker` | Sonnet 5 | Mechanical execution: repetitive edits, boilerplate, test runs |
-| `tech-lead:deep-reasoner` | Opus 5.5, fresh context | Independent deep analysis; panel seat A |
+| `Explore` (built-in) | Pass `model: "sonnet"` or `"haiku"`; otherwise it inherits the main model, capped at Opus | Codebase search fan-out; returns conclusions, not file dumps |
+| `tech-lead:fast-worker` | Sonnet 5.5, `effort: medium` | Mechanical execution: repetitive edits, boilerplate, test runs |
+| `tech-lead:deep-reasoner` | Opus 5.5, `effort: xhigh`, fresh context | Independent deep analysis; panel seat A |
 | `tech-lead:triage` | Haiku 4.5, Read-only; runs only via the `tech-lead:triage` workflow | The loop's escalate-only second check on classification |
 | Codex (`codex:codex-rescue`) | GPT; model and effort come from `~/.codex/config.toml` | Peer engineer from another model family; panel seat B |
+
+The agents and scripts name the aliases (`opus`, `sonnet`, `haiku`). With
+Claude Code v2.1.284 or later on the Anthropic API, those aliases resolve to
+the models above. `SKILL.md` (Models and effort) holds the tier and effort
+guidance, checked against Anthropic's docs on 2026-09-29.
 
 The key idea: **reasoning stays with the orchestrator.** Reasoning is cheap in
 context terms, and it is exactly where the strongest model earns its keep.

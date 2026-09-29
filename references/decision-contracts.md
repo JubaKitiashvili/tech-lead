@@ -63,8 +63,12 @@ The script also returns:
 {"done": "<one line>", "files_touched": ["<absolute path>"],
  "verification": [{"cmd": "<command>", "result": "pass|fail|skipped", "excerpt": "<failing output or empty>"}],
  "skipped_flagged": [{"item": "<spec item>", "reason": "<why>"}],
- "judgment_calls": [{"question": "<the decision needed>", "suggested_default": "<worker's default>"}]}
+ "judgment_calls": [{"question": "<the decision needed>", "suggested_default": "<worker's default>"}],
+ "suggestions": ["<optional: a helpful extra the spec did not ask for, not done>"]}
 ```
+
+`suggestions` never affects the status. It gives the worker somewhere to put
+unrequested extras other than its diff or `skipped_flagged`.
 
 The script's code checks each report and sets a status:
 

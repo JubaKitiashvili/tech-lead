@@ -47,6 +47,8 @@ const REPORT = {
     }, required: ['cmd', 'result'] } },
     skipped_flagged: { type: 'array', items: { type: 'object', properties: { item: { type: 'string' }, reason: { type: 'string' } }, required: ['item', 'reason'] } },
     judgment_calls: { type: 'array', items: { type: 'object', properties: { question: { type: 'string' }, suggested_default: { type: 'string' } }, required: ['question'] } },
+    // Non-gating by design: extras the worker did not do. Never feeds the status below.
+    suggestions: { type: 'array', items: { type: 'string' }, description: 'optional: helpful extras the spec did not ask for, not done' },
   },
   required: ['done', 'files_touched', 'verification', 'skipped_flagged', 'judgment_calls'],
 }

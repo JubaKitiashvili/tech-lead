@@ -21,9 +21,14 @@ Both seats read the same file.
 
 - **Workflow opted in:**
   `Workflow({name: "tech-lead:panel", args: {briefPath, options}})`.
-  - **Seat A** is `tech-lead:deep-reasoner` on Opus, in a fresh context. If
-    Opus returns nothing, it retries once on Sonnet. That fallback is a
-    documented exception to the reflex rules, and the result reports it.
+  - **Seat A** is `tech-lead:deep-reasoner` on Opus at effort `xhigh`, in a
+    fresh context. Pass `seatEffort: "max"` only for a decision where you
+    want the extra depth despite the documented overthinking risk, such as a
+    security design. If Opus returns nothing, the seat retries once on
+    Sonnet at `high`. That fallback is a documented exception to the reflex
+    rules, and the result reports it. The retry helps with an Opus-only
+    usage limit, not with session or weekly limits, which every model
+    shares.
   - **Seat B** is Codex. It runs `--wait`, read-only, `--effort xhigh`, and
     gets the options in reversed order.
   - The workflow returns `agreement`, computed in code.

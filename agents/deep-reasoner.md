@@ -2,6 +2,7 @@
 name: deep-reasoner
 description: Use this agent for an independent, deep second opinion on a well-scoped hard problem. It runs on Opus in a fresh context, so it sees only the brief and never the orchestrator's conversation or leanings. Typical triggers include a high-stakes architecture or design decision that deserves a parallel independent take (the Claude seat of the tech-lead panel, paired with Codex on the same brief), a self-contained algorithm or data-model design problem that can be fully described in one brief, and a tricky tradeoff analysis (library choice, migration strategy, API shape) where the orchestrator wants a rigorous evaluation without spending its own context. Do NOT use it for iterative debugging that depends on accumulated session context, or for mechanical execution work.
 model: opus
+effort: xhigh
 color: magenta
 tools: ["Read", "Grep", "Glob"]
 ---

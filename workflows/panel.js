@@ -1,7 +1,7 @@
 export const meta = {
   name: 'panel',
   description: 'Independent two-seat panel: fresh-context Claude deep-reasoner + Codex on the same brief file, typed verdicts, agreement computed in code',
-  whenToUse: 'High-stakes, expensive-to-reverse decisions under the tech-lead panel protocol. args: {briefPath, options:[{id,label}], seatModel?, codexEffort?}',
+  whenToUse: 'High-stakes, expensive-to-reverse decisions under the tech-lead panel protocol. args: {briefPath, options:[{id,label}], seatModel?, seatEffort?, codexEffort?}',
   phases: [
     { title: 'Seats', detail: 'seat A: tech-lead:deep-reasoner (fresh context); seat B: Codex read-only --wait; same brief, no cross-talk' },
     { title: 'Normalize', detail: 'map the Codex prose onto the verdict schema; detect an empty seat' },
@@ -17,6 +17,13 @@ if (new Set(ids).size !== ids.length) throw new Error('option ids must be unique
 
 const seatModel = A.seatModel || 'opus'
 const fallbackModel = seatModel === 'opus' ? 'sonnet' : null
+// Opus 5.5 thinks more per turn at xhigh/max than Opus 5, and Anthropic says to reserve both
+// for measured gains ("max ... is prone to overthinking"). Pass seatEffort: 'max' to opt in.
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+const seatEffort = A.seatEffort || 'xhigh'
+if (!EFFORTS.includes(seatEffort)) throw new Error(`args.seatEffort must be one of ${EFFORTS.join('|')}`)
+// Sonnet 5.5 above high starts its own review rounds, and Anthropic points to Opus for that range.
+const fallbackEffort = EFFORTS.indexOf(seatEffort) < EFFORTS.indexOf('high') ? seatEffort : 'high'
 const codexEffort = A.codexEffort || 'xhigh'
 const list = opts => opts.map(o => `- ${o.id}: ${o.label}`).join('\n')
 const orderA = A.options
@@ -65,12 +72,12 @@ Return Codex's output verbatim. If Codex could not run, return one line starting
 phase('Seats')
 const [seatA, seatBRaw] = await parallel([
   async () => {
-    let v = await agent(seatAPrompt, { agentType: 'tech-lead:deep-reasoner', model: seatModel, effort: 'max', schema: VERDICT, label: `seat-A:deep-reasoner@${seatModel}`, phase: 'Seats' })
-    if (v) return { model: seatModel, fallback: false, verdict: v }
-    if (!fallbackModel) return { model: seatModel, fallback: false, verdict: null }
-    log(`seat A on ${seatModel} returned nothing; retrying on ${fallbackModel}`)
-    v = await agent(seatAPrompt, { agentType: 'tech-lead:deep-reasoner', model: fallbackModel, effort: 'max', schema: VERDICT, label: `seat-A:deep-reasoner@${fallbackModel}`, phase: 'Seats' })
-    return { model: fallbackModel, fallback: true, verdict: v }
+    let v = await agent(seatAPrompt, { agentType: 'tech-lead:deep-reasoner', model: seatModel, effort: seatEffort, schema: VERDICT, label: `seat-A:deep-reasoner@${seatModel}`, phase: 'Seats' })
+    if (v) return { model: seatModel, effort: seatEffort, fallback: false, verdict: v }
+    if (!fallbackModel) return { model: seatModel, effort: seatEffort, fallback: false, verdict: null }
+    log(`seat A on ${seatModel} returned nothing; retrying on ${fallbackModel} at effort ${fallbackEffort}`)
+    v = await agent(seatAPrompt, { agentType: 'tech-lead:deep-reasoner', model: fallbackModel, effort: fallbackEffort, schema: VERDICT, label: `seat-A:deep-reasoner@${fallbackModel}`, phase: 'Seats' })
+    return { model: fallbackModel, effort: fallbackEffort, fallback: true, verdict: v }
   },
   () => agent(seatBPrompt, { agentType: 'codex:codex-rescue', label: 'seat-B:codex', phase: 'Seats' }),
 ])
@@ -79,6 +86,7 @@ phase('Normalize')
 let seatB = { model: 'codex (~/.codex/config.toml default)', empty: true, empty_reason: 'no output', verdict: null, raw: seatBRaw || '' }
 const raw = typeof seatBRaw === 'string' ? seatBRaw.trim() : ''
 if (raw.length > 0 && !/^SEAT-EMPTY:/m.test(raw)) {
+  // effort is a no-op on Haiku 4.5 (Claude Code drops it); it takes effect once `haiku` moves to an effort-capable model.
   const n = await agent(`Map the panel answer below onto the structured output. Do not add reasoning of your own; copy the answer's own points. Valid recommendation ids: ${ids.join(', ')}, or "other".
 Set empty=true (and leave verdict out) if the text is not an analysis: empty, an error, a job id, a "queued"/"running in the background" notice, or a status message.
 
