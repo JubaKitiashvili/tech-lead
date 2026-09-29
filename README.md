@@ -1,110 +1,195 @@
 # tech-lead
 
-A model-tiered orchestration plugin for Claude Code. The main session (Opus
-5.5, or Sonnet 5.5 after a manual `/model sonnet`) stays the tech lead: it
-plans, reasons, synthesizes, and decides. Cheaper delegates, or delegates
-with different skills, do the work that would waste its context or usage.
+Model-tiered orchestration for [Claude Code](https://code.claude.com). Your
+main session acts as the tech lead: it plans, keeps the reasoning, makes the
+decisions, and checks the results. Delegates take the work that would waste
+its context or usage:
 
-| Delegate | Model | Role |
-|----------|-------|------|
-| `Explore` (built-in) | Pass `model: "sonnet"` or `"haiku"`; otherwise it inherits the main model, capped at Opus | Codebase search fan-out; returns conclusions, not file dumps |
-| `tech-lead:fast-worker` | Sonnet 5.5, `effort: medium` | Mechanical execution: repetitive edits, boilerplate, test runs |
-| `tech-lead:deep-reasoner` | Opus 5.5, `effort: xhigh`, fresh context | Independent deep analysis; panel seat A |
-| `tech-lead:triage` | Haiku 4.5, Read-only; runs only via the `tech-lead:triage` workflow | The loop's escalate-only second check on classification |
-| Codex (`codex:codex-rescue`) | GPT; model and effort come from `~/.codex/config.toml` | Peer engineer from another model family; panel seat B |
+- cheaper Claude models do exploration and mechanical edits;
+- a fresh-context Opus seat and OpenAI Codex give independent second opinions;
+- Workflow scripts turn panels, fan-outs, research, and loop triage into
+  typed contracts that code enforces.
 
-The agents and scripts name the aliases (`opus`, `sonnet`, `haiku`). With
-Claude Code v2.1.284 or later on the Anthropic API, those aliases resolve to
-the models above. `SKILL.md` (Models and effort) holds the tier and effort
-guidance, checked against Anthropic's docs on 2026-09-29.
+**Version 0.3.3.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
-The key idea: **reasoning stays with the orchestrator.** Reasoning is cheap in
-context terms, and it is exactly where the strongest model earns its keep.
-What gets delegated is context-heavy exploration and mechanical work.
+## Contents
 
-For high-stakes decisions, a fresh-context Opus seat and Codex act as an
-**independent second-opinion panel**:
+- [Why](#why)
+- [Commands](#commands)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Commands in detail](#commands-in-detail)
+- [Loop mode](#loop-mode)
+- [Troubleshooting](#troubleshooting)
+- [Releasing a new version](#releasing-a-new-version)
+- [Repository layout](#repository-layout)
+- [Credits](#credits)
 
-- both seats get the same brief file and are dispatched in parallel;
-- neither sees the other's answer, and the options are shown to them in
-  opposite orders;
-- agreement is computed in code, and the orchestrator synthesizes the result.
+## Why
 
-The seats' independence comes from their fresh context and from Codex being a
-different model family, not from a different Claude tier.
+- **Reasoning stays with the orchestrator.** Reasoning costs little context,
+  and it is exactly where the strongest model earns its keep. Architecture
+  calls, debugging loops, tradeoffs, synthesis, and final review stay in the
+  main session.
+- **Delegate only two things.** Context-heavy exploration (many file reads,
+  broad searches), and mechanical work that is fully specified with no
+  judgment calls left.
+- **Independence, not agreement.** A decision that is expensive to reverse
+  goes to two seats that read the same brief and never see each other's
+  answer: a fresh-context Opus seat and Codex, from another model family.
+- **Contracts over prose.** A delegate's "done" is only a claim. `git
+  status`, `git diff`, and your own verify commands decide completion.
+  Workflow scripts validate every report against a JSON schema and compute
+  verdicts in code.
 
-## Skills
+## Commands
 
-| Command | What it does |
-|---------|--------------|
-| `/tech-lead <goal>` | Orchestrate a multi-part goal: plan, delegate, verify, and decide |
-| `/tech-lead:quick <task>` | The Direct lane: implement it yourself, verify it (plus an argent UI check when a device is running), then open a `feature/<slug>` branch, a commit, and a **draft PR**. It pushes only when you typed the command or asked for a PR. It escalates to `/tech-lead` for high-stakes or large work |
-| `/tech-lead:panel <decision>` | Run one expensive-to-reverse decision through the two-seat panel |
-| `/tech-lead:research <subject>` | Multi-lane research (primary source, ecosystem, alternatives, fit), with an adversarial fact-check of every lane against primary sources |
-| `/tech-lead:loop [path]` | One iteration of the backlog-executor loop (see below) |
+| Command | What it does | Use it for |
+|---|---|---|
+| `/tech-lead <goal>` | Plans, delegates, verifies, and decides | A feature, refactor, migration, or audit that touches 3+ files or 2+ subsystems |
+| `/tech-lead:quick <task>` | The main session implements and verifies the change itself, then opens a draft PR on a `feature/<slug>` branch | A small, bounded, low-risk change you want shipped as a PR |
+| `/tech-lead:panel <decision>` | Runs one decision through the two-seat panel | One choice that is expensive to reverse: datastore, data model, public API, migration, security design, or a major dependency |
+| `/tech-lead:research <subject>` | Runs multi-lane research, then fact-checks every lane against primary sources | Vetting a library, tool, model, repo, or dataset before you adopt it |
+| `/tech-lead:loop [project-path]` | Runs one iteration of a backlog executor, driven by a `.tech-lead/` spine | Working through a project backlog unattended, with brakes and human gates |
 
-**Task-type routing (0.3.1).** The skill descriptions trigger on the task type (a multi-part goal, one expensive-to-reverse decision, vetting an external dependency, a small change shipped as a PR, a backlog run), not only on exact phrases; for always-on routing with a do-not-route list and recursion safety (only the top-level session routes), pair them with a user rule such as `~/.claude/rules/tech-lead.md`.
+The skill descriptions trigger on the task type too, so a request such as "add
+X across the API and the mobile client" can start `/tech-lead` without the
+slash command. For stricter always-on routing, see
+[the routing rule](#optional-always-on-routing-rule).
 
-## Workflow mode
+## Requirements
 
-When Workflow is opted in, the plugin runs its own Workflow scripts instead
-of hand-dispatched Agent calls. Workflow is opted in when any of these holds:
+- **Claude Code 2.1.284 or later** (`claude --version`). The model names in
+  this README assume the Anthropic API. On Bedrock, Vertex, Foundry, and
+  Claude Platform on AWS, the model aliases resolve to older models.
+- **Dynamic workflows.** Workflows are available on paid plans and the API;
+  on Pro, turn them on in `/config`. `"disableWorkflows": true` or
+  `CLAUDE_CODE_DISABLE_WORKFLOWS=1` switches them off. Without Workflow the
+  commands fall back to plain Agent calls. The one exception is loop triage,
+  which records `no-verdict`.
+- **`git`**, plus **`gh`** logged in. `/tech-lead:quick` needs a GitHub remote,
+  and the research lanes use `gh` for GitHub lookups.
+- **Optional:**
+  - the [Codex plugin](#optional-codex-as-the-second-panel-seat), for panel
+    seat B and the loop's L3 implementation delegate;
+  - argent, for quick's on-device check of React Native UI;
+  - the superpowers plugin, which the routing rule template refers to.
 
-- ultracode is on;
-- you ask for a workflow;
-- you type a `/tech-lead…` command.
+## Installation
 
-The scripts, in `workflows/`:
+Pick **one** of the two install methods. If you use both, the marketplace
+install wins, and the skills-directory copy shows as not loaded.
 
-- `panel.js`: two seats with typed verdicts, agreement computed in code, and
-  empty-seat detection. If Opus fails, seat A retries on Sonnet.
-- `fanout.js`: parallel `fast-worker`s with JSON-schema execution reports,
-  plus code checks for scope and judgment calls.
-- `research.js`: research lanes, each followed by its own fact-checker.
-- `triage.js`: the loop's Haiku triage verdict under an enforced schema, with
-  the escalate-only policy computed in code.
+### Option A: clone into your skills directory
 
-The plugin registers these at session start as `tech-lead:<name>`, and
-skills call them by name. After updating the plugin, restart the session so
-new workflows register.
+This is best for personal use and for developing the plugin.
 
-Git, human gates, spine writes, and the final verify always stay in the main
-session.
-
-## The reflex layer (our own "System 1")
-
-`references/decision-contracts.md` defines the reflex layer. These are small,
-typed, categorical decisions:
-
-- **Escalate-only.** Nothing automated lowers a class, tier, or level.
-- **Deterministic gates.** Checks like `git status`, `verify:` and the scope
-  rail decide; model verdicts only advise.
-- **Shadow before gate.** A new check is logged before it is ever applied.
-- **Calibration from the loop ledger.** The owner reviews logged decisions
-  before switching a check on.
-
-This is inspired by the typed-decision pattern of TypeSafe's
-[Jev](https://docs.typesafe.ai) and the open-source
-[Laya](https://github.com/NandhaKishorM/laya), and borrows their ecosystem's
-asymmetric-routing and shadow-mode practices. It has no dependency on
-either: in this setting, a JSON-schema `agent()` call on Haiku is the typed
-decision primitive. Laya's zero-shot accuracy was near chance and needed
-torch; Jev is closed and needs an API key.
-
-## Install
-
-Personal (this machine): the plugin lives in `~/.claude/skills/tech-lead/` and
-auto-loads as `tech-lead@skills-dir`.
-
-Team distribution: copy this directory into a git repo, then run:
-
-```
-/plugin marketplace add <org>/<repo>
-/plugin install tech-lead@<marketplace-name>
+```sh
+git clone https://github.com/JubaKitiashvili/tech-lead.git ~/.claude/skills/tech-lead
 ```
 
-**Optional but recommended:** the OpenAI Codex plugin, for the second panel
-seat:
+Claude Code loads any folder under `~/.claude/skills/` that contains
+`.claude-plugin/plugin.json` as a plugin, with no install step:
+
+- the plugin appears as `tech-lead@skills-dir` in `claude plugin list`;
+- the root skill runs as `/tech-lead`;
+- it loads when you start a new session.
+
+To update:
+
+```sh
+git -C ~/.claude/skills/tech-lead pull
+```
+
+Then restart the session, so that the workflows register again.
+
+### Option B: install from GitHub as a marketplace
+
+The repository is its own marketplace (`.claude-plugin/marketplace.json`), so
+the plugin id is `tech-lead@tech-lead`.
+
+In a session (Claude Code 2.1.275 or later):
+
+```
+/plugin install tech-lead --marketplace JubaKitiashvili/tech-lead
+```
+
+From the shell:
+
+```sh
+claude plugin marketplace add JubaKitiashvili/tech-lead
+claude plugin install tech-lead@tech-lead
+```
+
+A shell install loads in the next session, or after `/reload-plugins`. With a
+marketplace install the root skill is `/tech-lead:tech-lead`. Bare
+`/tech-lead` also works unless another command already uses that name.
+
+**Access to the private repository.** Claude Code clones with plain `git`, and
+prompts are disabled. It has no token of its own, so your machine's git
+credentials must work without a prompt:
+
+```sh
+gh auth login
+gh auth setup-git
+git ls-remote https://github.com/JubaKitiashvili/tech-lead.git   # must succeed with no prompt
+```
+
+- **SSH:** the key must load without a passphrase prompt (for example, from
+  ssh-agent).
+- **Force HTTPS:** `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` skips the SSH probe.
+
+**Updates.**
+
+- Auto-update is off by default for third-party marketplaces. Turn it on in
+  `/plugin` → Marketplaces.
+- To update manually, run `claude plugin update tech-lead@tech-lead`, or use
+  `/plugin` → Installed → Update now.
+- `plugin.json` pins the version, so users get a release only when the
+  version changes.
+
+**Uninstall.**
+
+```sh
+claude plugin uninstall tech-lead@tech-lead                   # Option B, user scope
+claude plugin uninstall tech-lead@tech-lead --scope project   # a Teams install (edits the shared settings)
+rm -rf ~/.claude/skills/tech-lead                             # Option A
+```
+
+`uninstall` defaults to user scope and fails for a project-scope install. To
+opt out of a Teams install on your own machine, run
+`claude plugin disable tech-lead@tech-lead --scope local`. If you installed
+the [routing rule](#optional-always-on-routing-rule), delete
+`~/.claude/rules/tech-lead.md` too. Otherwise it keeps sending tasks to
+skills that no longer exist.
+
+**Teams.**
+
+1. Declare the marketplace in the project's `.claude/settings.json`:
+
+   ```sh
+   claude plugin marketplace add JubaKitiashvili/tech-lead --scope project
+   ```
+
+2. Commit and push `.claude/settings.json`, so teammates get the
+   declaration. Only teammates who trust the folder pick it up.
+3. Each teammate needs read access to this private repository.
+4. Each teammate pulls, then installs the plugin:
+
+   ```sh
+   claude plugin install tech-lead@tech-lead --scope project
+   ```
+
+   If the marketplace is reported as unknown, open `claude` in the repository
+   once and accept the trust dialog. Or run
+   `claude plugin marketplace add JubaKitiashvili/tech-lead` yourself.
+
+Cloud sessions (claude.ai/code) load neither plugins installed on your
+machine nor ones that the repository's `.claude/settings.json` turns on.
+
+### Optional: Codex as the second panel seat
 
 ```
 /plugin marketplace add openai/codex-plugin-cc
@@ -112,61 +197,485 @@ seat:
 /codex:setup
 ```
 
-Without it, panels run with seat A alone.
+The Codex plugin's README lists its account and Node.js requirements.
 
-Tested with Codex plugin 1.0.6 and Codex CLI 0.156.1. The rescue wrapper is
-write-capable by default, so tech-lead always sends panel briefs as read-only
+Without Codex:
+
+- panels run with seat A alone, and the result says why the second seat was
+  empty;
+- the loop parks L3 implementation items as `waiting-infra`.
+
+Tested with Codex plugin 1.0.6 and Codex CLI 0.156.1. The Codex rescue wrapper
+can write files by default, so tech-lead always sends panel briefs read-only,
 with `--wait`.
+
+### Optional: always-on routing rule
+
+`templates/rules-tech-lead.md` is a user rule that routes by task type. It
+adds a do-not-route list (questions, single-file edits, debugging, and
+repeated mechanical changes stay out of tech-lead). It also adds recursion
+safety: only the top-level session routes, never a subagent, workflow agent,
+or teammate.
+
+From a clone:
+
+```sh
+mkdir -p ~/.claude/rules
+cp ~/.claude/skills/tech-lead/templates/rules-tech-lead.md ~/.claude/rules/tech-lead.md
+```
+
+From GitHub, which is what you want for a marketplace install, because the
+plugin cache path changes with every version:
+
+```sh
+mkdir -p ~/.claude/rules
+gh api repos/JubaKitiashvili/tech-lead/contents/templates/rules-tech-lead.md \
+  -H "Accept: application/vnd.github.raw" > ~/.claude/rules/tech-lead.md
+```
+
+The rule sends debugging to `superpowers:systematic-debugging` and new
+designs to `superpowers:brainstorming`, so it assumes the superpowers plugin
+is installed.
+
+## Quick start
+
+```
+/tech-lead Add rate limiting to the public API and show 429s in the mobile client
+/tech-lead:quick Fix the typo in the checkout empty-state message and open a draft PR
+/tech-lead:panel Should session state live in Postgres or Redis?
+/tech-lead:research Evaluate drizzle-orm before we adopt it for the billing service
+/tech-lead:loop ~/code/my-app
+```
+
+## How it works
+
+### The bench
+
+| Delegate | Model | Effort | Tools | Role |
+|---|---|---|---|---|
+| `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Session level; a plugin can't pin it | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
+| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `medium` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
+| `tech-lead:deep-reasoner` | `opus`: Opus 5.5, fresh context | `xhigh` | Read, Grep, Glob | Independent deep analysis of a well-scoped problem; panel seat A |
+| `tech-lead:triage` | `haiku`: Haiku 4.5 | none (Haiku has no effort parameter) | Read | The loop's escalate-only second check; runs only through its workflow |
+| Codex (`codex:codex-rescue`) | GPT, from `~/.codex/config.toml` | Set per call (panel: `xhigh`) | Codex CLI | A peer from another model family: panel seat B, and the loop's L3 implementer |
+
+**Always kept in the main session:**
+
+- iterative or context-dependent work;
+- every final decision;
+- human gates;
+- all git branch, commit, and push operations;
+- scheduling.
+
+A panel seat, or any delegate valued for its independence, is never a `fork`,
+because a fork inherits your context and your leanings.
+
+### Models and effort
+
+`SKILL.md` → *Models and effort* has the full guidance, checked against
+Anthropic's documentation on 2026-09-29. In short:
+
+- **The orchestrator is Opus 5.5.** It is the default model, and the `opus`
+  alias resolves to it from Claude Code 2.1.280.
+- **A session ends up on Sonnet only through a switch** such as
+  `/model sonnet`, typically after an "Opus limit" message. `fallbackModel`
+  is not a rate-limit fallback: it fires only on overload, unavailability, or
+  a server error, and only for one turn. On a Sonnet main session, lean on
+  Codex for the heavy reasoning.
+- **Effort comes before tier.** In Claude Code, Opus 5.5 and Sonnet 5.5
+  default to `medium`. Go to `high` when verification matters, and to
+  `xhigh` for long agentic work. Anthropic says to reserve `xhigh` and `max`
+  for measured gains, and the Claude Code docs call `max` "prone to
+  overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, switch
+  to Fable 5.1 (`/model fable`).
+- **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
+  `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
+  announced, for example.
+
+### Workflow mode
+
+tech-lead uses its Workflow scripts when any of these holds:
+
+- ultracode is on;
+- you ask, in your own words, for a workflow or multi-agent orchestration;
+- you type `/tech-lead`, `/tech-lead:panel`, `/tech-lead:research`, or
+  `/tech-lead:loop`, including a `/loop` or cron prompt that runs one;
+- you say yes when a skill offers a workflow run.
+
+Trigger phrases on their own ("orchestrate", "delegate this") pick the skill
+but do not opt in. `/tech-lead:quick` never uses Workflow.
+
+The plugin registers four workflows at session start:
+
+| Workflow | Args | Returns | Enforced in code |
+|---|---|---|---|
+| `tech-lead:panel-seats` | **Required:** `briefPath` (absolute) and `options` (2+ `{id, label}` with unique ids). **Optional:** `seatModel` (default `opus`), `seatEffort` (default `xhigh`; one of `low`…`max`), `codexEffort` (default `xhigh`) | `agreement`, plus `seatA` and `seatB`, each with its model, verdict, and the option order it saw | Typed verdicts; agreement computed from the two option ids; seat B sees the options in reverse order; empty-seat detection; one retry on Sonnet at `high` if the Opus seat returns nothing |
+| `tech-lead:fanout` | `repo` (absolute) and `tasks` (`{id, brief, files: [absolute paths]}`, with disjoint file sets) | `summary` (count per status) and `results` (one entry per task: `id`, `status`, `report`, `out_of_scope`) | Paths are normalized, kept inside the repo, and never shared by two tasks; each task gets a status |
+| `tech-lead:research-lanes` | **Required:** `question` and `scratch` (absolute). **Optional:** `context`, `lanes` (`{key, prompt}`), `model` | `lanes` (one entry per lane, with `corrected_summary`, `confirmed_facts`, `verified_ideas`, `verified_risks`, `refuted`, `unverifiable`) and `unverified_lanes` | An independent fact-checker verifies every lane, and only the verifier's output is returned |
+| `tech-lead:triage` | `item` (`{title, notes}`) and `orchestratorClass` | `agreement`, `checker`, `derived`, `signals` | A Haiku verdict under a schema; the class is derived from the signals in code; it can only escalate |
+
+**What stays outside the scripts.** Scripts cannot touch files, git, clocks,
+or you. Git operations, human gates, spine writes, and the final verify all
+happen in the main session.
+
+**"Not found".** If the Workflow tool answers "not found", the workflows were
+not registered in this session, for example because the plugin was updated
+after the session started. The skills then fall back to Agent calls. The
+exception is loop triage, which records `no-verdict` and does not run.
+Restart the session to fix it.
+
+**Fan-out results.** Each task gets the first status that applies:
+
+| Order | `status` | Condition | What the orchestrator does |
+|---|---|---|---|
+| 1 | `out-of-scope` | The worker touched a file outside its list | Inspects the diff, then fixes or re-dispatches |
+| 2 | `needs-decision` | The worker reported a judgment call | Decides it, then re-dispatches with the decision |
+| 3 | `verify-failed` | A verification command failed | Inspects the diff, then fixes or re-dispatches |
+| 4 | `incomplete` | Part of the spec was skipped | Finishes the task or re-dispatches it |
+| 5 | `ok` | None of the above | Keeps the changes |
+
+A task that returns no report at all gets `no-report`, and the orchestrator
+inspects its diff, then fixes or re-dispatches. A worker's optional
+`suggestions` (extras nobody asked for) never affect the status. After all
+tasks settle, the orchestrator:
+
+1. runs `git status --porcelain=v1 -uall`;
+2. flags any changed path that no task owned;
+3. runs the project-wide verify once;
+4. reviews the diff itself.
+
+### The panel
+
+1. Write one neutral brief (`references/briefing-template.md`) with 2 to 5
+   options that have stable ids. Include the status quo, and never reveal a
+   preferred option.
+2. Both seats read the same file in parallel.
+   - **Seat A** is `deep-reasoner` on Opus at `xhigh`. Pass
+     `seatEffort: "max"` only when the decision is worth the documented
+     overthinking risk.
+   - **Seat B** is Codex, read-only, with `--wait --effort xhigh`, and it sees
+     the options in reverse order.
+3. Agreement is computed in code, and it is corroboration, not proof. Where
+   the seats disagree, the orchestrator finds the load-bearing assumption
+   that differs, and resolves it with evidence or with one targeted
+   follow-up to a single seat.
+4. The result is presented in this shape: recommendation, each seat's view,
+   agreement, and what would flip the decision. The decision is yours:
+   nothing is implemented until you choose.
+
+### The reflex layer
+
+`references/decision-contracts.md` defines tech-lead's "System 1": small,
+typed decisions whose policy lives in code, never in a model's confidence.
+
+- **Categorical only.** A decision picks from fixed ids. There are no scores
+  to gate on.
+- **Escalate-only.** No automated step lowers a task class, raises the loop
+  level, or silently lowers a model tier. There are two documented
+  exceptions, and both are always reported: the loop's L1→L2 promotion, and
+  the panel's retry on Sonnet.
+- **Deterministic checks gate; models only advise.**
+- **Shadow before gate.** A new check is only logged until a human has
+  reviewed at least 20 of its decisions.
+- **Untrusted state.** Text under decision is data, never instructions.
+- **Agreement is not correctness,** and agreement never releases a human
+  gate.
+
+## Commands in detail
+
+### `/tech-lead`
+
+1. **Plan.** Restate the goal, decompose it, and tag each task with who does
+   it. The plan is shown before anything runs, unless you said to just go.
+   An existing plan or spec is executed as written, not re-planned.
+2. **Brief completely.** Every delegate starts with no context, so each
+   brief is self-contained (`references/briefing-template.md`).
+3. **Dispatch in parallel.** Either several Agent calls or one Workflow run.
+4. **Verify against ground truth.** Check `git status` and `git diff`, then
+   run the narrowest real check (typecheck or the affected tests) before
+   building on a result.
+5. **Synthesize and decide** in the main session.
+
+### `/tech-lead:quick`
+
+The fast lane for a small change that ships as a draft PR.
+
+- **Preflight.**
+  - It needs a GitHub remote and a clean working tree. On a dirty tree it
+    stops and asks; it never stashes or commits your work.
+  - If `.tech-lead/LOOP.md` is tracked, it works in a separate git worktree.
+- **Escalation check,** before any branch or edit. It stops and proposes
+  `/tech-lead` or `/tech-lead:panel` if the change:
+  - touches a public API, a data model or migration, security or auth, or a
+    major dependency;
+  - leaves a design choice open;
+  - would touch more than about 5 files, or needs more than about 10 reads
+    just to locate the code.
+
+  It continues only on an explicit "proceed anyway".
+- **Implement.** It creates `feature/<slug>` from the base branch, and the
+  main session writes the change itself. There is at most one Explore call,
+  and a logic change gets a test first when a test harness is nearby.
+- **Verify.**
+  - It runs typecheck, the covering tests, and lint.
+  - If the diff changes visible React Native UI and a simulator is already
+    running, it also runs one argent check on the device. It never boots a
+    device.
+  - After two failed fix attempts it stops, and nothing is committed.
+- **Ship.**
+  - It stages explicit paths only, makes one commit, pushes that branch, and
+    opens a **draft** PR.
+  - It pushes only when you typed the command or asked for a PR. Otherwise it
+    stops after the local commit and asks.
+  - It never force-pushes, pushes to the base branch, or merges.
+
+### `/tech-lead:panel`
+
+1. Frame the decision and gather facts.
+2. List 2 to 5 option ids, including the status quo.
+3. Write the brief to the scratchpad and check that it is self-contained and
+   neutral.
+4. Run the [panel](#the-panel) and present the result.
+
+### `/tech-lead:research`
+
+- **Lanes.** By default four lanes run in parallel: `primary` (the source
+  itself), `ecosystem` (real-world use), `alternatives`, and `fit` (with your
+  code). Every lane gets its own adversarial fact-checker, so a run starts 8
+  agents.
+- **Synthesis** uses only what survived verification:
+  - refuted claims never enter it;
+  - claims that could not be verified are labeled as such;
+  - hype signals are kept apart from evidence of real use.
+- **Recommendation.** Exactly one of **adopt**, **borrow ideas**, **ignore**,
+  or **build our own**. If adopting would be expensive to reverse, it offers
+  a panel.
+- **Report.** Six parts: what it is, evidence of real use, alternatives, fit
+  and recommendation, refuted or unverified claims, and sources.
 
 ## Loop mode
 
-`/tech-lead:loop [project-path]` runs ONE iteration of a backlog-executor
-loop. The loop is driven entirely by a per-project `.tech-lead/` state spine:
+`/tech-lead:loop [project-path]` runs **one** iteration of a backlog
+executor. All of its memory is on disk, in `<project>/.tech-lead/`, so the
+same iteration works when you run it by hand, from `/loop`, or from a
+scheduler.
 
-- `LOOP.md`: config;
-- `STATE.md`: the backlog;
-- `LEDGER.jsonl`: the run log;
-- `briefs/`: panel briefs.
+### Running it
 
-Because all memory is on disk, the loop runs as:
+- **By hand.** `/tech-lead:loop ~/code/my-app`. Without a path, it uses the
+  current directory.
+- **In a session.** `/loop /tech-lead:loop ~/code/my-app`. The loop paces
+  itself. The runner stops when:
+  - the backlog is dry (this includes every item waiting on you);
+  - the daily budget is spent;
+  - the loop is paused;
+  - an infrastructure incident happened.
+- **Scheduled in Claude Code.** Ask Claude to schedule the prompt
+  `Run /tech-lead:loop <abs-path>` with `CronCreate`, in a dedicated session
+  opened in the project. Jobs are session-scoped, and recurring jobs expire,
+  so re-arm them.
+- **Scheduled by the OS.** Run
+  `cd <abs-path> && claude -p 'Run /tech-lead:loop <abs-path>'` from cron or
+  launchd.
+  - **Use absolute paths.** cron and launchd run with a minimal PATH, so give
+    the absolute path to `claude` (find it with `command -v claude` in a
+    login shell), or set `PATH` in the crontab or the plist. launchd has no
+    shell, so wrap the command as `/bin/sh -c 'cd <abs-path> && …'`.
+  - **Run the first iteration interactively,** with `claude` opened in the
+    project folder, and accept the trust dialog. A headless run refuses to
+    create the spine. Also, `claude -p` applies the allow rules in the
+    project's `.claude/settings.json` only once the folder is trusted.
+    Rules in an untracked `.claude/settings.local.json` apply either way.
+  - **Allow what one firing runs.** Headless runs can't answer permission
+    prompts. The loop needs:
+    - git;
+    - your verify commands;
+    - your dependency install (for example `npm ci`). It runs in
+      `.tech-lead/worktree` on the first write-capable firing, and a denial
+      pauses the loop;
+    - `shasum` and `xargs`, for the panel's snapshot of the project;
+    - `rm`, to remove a failed task's new files;
+    - `node`, for the Codex companion at L3;
+    - file edits;
+    - the `Workflow` tool.
+- **Not supported:** cloud routines, which cannot see your local tree.
 
-- **in-session:** `/loop /tech-lead:loop` (self-paced; stops when the backlog
-  is dry);
-- **scheduled:** a durable `CronCreate` in a dedicated project session, or OS
-  cron / launchd running `cd <abs-path> && claude -p 'Run /tech-lead:loop <abs-path>'`. Cloud
-  routines are not supported;
-- **manual:** invoke it whenever you want one iteration.
+Scheduled firings never ask questions. Anything that needs you goes into
+`STATE.md`.
 
-**Safety:**
+### One iteration
 
-- **Maturity ladder.** L1 report-only → L2 mechanical-only → L3 full. Only a
-  human can set L3.
-- **Brakes.** A circuit breaker on consecutive failures, a daily iteration
-  budget (only work outcomes count), and a `paused: true` kill switch.
-- **Commits.** Commits land only on a `tech-lead-loop/<date>` branch inside a
-  dedicated worktree. They never touch your working tree and are never
-  pushed.
-- **Human gates.** High-stakes items and delegate judgment calls always stop at a
-  human decision gate (`## Needs decision`). Infra incidents park the item or
-  pause the loop; they never retry in a loop.
-- **Triage.** It runs in `shadow` mode by default.
+1. **Rehydrate.** Read `LOOP.md`, `STATE.md`, and the recent ledger. An
+   interrupted item goes back to the backlog.
+2. **Gates.** Stop if the loop is paused, if the circuit breaker has tripped
+   (too many consecutive failures), or if the daily budget is spent.
+3. **Pick.** Take an item you just decided, or the first eligible backlog
+   item.
+4. **Classify.** Label the item `mechanical`, `hard`, or `high-stakes`,
+   picking the more cautious class when unsure. The triage workflow then
+   runs as a second check.
+5. **Execute** according to the level and class (see the table below).
+6. **Verify and commit.**
+   - Every touched path must be inside `scope:`, which is the scope rail.
+   - Every `verify:` command must pass.
+   - Only then does the loop commit.
+7. **Failure path.** Retry once with the failure excerpt. After a second
+   failure, reset the task's changes and move the item to `## Blocked`.
+8. **Report.** Update `## Last run`, and append exactly one ledger entry.
 
-The first run on a project bootstraps the spine interactively. Methodology
-credit: [loop-engineering](https://github.com/cobusgreyling/loop-engineering).
+| Level | `mechanical` | `hard` | `high-stakes` |
+|---|---|---|---|
+| **L1** (default) | Would-do plan only (`report-only`) | Would-do plan only (`report-only`) | Panel, then waits for your decision |
+| **L2** | `fast-worker` executes | Parked as `waiting-level` | Panel, then waits for your decision |
+| **L3** | `fast-worker` executes | `deep-reasoner` for analysis; Codex for implementation | Panel, then waits for your decision |
 
-## What's inside
+### The spine: `.tech-lead/`
 
-- `SKILL.md`: the orchestration process, delegation rules, Workflow mode,
-  the panel protocol, and the reflex rules.
-- `agents/`: `deep-reasoner.md` (Opus, read-only), `fast-worker.md` (Sonnet;
-  stops on judgment calls), `triage.md` (Haiku, Read-only, schema-enforced via workflow).
-- `workflows/`: `panel.js`, `fanout.js`, `research.js`, `triage.js`. Registered at session start as `tech-lead:<name>`; invoke by `name`.
-- `references/`: `briefing-template.md` (the brief template),
-  `panel-protocol.md` (the panel, dispatch forms, and empty-seat and Codex
-  follow-up rules), and `decision-contracts.md` (reflex rules and JSON
-  contracts).
-- `skills/loop/references/`: `loop-templates.md`, `worktree.md` (the shared
-  worktree preparation and delegate execution contract), and
-  `bootstrap.md`.
-- `skills/`: `quick/`, `panel/`, `research/`, and `loop/`, whose
-  `references/loop-templates.md` holds the state spine formats.
+| Path | What it is |
+|---|---|
+| `LOOP.md` | Configuration (see below) |
+| `STATE.md` | Six sections: `## Now`, `## Backlog`, `## Needs decision`, `## Blocked`, `## Done`, `## Last run`. You can edit it directly to reorder, add, or veto items |
+| `LEDGER.jsonl` | One JSON line per firing: task, class, outcome, verify, commits, triage, and panel |
+| `briefs/` | Panel and Codex briefs (gitignored) |
+| `worktree/` | The loop's git worktree (gitignored) |
+| `worktree-deps.ok` | Marker for installed dependencies (gitignored) |
+
+The `LOOP.md` defaults:
+
+```yaml
+---
+pattern: backlog-executor
+level: 1                 # 1 report-only | 2 mechanical-only | 3 full execution
+paused: false            # any runner must exit immediately when true
+max_iterations_per_day: 8
+max_consecutive_failures: 2
+branch_prefix: tech-lead-loop   # commits land on <prefix>/<YYYY-MM-DD>
+triage: shadow           # off | shadow (log the Haiku second check) | gate (apply it, escalate-only)
+verify:
+  - <detected verify command, e.g. npm test>
+  - <detected verify command, e.g. npm run typecheck>
+scope:
+  - ./
+push: never              # literal; v1 has no other value
+---
+```
+
+### Safety
+
+- **Maturity ladder.** L1 is report-only, L2 is mechanical-only, and L3 is
+  full execution.
+  - After two consecutive report-only firings, the loop promotes itself once
+    from L1 to L2, and records it.
+  - Only you can set L3, by editing `level:`.
+- **Brakes.**
+  - A circuit breaker trips on consecutive failures. It pauses the loop and
+    writes an incident.
+  - A daily budget counts only work outcomes.
+  - `paused: true` is the kill switch.
+  - Infrastructure incidents park the item or pause the loop; they never
+    retry in a loop.
+- **Where commits land.**
+  - Work is committed on `<branch_prefix>/<YYYY-MM-DD>` (UTC) inside
+    `.tech-lead/worktree`. Your working tree is not touched.
+  - Loop commits carry no Co-Authored-By line. They are never pushed or
+    merged; reviewing and merging the loop branch is up to you.
+  - **Exception:** the one-time bootstrap commits the spine (`LOOP.md`,
+    `STATE.md`, `LEDGER.jsonl`) and `.gitignore` on your current branch.
+    After that the loop keeps updating those files and never commits them,
+    so they show as modified in your tree.
+- **Human gates.**
+  - High-stakes items and delegate judgment calls stop in
+    `## Needs decision`. Answer by filling in the item's `**Decision:**`
+    line.
+  - The next firing moves the item back to the backlog. The item is
+    reclassified as `hard`, or as `mechanical` only if the follow-up is fully
+    specified, and never as `high-stakes`.
+  - To resume: clear a `waiting-infra` status, or set `paused: false`.
+- **Triage.** Runs in `shadow` mode by default, which only logs the Haiku
+  second check. Switch to `gate`, which applies it (escalate-only), only
+  after you have reviewed at least 20 logged rows.
+- **Never.**
+  - Push, open PRs, or merge.
+  - Run `rm -rf`, `git reset --hard`, or anything with `--force`.
+  - Touch files outside `scope:`.
+  - Execute a high-stakes decision, or answer a delegate's judgment call
+    itself.
+  - Create the spine unattended.
+
+The first run on a project bootstraps the spine interactively:
+
+- it detects your verify commands;
+- it builds the initial backlog with you;
+- it refuses to run on a dirty index.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Workflow ... not found` | Workflows register at session start | Restart the session. Until then, the skills fall back to Agent calls, and loop triage records `no-verdict` |
+| `Failed to add marketplace: Marketplace file not found` | The ref you added has no `.claude-plugin/marketplace.json` (commits before the file existed) | Add the latest `main` with `JubaKitiashvili/tech-lead`, without pinning an older ref |
+| The marketplace add or clone fails with an auth error | The repository is private, and git cannot prompt | Run `gh auth login && gh auth setup-git`, then check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works |
+| `tech-lead is already at the latest version` | `version` in `plugin.json` was not bumped | See [Releasing a new version](#releasing-a-new-version) |
+| `/tech-lead` is unknown after a marketplace install | Another command already uses the bare name | Use `/tech-lead:tech-lead` |
+| The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
+| A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
+| The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
+
+## Releasing a new version
+
+1. Bump `version` in `.claude-plugin/plugin.json`. Leave it out of
+   `marketplace.json`, because `plugin.json` wins.
+2. Validate the marketplace file and the manifest:
+
+   ```sh
+   claude plugin validate --strict .
+   claude plugin validate --strict .claude-plugin/plugin.json
+   ```
+
+3. Commit and push. Optionally, tag the release with
+   `claude plugin tag --push`, which creates `tech-lead--v<version>` and
+   refuses to run on a dirty tree.
+4. Users update:
+   - marketplace install: `claude plugin update tech-lead@tech-lead`;
+   - clone: `git pull`.
+
+   Either way, they then restart the session.
+
+## Repository layout
+
+```
+.claude-plugin/
+  plugin.json          manifest: name, version, skill paths
+  marketplace.json     makes the repo installable as tech-lead@tech-lead
+SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
+agents/
+  fast-worker.md       Sonnet, effort medium; mechanical execution
+  deep-reasoner.md     Opus, effort xhigh, read-only; independent analysis
+  triage.md            Haiku, Read-only; loop triage via its workflow
+skills/
+  quick/               /tech-lead:quick, the draft-PR lane
+  panel/               /tech-lead:panel
+  research/            /tech-lead:research
+  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, worktree contract)
+workflows/
+  panel.js     tech-lead:panel-seats     (named apart from the /tech-lead:panel skill)
+  fanout.js    tech-lead:fanout
+  research.js  tech-lead:research-lanes  (named apart from the /tech-lead:research skill)
+  triage.js    tech-lead:triage
+references/
+  briefing-template.md   the brief every delegate gets
+  panel-protocol.md      seats, independence, empty seats, follow-ups
+  decision-contracts.md  the reflex rules and JSON contracts
+templates/
+  rules-tech-lead.md     the optional always-on routing rule
+```
+
+## Credits
+
+- The reflex layer borrows the typed-decision pattern of TypeSafe's
+  [Jev](https://docs.typesafe.ai) and the open-source
+  [Laya](https://github.com/NandhaKishorM/laya), along with their
+  ecosystem's asymmetric routing and shadow mode. It has no dependency on
+  either: a JSON-schema `agent()` call is the typed decision primitive.
+- The loop methodology draws on
+  [loop-engineering](https://github.com/cobusgreyling/loop-engineering).

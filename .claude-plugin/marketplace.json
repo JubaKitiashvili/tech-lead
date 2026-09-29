@@ -1,0 +1,6 @@
+{
+  "name": "tech-lead",
+  "description": "Model-tiered orchestration plugin for Claude Code",
+  "owner": { "name": "Juba" },
+  "plugins": [ { "name": "tech-lead", "source": "./" } ]
+}
