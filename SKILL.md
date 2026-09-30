@@ -95,9 +95,10 @@ This section was checked against Anthropic's docs on 2026-09-29, for Claude
 Code 2.1.284 on the Anthropic API.
 
 **Use aliases, not model IDs.** Agent frontmatter and `agent()` calls name
-`opus`, `sonnet`, `haiku` or `fable`. Today these resolve to Opus 5.5,
-Sonnet 5.5, Haiku 4.5 and Fable 5.1. Aliases move with new releases (Haiku
-5.5 is announced). Off the Anthropic API they can resolve to older models:
+`opus`, `sonnet` or `haiku`. Today these resolve to Opus 5.5, Sonnet 5.5 and
+Haiku 4.5. Never name `fable`, or `best`, which resolves to Fable (see "No
+Fable tier" below). Aliases move with new releases (Haiku 5.5 is
+announced). Off the Anthropic API they can resolve to older models:
 `sonnet` is Sonnet 4.6 on Claude Platform on AWS and Sonnet 4.5 on Bedrock,
 Vertex and Foundry, and `opus` is Opus 4.6 on Foundry.
 
@@ -108,7 +109,17 @@ Vertex and Foundry, and `opus` is Opus 4.6 on Foundry.
 | Opus 5.5 | "Complex work requiring careful judgment" and long-horizon agentic work. The default: "start with Claude Opus 5.5 for most workloads." |
 | Sonnet 5.5 | "Well-scoped everyday tasks". It "fits best when the task has a clear spec and a way to check the result." |
 | Haiku 4.5 | Lookups and simple sub-agent tasks. It has no effort parameter, and Claude Code drops one if you pass it. |
-| Fable 5.1 | Work where Opus 5.5 at higher effort still falls short. |
+
+**No Fable tier.** The owner removed Fable 5.1 on 2026-09-25, and a
+verified re-check on 2026-09-30 found no role for it in this plugin.
+Anthropic's coding and reasoning measurements, and most independent ones
+(Artificial Analysis, CursorBench, Vals, METR), put Opus 5.5 at or above
+Fable 5.1 at the same effort, at 2.5x lower token price; on a Max plan
+Fable also draws weekly limits faster. Two small tests favoured Fable
+(Endor Labs secure coding; a 15-run max-effort test by The New Stack), so
+re-check when a new Fable model ships. Anthropic's docs still suggest
+Fable when Opus at `xhigh` or `max` falls short; this plugin takes the
+step-4 route below instead.
 
 **Who writes the code.** Anthropic's sources disagree here. The Opus 5.5
 cost post (Sep 25, written before Sonnet 5.5) says to keep code edits, even
@@ -128,8 +139,10 @@ both default to `medium`, and Opus 5.5 at `medium` matches or beats Opus 5 at
 2. `high`: work where verification matters or edge cases are likely.
 3. `xhigh`: long-running agentic work. "Reserve `xhigh` and `max` for work
    where you've measured a quality gain."
-4. If Opus 5.5 at `xhigh` hits the same problem twice, suggest that the user
-   switch to Fable 5.1 (`/model fable`).
+4. If Opus 5.5 at `xhigh` hits the same problem twice, change the approach
+   (re-plan, split the problem, find the missing fact). Then get an
+   independent look from the Codex peer or a fresh-context `deep-reasoner`.
+   `max` on Opus 5.5 is the last effort step.
 
 `max` lasts only for the current session in Claude Code, and the docs call it
 "prone to overthinking". More effort catches missed edge cases; it does not

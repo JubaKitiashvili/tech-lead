@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.3.3.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.3.4.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -286,11 +286,14 @@ Anthropic's documentation on 2026-09-29. In short:
   default to `medium`. Go to `high` when verification matters, and to
   `xhigh` for long agentic work. Anthropic says to reserve `xhigh` and `max`
   for measured gains, and the Claude Code docs call `max` "prone to
-  overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, switch
-  to Fable 5.1 (`/model fable`).
+  overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, change
+  the approach, then bring in the Codex peer or a fresh-context
+  deep-reasoner; `max` is the last effort step.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
   `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
-  announced, for example.
+  announced, for example. The plugin never names `fable`, or `best`, which
+  resolves to Fable: a verified re-check on 2026-09-30 found no role for
+  Fable 5.1 here (see "No Fable tier" in SKILL.md).
 
 ### Workflow mode
 
