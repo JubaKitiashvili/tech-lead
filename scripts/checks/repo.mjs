@@ -141,6 +141,18 @@ export async function checkRepo(ctx, r) {
     assert.deepEqual(bad, [])
   })
 
+  await r.check('models: no agent or workflow names fable or best', () => {
+    const bad = []
+    for (const f of agentFiles) {
+      const model = frontmatter(rd(`agents/${f}`)).model || ''
+      if (/^(fable|best)$/.test(model)) bad.push(`agents/${f}: model ${model}`)
+    }
+    for (const f of Object.keys(ctx.wf)) {
+      for (const m of rd(`workflows/${f}`).matchAll(/models?\s*:\s*['"](fable|best)['"]/g)) bad.push(`workflows/${f}: ${m[0]}`)
+    }
+    assert.deepEqual(bad, [])
+  })
+
   const installed = path.join(os.homedir(), '.claude/rules/tech-lead.md')
   if (fs.existsSync(installed) && fs.readFileSync(installed, 'utf8') !== rd('templates/rules-tech-lead.md')) {
     r.warn(`${installed} differs from templates/rules-tech-lead.md: re-copy it`)

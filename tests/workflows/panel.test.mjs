@@ -50,3 +50,7 @@ test('rejects bad args', async () => {
   await assert.rejects(P.run({ briefPath: '/b.md', options: [options[0], options[0]] }))
   await assert.rejects(P.run({ briefPath: '/b.md', options, seatEffort: 'ultra' }))
 })
+
+test('panel rejects a non-alias seat model such as fable', async () => {
+  await assert.rejects(P.run({ briefPath: '/b.md', options, seatModel: 'fable' }), /seatModel must be opus or sonnet/)
+})
