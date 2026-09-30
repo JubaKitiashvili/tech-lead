@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
+import { stringLiterals } from '../lib/js-scan.mjs'
 
 export const frontmatter = md => {
   const m = md.match(/^---\n([\s\S]*?)\n---/)
@@ -51,8 +52,8 @@ export async function checkRepo(ctx, r) {
   await r.check('names: every Workflow({name: "tech-lead:X"}) in docs is a registered workflow', () => {
     const bad = []
     for (const f of mdFiles) {
-      for (const m of rd(f).matchAll(/Workflow\(\{\s*name:\s*"tech-lead:([a-z-]+)"/g)) {
-        if (!wfNames.includes(m[1])) bad.push(`${f}: tech-lead:${m[1]}`)
+      for (const m of rd(f).matchAll(/Workflow\(\{\s*name:\s*(['"])tech-lead:([a-z-]+)\1/g)) {
+        if (!wfNames.includes(m[2])) bad.push(`${f}: tech-lead:${m[2]}`)
       }
     }
     assert.deepEqual(bad, [])
@@ -62,41 +63,42 @@ export async function checkRepo(ctx, r) {
     const bad = []
     for (const f of mdFiles) {
       const text = rd(f)
-      for (const m of text.matchAll(/Workflow\(\{\s*name:\s*"tech-lead:([a-z-]+)",\s*args:\s*\{/g)) {
-        const src = wfSourceByName[m[1]]
+      for (const m of text.matchAll(/Workflow\(\{\s*name:\s*(['"])tech-lead:([a-z-]+)\1,\s*args:\s*\{/g)) {
+        const name = m[2], src = wfSourceByName[name]
         if (!src) continue
-        let depth = 1, tok = ''
+        // Keys of the args object at depth 1: an identifier before `:`, a shorthand name,
+        // or a quoted key. Values, nested objects and "…" or <…> placeholders are skipped.
+        let depth = 1, tok = '', expectKey = true, open = true
         const keys = []
+        const flush = () => { if (tok && expectKey) keys.push(tok); tok = '' }
         for (let i = m.index + m[0].length; i < text.length && depth > 0; i++) {
           const ch = text[i]
+          if (depth === 1 && (/[A-Za-z_]/.test(ch) || (tok && /\d/.test(ch)))) { tok += ch; continue }
+          if (depth === 1) flush()
           if ('{['.includes(ch)) { depth++; continue }
           if ('}]'.includes(ch)) { depth--; continue }
           if (depth !== 1) continue
-          if (/[A-Za-z_]/.test(ch)) tok += ch
-          else { if (tok && /[:,}\s]/.test(ch)) keys.push(tok); tok = '' }
-          if (ch === '"' || ch === '<') i = text.indexOf(ch === '"' ? '"' : '>', i + 1)
+          if (ch === ':') expectKey = false
+          else if (ch === ',') expectKey = true
+          else if (ch === '"' || ch === '<') {
+            const close = text.indexOf(ch === '"' ? '"' : '>', i + 1)
+            if (close === -1) { open = false; break }
+            if (ch === '"' && expectKey && /^\s*:/.test(text.slice(close + 1))) keys.push(text.slice(i + 1, close))
+            i = close
+          }
         }
-        for (const k of new Set(keys)) if (!new RegExp(`A\\.${k}\\b`).test(src)) bad.push(`${f}: tech-lead:${m[1]} args.${k} is never read`)
+        if (!open || depth > 0) { bad.push(`${f}: tech-lead:${name} args block is not terminated`); continue }
+        for (const k of new Set(keys)) if (!new RegExp(`A\\.${k}\\b`).test(src)) bad.push(`${f}: tech-lead:${name} args.${k} is never read`)
       }
     }
     assert.deepEqual(bad, [])
   })
 
-  if (ctx.wf['research.js']) {
-    await r.check('fields: research SKILL.md §3 names only fields research.js returns', () => {
-      const section = rd('skills/research/SKILL.md').match(/## 3 · Synthesize([\s\S]*?)## 4/)[1]
-      const src = rd('workflows/research.js')
-      const returned = src.slice(src.indexOf('return {'))
-      const bad = [...section.matchAll(/`([a-z_]+)`/g)].map(x => x[1]).filter(k => !new RegExp(`\\b${k}\\b`).test(returned))
-      assert.deepEqual(bad, [])
-    })
-  }
-
   await r.check('names: every agentType in workflows is a plugin agent or an external agent', () => {
     for (const f of Object.keys(ctx.wf)) {
-      for (const m of rd(`workflows/${f}`).matchAll(/agentType: '([^']+)'/g)) {
-        const [ns, name] = m[1].split(':')
-        if (ns === 'tech-lead') assert.ok(agentNames.includes(name), `${f}: ${m[1]}`)
+      for (const m of rd(`workflows/${f}`).matchAll(/agentType:\s*(['"])([^'"]+)\1/g)) {
+        const [ns, name] = m[2].split(':')
+        if (ns === 'tech-lead') assert.ok(agentNames.includes(name), `${f}: ${m[2]}`)
       }
     }
   })
@@ -142,13 +144,16 @@ export async function checkRepo(ctx, r) {
   })
 
   await r.check('models: no agent or workflow names fable or best', () => {
+    // A string that is a Fable model name or id, or the `best` alias (which resolves to Fable),
+    // anywhere in workflow code: a default, an allow-list, a registry entry, a model field.
+    const fableName = s => /^(best|(claude-)?fable[-\w.]*)$/i.test(s.trim())
     const bad = []
     for (const f of agentFiles) {
-      const model = frontmatter(rd(`agents/${f}`)).model || ''
-      if (/^(fable|best)$/.test(model)) bad.push(`agents/${f}: model ${model}`)
+      const model = (frontmatter(rd(`agents/${f}`)).model || '').replace(/^['"]|['"]$/g, '')
+      if (fableName(model)) bad.push(`agents/${f}: model ${model}`)
     }
     for (const f of Object.keys(ctx.wf)) {
-      for (const m of rd(`workflows/${f}`).matchAll(/models?\s*:\s*['"](fable|best)['"]/g)) bad.push(`workflows/${f}: ${m[0]}`)
+      for (const lit of stringLiterals(rd(`workflows/${f}`))) if (fableName(lit)) bad.push(`workflows/${f}: '${lit}'`)
     }
     assert.deepEqual(bad, [])
   })

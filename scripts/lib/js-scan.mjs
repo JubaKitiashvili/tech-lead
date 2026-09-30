@@ -45,3 +45,24 @@ export function skipString(src, start) {
   }
   throw new Error(`matchBrace: unterminated string starting at ${start}`)
 }
+
+// The contents of every string and template literal in `src` that is not inside a comment.
+// A template literal's `${…}` text is part of its content.
+export function stringLiterals(src) {
+  const out = []
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (c === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i)
+      i = nl === -1 ? src.length : nl
+    } else if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      i = end === -1 ? src.length : end + 1
+    } else if (c === '"' || c === "'" || c === '`') {
+      const end = skipString(src, i)
+      out.push(src.slice(i + 1, end))
+      i = end
+    }
+  }
+  return out
+}

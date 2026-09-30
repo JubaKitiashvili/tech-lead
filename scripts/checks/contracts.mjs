@@ -1,8 +1,11 @@
 // scripts/checks/contracts.mjs
 // "Keep the two in sync" pairs: JSON contracts in references/decision-contracts.md
-// versus the schemas in the workflows, and enum lists the docs restate.
+// versus the schemas in the workflows, enum lists the docs restate, and what the
+// probes saw the workflows dispatch and return. Every check is keyed on the workflow
+// file being present, never on what a probe happened to capture, so a workflow that
+// stops passing a schema fails instead of dropping its check.
 import assert from 'node:assert/strict'
-import { probeWorkflows } from '../lib/workflow-probes.mjs'
+import { PROBES, emptyProbeResult } from '../lib/workflow-probes.mjs'
 
 // Shape of a documented JSON example versus a JSON schema: the same keys at every
 // level, and the same enum values where the doc writes `a|b|c`.
@@ -48,43 +51,55 @@ const pipeEnum = (text, re) => {
 }
 
 export async function checkContracts(ctx, r) {
-  const { schemas, observed } = await probeWorkflows(ctx.wf)
+  const got = emptyProbeResult()
+  for (const [file, probe] of Object.entries(PROBES)) {
+    if (ctx.wf[file]) await r.check(`probe workflows/${file}`, () => probe(ctx.wf[file], got))
+  }
+  const { schemas, observed } = got
   const contracts = ctx.rd('references/decision-contracts.md')
   const templates = ctx.rd('skills/loop/references/loop-templates.md')
-  const same = (name, got, want) => r.check(name, () => assert.deepEqual([...new Set(got)].sort(), [...want].sort()))
+  const same = (name, found, want) => r.check(name, () => assert.deepEqual([...new Set(found)].sort(), [...want].sort()))
+  const schema = (key, what) => {
+    assert.ok(schemas[key], what)
+    return schemas[key]
+  }
 
-  if (schemas.panel) {
+  if (ctx.wf['panel.js']) {
     await r.check('contract: Panel verdict == panel.js VERDICT', () =>
-      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Panel verdict'), schemas.panel), []))
+      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Panel verdict'), schema('panel', 'panel.js passed no schema to seat A')), []))
+    await same('enum: panel agreement, decision-contracts.md', pipeEnum(contracts, /`agreement` ∈ ([^,\n]+),/), observed.panelAgreement)
+    await same('enum: panel agreement, loop-templates.md Needs-decision entry', pipeEnum(templates, /\*\*Agreement:\*\* <([^>]+)>/), observed.panelAgreement)
+    await same('enum: panel agreement, loop-templates.md ledger', pipeEnum(templates, /"panel": \{[^}]*"agreement": "<([^>]+)>"/), observed.panelAgreement)
+    await same('enum: panel agreement, skills/panel/SKILL.md present shape', pipeEnum(ctx.rd('skills/panel/SKILL.md'), /\*\*Agreement:\*\* <([^>]+)>/), observed.panelAgreement)
   }
-  if (schemas.execution) {
+  if (ctx.wf['fanout.js']) {
     await r.check('contract: Execution report == fanout.js REPORT', () =>
-      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Execution report'), schemas.execution), []))
-  }
-  if (schemas.triage) {
-    await r.check('contract: Triage verdict == triage.js TRIAGE', () =>
-      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Triage verdict'), schemas.triage), []))
-    await r.check('contract: agents/triage.md fallback JSON == triage.js TRIAGE', () => {
-      const line = ctx.rd('agents/triage.md').trim().split('\n').pop()
-      assert.deepEqual(shapeDiff(JSON.parse(line), schemas.triage), [])
-    })
-  }
-  if (observed.fanoutStatus.size) {
+      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Execution report'), schema('execution', 'fanout.js passed no schema to its workers')), []))
     await same('enum: fanout statuses in decision-contracts table',
       tableTicks(contracts, '| Condition | `status` |').filter(x => observed.fanoutStatus.has(x) || /^[a-z]+(-[a-z]+)+$|^ok$/.test(x)),
       observed.fanoutStatus)
     await same('enum: fanout statuses in SKILL.md "Handling fanout.js results"',
       tableTicks(ctx.rd('SKILL.md'), '| `status` | What you do |'), observed.fanoutStatus)
   }
-  if (observed.panelAgreement.size) {
-    await same('enum: panel agreement, decision-contracts.md', pipeEnum(contracts, /`agreement` ∈ ([^,\n]+),/), observed.panelAgreement)
-    await same('enum: panel agreement, loop-templates.md Needs-decision entry', pipeEnum(templates, /\*\*Agreement:\*\* <([^>]+)>/), observed.panelAgreement)
-    await same('enum: panel agreement, loop-templates.md ledger', pipeEnum(templates, /"panel": \{[^}]*"agreement": "<([^>]+)>"/), observed.panelAgreement)
-    await same('enum: panel agreement, skills/panel/SKILL.md present shape', pipeEnum(ctx.rd('skills/panel/SKILL.md'), /\*\*Agreement:\*\* <([^>]+)>/), observed.panelAgreement)
-  }
-  if (observed.triageAgreement.size) {
+  if (ctx.wf['triage.js']) {
+    await r.check('contract: Triage verdict == triage.js TRIAGE', () =>
+      assert.deepEqual(shapeDiff(jsonAfter(contracts, '### Triage verdict'), schema('triage', 'triage.js passed no schema to the triage agent')), []))
+    await r.check('contract: agents/triage.md fallback JSON == triage.js TRIAGE', () => {
+      const line = ctx.rd('agents/triage.md').trim().split('\n').pop()
+      assert.deepEqual(shapeDiff(JSON.parse(line), schema('triage', 'triage.js passed no schema to the triage agent')), [])
+    })
     await same('enum: triage agreement, loop-templates.md ledger', pipeEnum(templates, /"agreement": "<(agree\|escalated[^>]+)>"/), observed.triageAgreement)
   }
+  if (ctx.wf['research.js']) {
+    await r.check('fields: research SKILL.md §3 names only fields research.js returns', () => {
+      const returned = got.returned.research || new Set()
+      const section = ctx.rd('skills/research/SKILL.md').match(/## 3 · Synthesize([\s\S]*?)## 4/)[1]
+      assert.deepEqual([...section.matchAll(/`([a-z_]+)`/g)].map(x => x[1]).filter(k => !returned.has(k)), [])
+    })
+  }
+  await r.check('models: no probed agent() call dispatches fable or best', () => {
+    assert.deepEqual([...got.models].filter(m => /fable|^best$/i.test(m)), [])
+  })
   const budget = s => s.match(/whose\s+outcome is ([^.]+)\./)[1].replace(/\n/g, ' ')
   await r.check('dup: daily-budget outcomes, loop SKILL.md §2 == loop-templates.md', () => {
     assert.deepEqual(ticks(budget(ctx.rd('skills/loop/SKILL.md'))).sort(), ticks(budget(templates)).sort())

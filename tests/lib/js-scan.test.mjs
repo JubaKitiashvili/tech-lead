@@ -1,7 +1,7 @@
 // tests/lib/js-scan.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { matchBrace } from '../../scripts/lib/js-scan.mjs'
+import { matchBrace, stringLiterals } from '../../scripts/lib/js-scan.mjs'
 
 test('matches a flat object', () => {
   const s = 'x = { a: 1 } rest'
@@ -34,4 +34,9 @@ test('throws when the brace never closes', () => {
 
 test('throws when not pointed at a brace', () => {
   assert.throws(() => matchBrace('x', 0), /expected/)
+})
+
+test('stringLiterals lists string contents outside comments', () => {
+  const src = "const a = 'x' // 'not me'\n/* \"nor me\" */ f(\"y\", `z ${ 'w' }`)"
+  assert.deepEqual(stringLiterals(src), ['x', 'y', "z ${ 'w' }"])
 })
