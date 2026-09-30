@@ -2,9 +2,9 @@
 // Loads a Workflow script (workflows/*.js) into a stub of Claude Code's Workflow
 // runtime, so checks and tests can compile it and run it with scripted agent() results.
 import fs from 'node:fs'
+import vm from 'node:vm'
 import { matchBrace, skipString } from './js-scan.mjs'
 
-const AsyncFunction = (async () => {}).constructor
 const META_RE = /^export const meta = /m
 
 // The literal with comments removed and every '…' or "…" string emptied to "".
@@ -93,8 +93,7 @@ export function parseMeta(src, file = '<workflow>') {
 
 export function loadWorkflowSource(src, file = '<workflow>') {
   const { meta, metaStart, litStart } = parseMeta(src, file)
-  // Strict, so an implicit global throws and `this` is not the host's global object.
-  const body = '"use strict";\n' + src.slice(0, metaStart) + 'const meta = ' + src.slice(litStart)
+  const body = src.slice(0, metaStart) + 'const meta = ' + src.slice(litStart)
   const unavailable = () => {
     throw new Error('Date.now(), Math.random() and new Date() are unavailable in Workflow scripts')
   }
@@ -107,7 +106,11 @@ export function loadWorkflowSource(src, file = '<workflow>') {
   }
   const StubMath = Object.create(Math)
   StubMath.random = unavailable
-  const fn = new AsyncFunction('args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', 'Date', 'Math', ...HOST_APIS, body)
+  // Strict, so an implicit global throws and `this` is not the host's global object. Compiled
+  // through vm without an import callback, so a dynamic import() rejects as it would live.
+  const fn = vm.compileFunction(`"use strict"; return (async () => {\n${body}\n})()`,
+    ['args', 'agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', 'Date', 'Math', ...HOST_APIS],
+    { filename: file, lineOffset: -1 })
   const hosts = HOST_APIS.map(hostStub)
 
   async function run(args, responder = () => null) {

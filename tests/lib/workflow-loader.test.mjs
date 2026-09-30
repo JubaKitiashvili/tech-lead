@@ -110,3 +110,8 @@ test('agent() rejects a schema the live runtime refuses', async () => {
     await assert.rejects(loadWorkflowSource(body(s)).run({}, () => 7), /schema/, s)
   }
 })
+
+test('dynamic import() fails in a workflow body', async () => {
+  const w = loadWorkflowSource(wf(META, "const fs = await import('node:fs')\nreturn typeof fs.readFileSync"))
+  await assert.rejects(w.run({}), /dynamic import/)
+})
