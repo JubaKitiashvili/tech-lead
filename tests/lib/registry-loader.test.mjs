@@ -46,3 +46,9 @@ test('evaluates a literal with injected helpers and regex literals', () => {
 test('reports a syntax error in the literal', () => {
   assert.throws(() => evaluateLiteral('{ a: }'), SyntaxError)
 })
+
+test('evaluates a literal that ends in a line comment, with or without a semicolon', () => {
+  assert.deepEqual(evaluateLiteral('{ a: 1 } // end registry'), { a: 1 })
+  assert.deepEqual(evaluateLiteral('{ a: 1 }; // end registry'), { a: 1 })
+  assert.deepEqual(evaluateLiteral("{\n  a: 'skip-firing', // closed set\n}"), { a: 'skip-firing' })
+})

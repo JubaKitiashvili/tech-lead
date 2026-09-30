@@ -26,6 +26,8 @@ export function extractBlock(src, name, { required = false } = {}) {
 
 export function evaluateLiteral(text, scope = {}) {
   const names = Object.keys(scope)
-  const expr = text.replace(/;\s*$/, '')
-  return new Function(...names, `"use strict"; return (${expr})`)(...names.map(n => scope[n]))
+  // Drop one trailing `;` (and a line comment after it); the newlines keep a final
+  // `// comment` from swallowing the closing parenthesis.
+  const expr = text.replace(/;\s*(\/\/[^\n]*)?\s*$/, '')
+  return new Function(...names, `"use strict"; return (\n${expr}\n)`)(...names.map(n => scope[n]))
 }
