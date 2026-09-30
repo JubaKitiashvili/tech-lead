@@ -43,3 +43,23 @@ test('untrusted text cannot close the DATA fence; the triage agent is used', asy
   assert.equal(calls[0].prompt.split('<<<DATA').length, 2)
   assert.equal(calls[0].opts.agentType, 'tech-lead:triage')
 })
+
+for (const signal of ['public_api', 'data_model_or_migration', 'security_or_auth', 'major_dependency']) {
+  test(`${signal} alone escalates a mechanical verdict to high-stakes`, async () => {
+    const r = await tri('mechanical', { class: 'mechanical', signals: sig({ [signal]: true }), reason: 'r' })
+    assert.equal(r.derived, 'high-stakes'); assert.equal(r.checker, 'high-stakes')
+  })
+}
+
+test('an unresolved design choice alone derives hard; the checker keeps the higher class', async () => {
+  assert.equal((await tri('mechanical', { class: 'mechanical', signals: sig({ unresolved_design_choice: true }), reason: 'r' })).derived, 'hard')
+  assert.equal((await tri('high-stakes', { class: 'high-stakes', signals: sig(), reason: 'r' })).checker, 'high-stakes')
+})
+
+test('the triage schema requires every signal, so none can be omitted to avoid escalation', async () => {
+  const { calls } = await T.run({ item: { title: 't', notes: 'n' }, orchestratorClass: 'hard' }, () => null)
+  const schema = calls[0].opts.schema
+  assert.deepEqual([...schema.properties.signals.required].sort(),
+    ['data_model_or_migration', 'major_dependency', 'public_api', 'security_or_auth', 'spec_complete', 'unresolved_design_choice'])
+  assert.deepEqual([...schema.required].sort(), ['class', 'reason', 'signals'])
+})

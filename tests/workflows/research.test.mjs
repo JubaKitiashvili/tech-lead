@@ -19,3 +19,7 @@ test('a lane without a report or a verdict is listed as unverified', async () =>
 test('rejects a relative scratch directory', async () => {
   await assert.rejects(R.run({ question: 'q', scratch: 'rel' }))
 })
+
+test('rejects a model outside opus, sonnet and haiku, such as fable', async () => {
+  await assert.rejects(R.run({ question: 'q', scratch: '/tmp/s', model: 'fable' }), /args\.model must be opus, sonnet or haiku/)
+})
