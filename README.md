@@ -628,17 +628,25 @@ The first run on a project bootstraps the spine interactively:
 
 1. Bump `version` in `.claude-plugin/plugin.json`. Leave it out of
    `marketplace.json`, because `plugin.json` wins.
-2. Validate the marketplace file and the manifest:
+2. Run the repository checks and the unit tests; both must pass:
+
+   ```sh
+   node scripts/check.mjs
+   node --test "tests/**/*.test.mjs"
+   ```
+
+   Quote the glob: `node --test tests/` does not run the suite on Node 22.
+3. Validate the marketplace file and the manifest:
 
    ```sh
    claude plugin validate --strict .
    claude plugin validate --strict .claude-plugin/plugin.json
    ```
 
-3. Commit and push. Optionally, tag the release with
+4. Commit and push. Optionally, tag the release with
    `claude plugin tag --push`, which creates `tech-lead--v<version>` and
    refuses to run on a dirty tree.
-4. Users update:
+5. Users update:
    - marketplace install: `claude plugin update tech-lead@tech-lead`;
    - clone: `git pull`.
 
@@ -671,6 +679,11 @@ references/
   decision-contracts.md  the reflex rules and JSON contracts
 templates/
   rules-tech-lead.md     the optional always-on routing rule
+scripts/
+  check.mjs              repository checks (node scripts/check.mjs)
+  lib/, checks/          loader, stub Workflow runtime, and the check modules
+tests/                   unit tests (node --test "tests/**/*.test.mjs")
+docs/superpowers/        design specs and implementation plans
 ```
 
 ## Credits
