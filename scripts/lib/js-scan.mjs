@@ -33,7 +33,7 @@ export function matchBrace(src, open) {
 }
 
 // Returns the index of the closing quote of the string that starts at `start`.
-function skipString(src, start) {
+export function skipString(src, start) {
   const quote = src[start]
   for (let i = start + 1; i < src.length; i++) {
     if (src[i] === '\\') { i++; continue }
