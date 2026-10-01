@@ -146,6 +146,12 @@ test('quiesce is not quiet when a worker survives its cancel, the jobs cannot be
   assert.match(noLib.out.detail, /broker/)
 })
 
+test('quiesce is quiet when no Codex companion is installed: worktree prep must not pause owners without Codex', t => {
+  const r = run(t, { companion: '/nonexistent/codex-companion.mjs' }, 'quiesce', ...W)
+  assert.equal(r.out.quiet, true)
+  assert.match(r.out.detail, /not installed/)
+})
+
 test('quiesce with nothing running is quiet, and reports a job that finished during the call', t => {
   const r = run(t, { jobId: 'j', status: 'completed', active: [] }, 'quiesce', ...W, '--job', 'j')
   assert.deepEqual([r.out.quiet, r.out.final], [true, 'completed'])

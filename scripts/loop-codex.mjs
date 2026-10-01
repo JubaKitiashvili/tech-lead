@@ -120,14 +120,15 @@ async function lifecycle(companionPath) {
   return { ...broker, terminateProcessTree: proc.terminateProcessTree }
 }
 
-// No Codex process can still write into <W> once (1) every job the companion lists as
+// No Codex process can still write into <W> once (0) no companion is installed, or (1) every job the companion lists as
 // active there, in any Claude session, has been cancelled, (2) <W>'s own broker, which
 // hosts the app-server running the turns, has been shut down, and (3) the broker's and
 // those jobs' worker processes are gone. Status words alone prove nothing: the companion
 // marks a job cancelled even when the interrupt failed, and failed on a dropped connection.
 export async function quiesce(cwd, jobId) {
   const companionPath = locateCompanion()
-  if (!companionPath) return { quiet: false, final: null, detail: 'Codex companion not found' }
+  // No companion, no companion-run Codex process: worktree prep must not pause owners without Codex.
+  if (!companionPath) return { quiet: true, final: null, detail: 'Codex companion not installed' }
   const listEnv = { ...process.env }
   delete listEnv[SESSION_ENV] // the companion hides other sessions' jobs from a plain listing
   let jobs
