@@ -110,4 +110,14 @@ export async function checkContracts(ctx, r) {
     const bootPaths = [...section.matchAll(/`(\.tech-lead\/[^`]+)`/g)].map(m => m[1])
     assert.deepEqual(bootPaths.sort(), tpl.sort())
   })
+  await r.check('dup: README LOOP.md defaults == loop-templates.md LOOP.md template', () => {
+    const yaml = (md, heading) => {
+      const i = md.indexOf(heading)
+      if (i < 0) throw new Error(`heading not found: ${heading}`)
+      const m = md.slice(i).match(/`{3}yaml\n([\s\S]*?)`{3}/)
+      if (!m) throw new Error(`no yaml block after: ${heading}`)
+      return m[1]
+    }
+    assert.equal(yaml(ctx.rd('README.md'), 'The `LOOP.md` defaults:'), yaml(templates, '## LOOP.md template'))
+  })
 }
