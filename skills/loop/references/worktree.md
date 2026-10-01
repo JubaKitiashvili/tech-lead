@@ -20,15 +20,28 @@ never a bare `git` or a relative path.
 
    Leave `<base>` out when `LOOP.md` has no `base:` key; the script then uses
    the remote's default branch (`origin/HEAD`).
-   - It prints `startPoint`: the newest dated loop branch not yet merged
-     into the base, or else the base itself. The branch checked out in `<P>`
-     plays no part.
+   - It prints `startPoint` as a full ref: the newest dated loop branch
+     that still holds work the base lacks, or else the base itself. A loop
+     branch whose work the base already holds (after a squash merge, say)
+     counts as merged. The branch checked out in `<P>` plays no part.
    - When `chainedFrom` is set, note "chained from <chainedFrom>" in
      `## Last run`.
-   - Exit 2 means there is no usable base. That is an infra incident,
-     handled the same way as a dependency failure in step 4; put the printed
-     `error` in the incident.
+   - Exit 2 means there is no usable base. Write the printed `error` as an
+     incident in `## Last run`, set `paused: true` in `LOOP.md`, return the
+     item to `## Backlog` with its `status:` unchanged, record outcome
+     `skipped`, note "no base", and stop the runner.
 2. **Clean the tracked tree.** This only applies when `<W>` exists.
+   - **Quiesce first.** A Codex turn started by an interrupted firing may
+     still be writing into `<W>`:
+
+     ```
+     node <T>/scripts/loop-codex.mjs quiesce --cwd <W>
+     ```
+
+     On `"quiet": false`, touch nothing in `<W>`. Write an incident with its
+     `detail` and the unpause check from loop §5 step 5, set `paused: true`,
+     return the item to `## Backlog` with its `status:` unchanged, record
+     outcome `skipped`, note "codex not quiet", and stop the runner.
    - Check: `git -C <W> diff --quiet && git -C <W> diff --cached --quiet`.
    - If the check fails, an earlier firing was interrupted. Reset:
      `git -C <W> restore --staged .` then `git -C <W> checkout -- .`.

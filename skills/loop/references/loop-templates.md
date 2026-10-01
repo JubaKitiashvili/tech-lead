@@ -158,8 +158,9 @@ Append one JSON object per line, every firing, without exception:
   outcome is `done`, `failed`, `blocked`, `flagged`, `report-only` or
   `needs-decision`. `halted` and `skipped` do not count.
 - **Infra incidents** never retry in a loop. A missing Codex parks the item
-  (`waiting-infra`). A dependency-install failure, or a Codex turn that
-  cannot be confirmed stopped, sets `paused: true`.
+  (`waiting-infra`). A dependency-install failure, a missing base, or a
+  worktree that `loop-codex.mjs quiesce` cannot show quiet sets
+  `paused: true`.
 
 ## Project .gitignore addition (bootstrap)
 

@@ -499,8 +499,8 @@ scheduler.
       pauses the loop;
     - `shasum` and `xargs`, for the panel's snapshot of the project;
     - `rm`, to remove a failed task's new files;
-    - `node`, for the loop's helper scripts in the plugin's `scripts/` and
-      for the Codex companion at L3;
+    - `node`, at every level, for the loop's helper scripts in the plugin's
+      `scripts/`, and for the Codex companion at L3;
     - file edits;
     - the `Workflow` tool.
 - **Not supported:** cloud routines, which cannot see your local tree.
@@ -631,7 +631,7 @@ The first run on a project bootstraps the spine interactively:
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
 | A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
 | The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
-| The loop paused with "codex turn still live" | An L3 Codex job ran past `codex_timeout_min:` and its turn could not be confirmed stopped | Run `/codex:status`; once no job is running, set `paused: false` |
+| The loop paused with "codex not quiet" | A Codex process may still be writing into `.tech-lead/worktree` (after a timeout, a failure, or an interrupted firing) | Run `node <plugin>/scripts/loop-codex.mjs quiesce --cwd <project>/.tech-lead/worktree` (the plugin folder this skill runs from); once it prints `"quiet": true`, set `paused: false`. `/codex:status` cannot see the worktree's jobs |
 
 ## Releasing a new version
 
