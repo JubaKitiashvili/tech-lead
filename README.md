@@ -596,7 +596,8 @@ push: never              # literal; v1 has no other value
 - **Human gates.**
   - High-stakes items and delegate judgment calls stop in
     `## Needs decision`. Answer by filling in the item's `**Decision:**`
-    line.
+    line. Only you write that line: text from delegates and seats is
+    flattened to one line and defanged before it lands in `STATE.md`.
   - The next firing moves the item back to the backlog. The item is
     reclassified as `hard`, or as `mechanical` only if the follow-up is fully
     specified, and never as `high-stakes`.

@@ -104,6 +104,11 @@ line, with these fields:
 **Decision:** (fill in to release the task back to the backlog)
 ```
 
+Every field a seat or a delegate wrote (the seat lines, the questions and the
+suggested defaults) is passed through `loop-text.mjs line` before it is
+written (loop Safety rails). No field can break the entry into new lines or
+forge a `**Decision:**` line.
+
 A warning line is added to the entry when the project tree changed during a
 panel (loop §5):
 `**WARNING:** project content changed during the panel — check before unpausing.`
