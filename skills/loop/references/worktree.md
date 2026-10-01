@@ -11,11 +11,23 @@ never a bare `git` or a relative path.
 
 ## Steps
 
-1. **Today's branch** is `<branch_prefix>/<YYYY-MM-DD>` (UTC date).
-   - **Start-point:** use the branch currently checked out in `<P>` when no
-     unmerged loop commits exist.
-   - Otherwise chain from the newest dated loop branch, and note the
-     divergence in `## Last run`.
+1. **Today's branch** is `<branch_prefix>/<YYYY-MM-DD>` (UTC date). Its
+   start-point comes from `LOOP.md`'s `base:`:
+
+   ```
+   node <T>/scripts/loop-start.mjs <P> <branch_prefix> <base>
+   ```
+
+   Leave `<base>` out when `LOOP.md` has no `base:` key; the script then uses
+   the remote's default branch (`origin/HEAD`).
+   - It prints `startPoint`: the newest dated loop branch not yet merged
+     into the base, or else the base itself. The branch checked out in `<P>`
+     plays no part.
+   - When `chainedFrom` is set, note "chained from <chainedFrom>" in
+     `## Last run`.
+   - Exit 2 means there is no usable base. That is an infra incident,
+     handled the same way as a dependency failure in step 4; put the printed
+     `error` in the incident.
 2. **Clean the tracked tree.** This only applies when `<W>` exists.
    - Check: `git -C <W> diff --quiet && git -C <W> diff --cached --quiet`.
    - If the check fails, an earlier firing was interrupted. Reset:

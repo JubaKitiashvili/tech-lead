@@ -19,6 +19,11 @@
    bootstrap commit must contain only the spine.
 2. **Create the spine files** from `loop-templates.md`:
    `<P>/.tech-lead/LOOP.md`, `STATE.md`, and an empty `LEDGER.jsonl`.
+   - Set `base:` to the remote's default branch
+     (`git -C <P> symbolic-ref --quiet --short refs/remotes/origin/HEAD`,
+     without the `origin/` part). With no remote default, propose the branch
+     bootstrap runs on. Confirm it with the user; on a detached HEAD with no
+     remote default, ask which branch to use.
 3. **Detect `verify:` candidates** from package.json scripts or the Makefile,
    and confirm them with the user.
 4. **Build the initial `## Backlog`** with the user, from the project's

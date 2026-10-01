@@ -555,6 +555,7 @@ paused: false            # any runner must exit immediately when true
 max_iterations_per_day: 8
 max_consecutive_failures: 2
 branch_prefix: tech-lead-loop   # commits land on <prefix>/<YYYY-MM-DD>
+base: <default branch>   # each day's branch starts here, or from the newest loop branch not merged into it
 triage: shadow           # off | shadow (log the Haiku second check) | gate (apply it, escalate-only)
 codex_timeout_min: 45    # an L3 Codex job still running after this many minutes is stopped
 verify:
@@ -583,6 +584,9 @@ push: never              # literal; v1 has no other value
 - **Where commits land.**
   - Work is committed on `<branch_prefix>/<YYYY-MM-DD>` (UTC) inside
     `.tech-lead/worktree`. Your working tree is not touched.
+  - Each day's branch starts from `base:` in `LOOP.md`, or from the newest
+    loop branch not yet merged into it, never from the branch you have
+    checked out.
   - Loop commits carry no Co-Authored-By line. They are never pushed or
     merged; reviewing and merging the loop branch is up to you.
   - **Exception:** the one-time bootstrap commits the spine (`LOOP.md`,
