@@ -475,8 +475,9 @@ scheduler.
   - an infrastructure incident happened.
 - **Scheduled in Claude Code.** Ask Claude to schedule the prompt
   `Run /tech-lead:loop <abs-path>` with `CronCreate`, in a dedicated session
-  opened in the project. Jobs are session-scoped, and recurring jobs expire,
-  so re-arm them.
+  opened in the project that stays open. The job runs inside that session,
+  with its working directory and settings. Jobs are session-only, and
+  recurring jobs expire after 7 days, so re-arm them.
 - **Scheduled by the OS.** Run
   `cd <abs-path> && claude -p 'Run /tech-lead:loop <abs-path>'` from cron or
   launchd.

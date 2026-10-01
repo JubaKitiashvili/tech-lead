@@ -157,3 +157,11 @@ test('fails when README and the template disagree on the LOOP.md defaults', t =>
   assert.equal(r.status, 1)
   assert.match(r.stdout, /FAIL dup: README LOOP\.md defaults == loop-templates\.md LOOP\.md template/)
 })
+
+test('fails when a doc tells the model to pass CronCreate durable', t => {
+  const dir = copyRepo(t)
+  append(dir, 'README.md', '\nSchedule it with `CronCreate`, `durable: true`.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL runners: no doc tells the model to pass CronCreate a durable flag\n[\s\S]*README\.md/)
+})

@@ -341,8 +341,11 @@ attempts. Record outcome `failed`, `verify: "fail"`.
   - Narrate a one-paragraph summary.
 - **Scheduled.**
   - Supported runners:
-    - (a) `CronCreate`, `durable: true`, in a dedicated session opened in
-      `<P>`. Recurring jobs auto-expire, so re-arm them.
+    - (a) `CronCreate` in a dedicated interactive session opened in `<P>`
+      that stays open. CronCreate enqueues into that session and inherits
+      its working directory and settings; it cannot start a new process.
+      Jobs are session-only (CronCreate has no durable mode), and recurring
+      jobs expire after 7 days, so re-arm them.
     - (b) OS cron or launchd running
       `cd <P> && claude -p 'Run /tech-lead:loop <P>'`.
   - Cloud routines are not supported: they cannot see the local tree.

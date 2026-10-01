@@ -170,6 +170,11 @@ export async function checkRepo(ctx, r) {
     assert.deepEqual([...new Set(bad)], [])
   })
 
+  await r.check('runners: no doc tells the model to pass CronCreate a durable flag', () => {
+    // CronCreate jobs are session-only; `durable` has no effect (spec §7.6, audit cons01).
+    assert.deepEqual(mdFiles.filter(f => /\bdurable\s*:\s*true\b/.test(rd(f))), [])
+  })
+
   const installed = path.join(os.homedir(), '.claude/rules/tech-lead.md')
   if (fs.existsSync(installed) && fs.readFileSync(installed, 'utf8') !== rd('templates/rules-tech-lead.md')) {
     r.warn(`${installed} differs from templates/rules-tech-lead.md: re-copy it`)
