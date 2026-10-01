@@ -34,12 +34,16 @@ This skill executes exactly one iteration of the backlog executor.
    - `<P>` = the absolute path of the argument. The default is the current
      directory.
    - `<S>` = `<P>/.tech-lead`, and `<W>` = `<S>/worktree`.
+   - `<T>` = the plugin root: two directories above this skill's base
+     directory (the "Base directory for this skill" line), as an absolute
+     path. The loop's helper scripts live in `<T>/scripts/`.
    - Every command in this skill uses these absolute paths with `git -C`.
      Runners may start in another directory.
 2. **Missing spine.** If `<S>` is missing, follow `references/bootstrap.md`.
    Bootstrap ends the firing.
 3. **Read state.**
-   - `LOOP.md` (config). A missing `triage:` key means `shadow`.
+   - `LOOP.md` (config). A missing `triage:` key means `shadow`, and a
+     missing `codex_timeout_min:` means 45.
    - Every section of `STATE.md`.
    - From `LEDGER.jsonl`: the last `max(10, max_consecutive_failures)`
      entries, plus every entry whose `ts` date (UTC) is today.
@@ -168,34 +172,53 @@ includes a class set in §3.
   1. Prepare the worktree (`references/worktree.md`).
   2. Write the brief, including the execution contract and its
      `JUDGMENT CALLS:` / `SKIPPED:` trailer, to `<S>/briefs/<slug>.md`.
-  3. The `codex:codex-rescue` wrapper cannot pin a working directory, so call
-     the companion yourself. Use a foreground Bash call with
-     `timeout: 600000`:
+  3. **Start.** The `codex:codex-rescue` wrapper cannot pin a working
+     directory, so the loop runs Codex as a companion job through its
+     helper. Every helper call is a foreground Bash call with
+     `timeout: 600000`, and prints one JSON line:
 
      ```
-     C=$(ls ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)
-     node "$C" task --cwd <W> --write --prompt-file <S>/briefs/<slug>.md
+     node <T>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <S>/briefs/<slug>.md
      ```
 
-  4. **Outcomes:**
-     - **`$C` is empty, or Codex cannot run** (not installed, not
-       authenticated, or a version error): return the item to `## Backlog`
-       with `status: waiting-infra`. Record outcome `skipped`, note "codex
-       unavailable".
-     - **Timeout:** the Bash timeout kills only the client. The Codex turn
-       keeps running in the plugin's detached broker and can keep writing
-       into `<W>`.
-       1. Run `node "$C" cancel --cwd <W>`.
-       2. Confirm with `node "$C" status --cwd <W>` that no job is running.
-       3. Only then run §7's Reset.
-       4. Return the item with `status: waiting-infra`, and record outcome
-          `skipped`, note "codex timeout".
+     Exit 3 (`"state": "unavailable"`) means Codex cannot run: not
+     installed, not authenticated, or a version error. Return the item to
+     `## Backlog` with `status: waiting-infra`, and record outcome
+     `skipped`, note "codex unavailable".
+  4. **Wait.** Repeat while `state` is `running`. Write the printed `jobId`
+     literally into each call; shell variables do not survive between Bash
+     calls:
 
-       Never retry while a Codex turn may still be live.
-     - **Otherwise:** go to §6.
+     ```
+     node <T>/scripts/loop-codex.mjs wait <jobId> --cwd <W> --cap-min <codex_timeout_min>
+     ```
 
-     A missing trailer, or a trailer that is not `none`, counts as
-     delegate-flagged.
+  5. **Outcomes:**
+     - **`completed`:** run
+       `node <T>/scripts/loop-codex.mjs result <jobId> --cwd <W>`. Its
+       `answer` is Codex's report, and `flagged: true` (the trailer is
+       missing or is not `none`) makes the item delegate-flagged. Go to §6.
+       If `result` exits 1, the turn has ended but its report is
+       unreadable: run §7's Reset, return the item with
+       `status: waiting-infra`, and record outcome `skipped`, note "codex
+       result unreadable".
+     - **`failed`:** the turn has ended. Run §7's Reset, return the item
+       with `status: waiting-infra`, and record outcome `skipped`, note
+       "codex failed".
+     - **`cap`, `cancelled` or `error`:** the turn may still be writing into
+       `<W>`. Run `node <T>/scripts/loop-codex.mjs stop <jobId> --cwd <W>`.
+       It reports `"stopped": true` only when the job finished by itself or
+       the companion confirmed the Codex turn was interrupted.
+       - `"stopped": true`: run §7's Reset, return the item with
+         `status: waiting-infra`, and record outcome `skipped`, note "codex
+         timeout".
+       - `"stopped": false`: do not touch `<W>`. Write an incident to
+         `## Last run` ("Codex job <jobId> could not be confirmed stopped;
+         check `/codex:status` before unpausing"), set `paused: true` in
+         `LOOP.md`, return the item with `status: waiting-infra`, and record
+         outcome `skipped`, note "codex turn still live".
+
+     Never retry while a Codex turn may still be live.
 - **Any level, `high-stakes`.** Follow `../../references/panel-protocol.md`,
   with these loop specifics:
   1. **Brief.** Write it to `<S>/briefs/<slug>.md`, with option ids. Pass
@@ -245,7 +268,7 @@ index for the next firing.
 
 1. **Delegate-flagged check (first).** It fires when the delegate reported
    any judgment call, or skipped or flagged any spec item. For Codex, that
-   means the trailer is not `none` or is missing. When it fires:
+   means `loop-codex.mjs result` reported `flagged: true`. When it fires:
    1. Do not verify and do not stage. Run §7's **Reset** only.
    2. Upsert a `## Needs decision` entry for the item, holding the questions
       and the delegate's suggested defaults (template format).
@@ -325,10 +348,12 @@ attempts. Record outcome `failed`, `verify: "fail"`.
 
 - Agent and Workflow results arrive as completion notifications. Wait for
   them before §6. Headless `claude -p` waits too.
-- The Codex companion runs as a foreground Bash call.
+- A Codex job is waited on with foreground `loop-codex.mjs wait` calls
+  until its state is no longer `running`.
 - Never end the turn, call ScheduleWakeup, or exit while a dispatch is
   outstanding.
-- Never send Codex `--background`. Never use `isolation: "remote"`.
+- Start Codex only through `loop-codex.mjs start`; never call the
+  companion's `task` yourself. Never use `isolation: "remote"`.
 
 **Runners:**
 

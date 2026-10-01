@@ -19,6 +19,7 @@ max_iterations_per_day: 8
 max_consecutive_failures: 2
 branch_prefix: tech-lead-loop   # commits land on <prefix>/<YYYY-MM-DD>
 triage: shadow           # off | shadow (log the Haiku second check) | gate (apply it, escalate-only)
+codex_timeout_min: 45    # an L3 Codex job still running after this many minutes is stopped
 verify:
   - <detected verify command, e.g. npm test>
   - <detected verify command, e.g. npm run typecheck>
@@ -30,7 +31,7 @@ push: never              # literal; v1 has no other value
 
 A missing `triage:` key means `shadow`. Move to `gate` only after reviewing
 at least 20 logged triage rows (see `../../../references/decision-contracts.md`,
-Calibration).
+Calibration). A missing `codex_timeout_min:` key means 45.
 
 ## STATE.md template
 
@@ -149,7 +150,8 @@ Append one JSON object per line, every firing, without exception:
   outcome is `done`, `failed`, `blocked`, `flagged`, `report-only` or
   `needs-decision`. `halted` and `skipped` do not count.
 - **Infra incidents** never retry in a loop. A missing Codex parks the item
-  (`waiting-infra`). A dependency-install failure sets `paused: true`.
+  (`waiting-infra`). A dependency-install failure, or a Codex turn that
+  cannot be confirmed stopped, sets `paused: true`.
 
 ## Project .gitignore addition (bootstrap)
 

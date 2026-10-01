@@ -5,8 +5,9 @@ fast-worker path and the L3 Codex path). A §7 retry reuses the prepared
 worktree and its `U` unchanged. It never re-runs these steps.
 
 `<P>` is the absolute project path, `<S>` = `<P>/.tech-lead`,
-and `<W>` = `<S>/worktree`. Every command names its directory explicitly:
-use `git -C` with an absolute path, never a bare `git` or a relative path.
+`<W>` = `<S>/worktree`, and `<T>` is the plugin root (loop §1). Every
+command names its directory explicitly: use `git -C` with an absolute path,
+never a bare `git` or a relative path.
 
 ## Steps
 
