@@ -682,6 +682,7 @@ templates/
 scripts/
   check.mjs              repository checks (node scripts/check.mjs)
   lib/, checks/          loader, stub Workflow runtime, and the check modules
+  loop-*.mjs             helpers the loop runs (text neutralizer, start-point, Codex job)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 docs/superpowers/        design specs and implementation plans
 ```
