@@ -61,6 +61,10 @@ Seat B is empty when any of these holds:
 When seat B is empty, run with seat A alone and tell the user why the second
 seat was empty.
 
+Seat A is empty when its verdict is still null after the retry. With one seat,
+say which seat was empty and why. With `no-seats`, no panel ran: say so, do
+not present a recommendation as panel-backed, and offer to re-run the panel.
+
 ## 5 · Synthesis
 
 **Agreement is corroboration, not proof.** A shared wrong assumption produces

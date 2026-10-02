@@ -49,7 +49,7 @@ this shape:
 **Recommendation (tech lead):** <your synthesis, one or two sentences>
 **Seat A (deep-reasoner · <model>):** <one or two sentences>
 **Seat B (Codex · <model from ~/.codex/config.toml>):** <one or two sentences | seat empty: <reason>>
-**Agreement:** <agree | disagree | single-seat>, and what it does and does not establish
+**Agreement:** <agree | disagree | single-seat | no-seats>, and what it does and does not establish
 **What would flip it:** <the load-bearing assumptions>
 ```
 
