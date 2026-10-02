@@ -16,6 +16,11 @@ export const frontmatter = md => {
     .map(l => [l.split(':')[0], l.slice(l.indexOf(':') + 1).trim()]))
 }
 
+// The plugin's docs, relative to root: every file the model or the user reads as prose.
+export const docFiles = root => ['README.md', 'SKILL.md', 'templates/rules-tech-lead.md',
+  ...['agents', 'references', 'skills'].flatMap(d =>
+    fs.readdirSync(path.join(root, d), { recursive: true }).filter(f => f.endsWith('.md')).map(f => `${d}/${f}`))]
+
 export async function checkRepo(ctx, r) {
   const { root, rd } = ctx
   const manifest = JSON.parse(rd('.claude-plugin/plugin.json'))
@@ -24,9 +29,7 @@ export async function checkRepo(ctx, r) {
   const skillNames = manifest.skills.filter(s => s !== './').map(s => path.basename(s))
   const wfNames = Object.values(ctx.wf).map(w => w.meta.name)
   const wfSourceByName = Object.fromEntries(Object.entries(ctx.wf).map(([f, w]) => [w.meta.name, rd(`workflows/${f}`)]))
-  const mdFiles = ['README.md', 'SKILL.md', 'templates/rules-tech-lead.md',
-    ...['agents', 'references', 'skills'].flatMap(d =>
-      fs.readdirSync(path.join(root, d), { recursive: true }).filter(f => f.endsWith('.md')).map(f => `${d}/${f}`))]
+  const mdFiles = docFiles(root)
 
   await r.check('manifest: every skills entry has a SKILL.md whose name matches', () => {
     for (const s of manifest.skills) {

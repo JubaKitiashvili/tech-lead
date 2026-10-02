@@ -1,14 +1,15 @@
 # System 1 layer for tech-lead: design
 
 - **Date:** 2026-09-30
-- **Status:** revision 5. Design approved section by section; revisions 1-4
+- **Status:** revision 6. Design approved section by section; revisions 1-4
   each went through a cross-family review (Claude critic lenses with
   adversarial verification, plus Codex gpt-6.1-sol). Round 4, run under a
   stopping rule (blockers and design-level majors only), found no blockers;
-  this revision settles its design-level majors with explicit decisions (§17)
-  and moves its plan-level items to §16. Awaiting owner review.
-- **Plugin version at design time:** 0.3.3 (HEAD 642edc6), plus the uncommitted
-  Fable removal
+  revision 5 settled its design-level majors (§17). Revision 6 applies the
+  stage 0c amendment set the owner approved on 2026-10-01 (§17), found by the
+  stage 0c design run.
+- **Plugin version at design time:** 0.3.3 (HEAD 642edc6); Fable was removed
+  in 0.3.4
 - **Architecture chosen:** `hybrid-staged`, as amended (see §17)
 - **Scope:** umbrella design. Implementation plans are written per delivery
   stage (§10), each with its own PR. §16 lists items deliberately left to those
@@ -123,10 +124,32 @@ This design adds:
 | Worker clone | `<V>/clone` | An isolated full clone that delegates and verify commands work in. Replaces the git worktree. |
 
 `<P>` is the loop's project path and `<S>` = `<P>/.tech-lead` (governance).
-`<V>` = `~/.cache/tech-lead/<project_id>` is the untrusted work area, kept
+`<V>` = `~/.cache/tech-lead/<key>` is the untrusted work area, kept
 outside `<P>` so that the owner's own tools (test runners, indexers) that crawl
 `<P>` never pick up delegate-written files. `<W>` = `<V>/clone`. `<X>` =
 `~/.claude/tech-lead`.
+
+`<key>` names a project on disk: `<slug>-<h>`. `<R>` is the real path of `<P>`
+as realpath(3) returns it (in Node, `fs.realpathSync.native`): every symlink
+resolved and, on a case-insensitive volume, the on-disk case. `<slug>` is the
+basename of `<R>` lowercased, with every character outside `[a-z0-9._-]`
+replaced by `-`, cut to 64 characters, and `project` when empty. `<h>` is
+the first 16 hex characters of SHA-256 over the UTF-8 bytes of `<R>`. The key
+depends neither on `LOOP.md` nor on the branch checked out, so every firing of
+one project, through any symlink, computes the same `<V>` and the same lock.
+`<V>/identity.json` records `<R>`; a firing that finds a different `<R>`
+there refuses to use that `<V>`. Moving the repository yields a new `<key>`
+and a fresh `<V>` (the old one is left for the owner to delete). §6.2's
+`project_id` stays the identity bound into sign-offs; it is a value inside
+files, never a path segment. Stage 0c neither computes nor stores it; stage 1
+defines which commit "the first commit" means when a repository has several
+roots.
+
+`<P>` must be the top level of a git working tree: its real path equals
+`git -C <P> rev-parse --show-toplevel` (a linked worktree qualifies). Bootstrap
+and the §9.1 migration check this before writing anything and refuse a
+subdirectory of a repository, including a legacy spine kept in one; the owner
+moves the spine to the top level first.
 
 ```
 main session ── reflex-facts.mjs: packet, facts, floors, base, policy check ──┐
@@ -162,16 +185,16 @@ Why these boundaries:
 
 | Location | Contents | Who can write it |
 |---|---|---|
-| `<X>/runners/<project_id>.json` | Runner settings | Owner terminal (bootstrap) |
-| `<X>/signoffs/<project_id>.json` | Signed policy digests, demotions, kill acknowledgements | Owner terminal (`reflex-report.mjs --sign`, `--demote`, `--ack-kill`) |
+| `<X>/runners/<key>.json` | Runner settings (from stage 2) | Owner terminal (bootstrap, from stage 2) |
+| `<X>/signoffs/<key>.json` | Signed policy digests, demotions, kill acknowledgements | Owner terminal (`reflex-report.mjs --sign`, `--demote`, `--ack-kill`) |
 | `<X>/dispatch/<session_id>.json` | Dispatch records | Registrar hooks |
-| `<X>/guard/<project_id>.jsonl` | Guard decisions (heartbeat) | Delegate guard hook |
-| `<S>/LOOP.md`, `STATE.md`, `POLICY.json`, `CHAIN.json` | Governance | Main session's Write/Edit tools; `POLICY.json` only by `reflex-report.mjs` in the owner's terminal |
-| `<V>/` | Worker clone, journals, snapshots, patches, bundles, review sheet, lock | Main session's sandboxed Bash, delegates, verify commands |
+| `<X>/guard/<key>.jsonl` | Guard decisions (heartbeat) | Delegate guard hook |
+| `<S>/LOOP.md`, `STATE.md`, `POLICY.json`, `CHAIN.json`, `SPINE.json` | Governance | Main session's Write/Edit tools; `POLICY.json` only by `reflex-report.mjs` in the owner's terminal |
+| `<V>/` | Worker clone, journals, snapshots, patches, bundles, review sheet, lock, spine copy | Main session's sandboxed Bash, delegates, verify commands |
 | `<P>` (user tree and `.git`) | The owner's repository | Nobody in an unattended run |
 
-- In an unattended run the sandbox's write set is `<V>` and the per-user
-  temp directory only. Governance in `<S>` is written through the main
+- From stage 2, in an unattended run the sandbox's write set is `<V>` and the
+  per-user temp directory only (before stage 2, see §15). Governance in `<S>` is written through the main
   session's Write and Edit tools, which the guard denies to delegates outside
   `<W>`.
 - **Governance write mechanism (selected by probe P5).** The contract: the main
@@ -180,15 +203,55 @@ Why these boundaries:
   the mechanism is chosen from, in order: (a) exact-file Edit allow rules for
   the governance files plus the same paths in `sandbox.filesystem.denyWrite`,
   if denyWrite does not also block the Edit tool; (b) governance kept under
-  `<X>/projects/<project_id>/` and written by the Edit tool, if protected-path
+  `<X>/projects/<key>/` and written by the Edit tool, if protected-path
   rules permit that; (c) otherwise, unattended runs have no write-capable
   dispatch. The loop also hashes the governance files before and after every
   untrusted execution, in case the guard was inactive.
 - `POLICY.json` holds the thresholds and mode; its sign-off digest is valid
-  only if it matches `<X>/signoffs/<project_id>.json`. The main session never
+  only if it matches `<X>/signoffs/<key>.json`. The main session never
   writes `POLICY.json`; a pause is `paused: true` in `LOOP.md`.
-- Every file under `<S>` is gitignored (stage 0c untracks the spine; audit
-  loop02).
+- Every file under `<S>` is ignored by git on every branch (stage 0c untracks
+  the spine; audit loop02), through the repository's exclude file: the path
+  `git -C <P> rev-parse --path-format=absolute --git-path info/exclude`
+  prints (in a linked worktree, the common directory's file). Bootstrap and the
+  §9.1 migration add `/.tech-lead/` there, keep the file's other lines, and
+  verify the result with `git check-ignore`; a rule that un-ignores the spine
+  makes them refuse. A new spine is never committed. A spine that was tracked is
+  untracked by the §9.1 migration, which also commits a `/.tech-lead/` line in
+  `.gitignore` so other clones of the repository ignore it.
+- **Branch-switch hazard.** Git overwrites ignored files on checkout, so
+  checking out a branch that still tracks the spine replaces the live spine
+  with that branch's copy (and switching back deletes it). After each firing the
+  loop copies `LOOP.md`, `STATE.md` and `LEDGER.jsonl` (never `POLICY.json`
+  or `CHAIN.json`) to `<V>/spine`, and writes their byte lengths and SHA-256
+  values to `<S>/SPINE.json`, a file no branch has ever tracked, so no checkout
+  rewrites it. At §1, under the firing lock and before anything is written: the
+  spine is **lost** when `SPINE.json` exists and a spine file is missing, and
+  **regressed** when `LEDGER.jsonl` no longer begins with the bytes anchored in
+  `SPINE.json` (the ledger is append-only, so owner edits to `LOOP.md` and
+  `STATE.md` between firings never look like a regression). A lost or regressed
+  spine makes an unattended firing exit without writing. An interactive firing
+  shows the owner the difference between the live spine and the copy, and
+  restores the copy only on the owner's confirmation and only when the copy
+  still matches `SPINE.json`; edits made since the last firing are lost
+  unless the owner merges them by hand.
+- **No governance writes over a tracked spine.** Before a restore or any
+  governance write, the loop refuses when HEAD or the index tracks a path under
+  `.tech-lead/`; the owner switches to a migrated branch or runs the §9.1
+  untracking first, and a confirmation never bypasses this.
+- The copied files and the regression check follow the stages: in stage 0c the
+  copy covers `LOOP.md`, `STATE.md` and `LEDGER.jsonl`. When stage 1 moves the
+  ledger into `<V>`, the copy keeps `LOOP.md` and `STATE.md`, regression is
+  judged against the journal head that `CHAIN.json` records, and the stage 1
+  migration rewrites `SPINE.json` before scheduled runs resume.
+- **Scope (stage 0c).** `scope:` in `LOOP.md` lists repository-relative
+  directory paths. One validator, used by bootstrap, the §9.1 migration and a
+  loop §2 gate before any pick, canonicalizes them (no leading `./`, no
+  trailing `/`) and refuses an absolute path, a `..` component, an empty
+  entry and every spelling of the whole repository (`.`, `./`, `/`, empty;
+  audit loop07). A path is in scope when one of its leading path components
+  equals an entry (`src` holds `src/a.js`, not `src-old/a.js`); a path whose
+  real path leaves the repository is out of scope.
 
 ## 5. Decision contract
 
@@ -306,7 +369,7 @@ args: { packet, packet_digest }
 `reflex-facts.mjs` computes the policy verdict:
 
 - `off` only if the record says off and its digest matches a sign-off entry in
-  `<X>/signoffs/<project_id>.json` for this project;
+  `<X>/signoffs/<key>.json` for this project;
 - `gate` if the record says gate, its digest matches a sign-off entry for this
   project, its hashes match the registry or are reached from the signed hashes
   by a chain of caution certificates (§5.9), its model is in `models.allowed`,
@@ -493,7 +556,7 @@ Created by `reflex-report.mjs <P> --init-policy` with the registry defaults and
 - `--sign <type>` runs only in an interactive terminal (it refuses without a
   TTY), shows the draft and the evidence, asks the owner to type the type name,
   moves the draft into `POLICY.json`, and appends `{type, project_id,
-  record_digest, evidence_hash, signed_at}` to `<X>/signoffs/<project_id>.json`.
+  record_digest, evidence_hash, signed_at}` to `<X>/signoffs/<key>.json`.
   The digest is a SHA-256 over the canonical record.
 - `--demote` and `--ack-kill` work the same way and append their own entries.
 - Owner-provenance fields that change behaviour are set the same way:
@@ -608,9 +671,20 @@ the `loop.class` call from stage 1 as log-only questions.
 ### 7.1 `loop.class` (loop §4; replaces `triage.js`)
 
 - **State:** `title` (300 chars), `notes` (8,000 chars).
-- **Item fields (stage 0c):** a stable id, the live `title` and `notes` (the
-  only fields `loop.class` and the brief read), the decision text in its own
-  field, and an owner-signed `decided` stamp when present.
+- **Item fields (stage 0c):** a stable id, an `origin` (`bootstrap`, `human`,
+  `loop from <id>` for a follow-up, or `unknown` for a migrated item), the live
+  `title` and `notes` (the only fields `loop.class` reads), the decision text in
+  its own field, and an owner-signed `decided` stamp when present. The brief
+  reads the title, the notes and the decision field. Stage 0c only reserves the
+  `decided:` label; stage 1's `--mark` writes it.
+- **Open items and titles (stage 0c, audit cx-lr07):** an item is open while it
+  is in `## Now`, `## Backlog` or `## Blocked`; titles are unique among open
+  items, and the loop refers to items by id, never by title. For `blocked-by`,
+  a done item counts as unfinished while an open item has `origin: loop from`
+  its id.
+- **Item digest:** SHA-256 over the canonical JSON of `{id, title, notes,
+  decision}`; §7.5 binds recovery bundles to it. `approved_digest` (below)
+  covers the title, notes and decision text only.
 - **Floors (code):** path and keyword markers for migrations, auth, secrets and
   major dependency bumps set `high-stakes`; so do credential-like strings
   (token prefixes, key patterns), publish or upload instructions, and URLs to
@@ -693,12 +767,35 @@ the `loop.class` call from stage 1 as log-only questions.
 | `loop.verify_failure` | `flag-with-patch` | patch saved, reset | `waiting-decision`, entry variant "verify" | `flagged` |
 | any | `pause-loop` | patch saved, reset | back to `## Backlog`, unchanged | `halted` |
 
-**Shared patch helper** (`reflex-bundle.mjs`): saves the tracked diff against
-the base plus every in-scope untracked file not in the baseline `U` as one
-recovery bundle, checks it applies to that base, and writes the bundle's sha,
-the base HEAD, the item digest and the scope into the `## Needs decision` entry
-in `STATE.md` (governance). If saving fails, the reset does not run and the
-loop pauses.
+**Shared patch helper** (`reflex-bundle.mjs`, from stage 0c): saves the
+tracked diff against the base plus every non-ignored untracked file not in the
+baseline `U` as one recovery bundle, in scope or not (out-of-scope files are
+marked, never discarded unsaved; audit cx-lr03), and checks it applies to that
+base. Every save, not only the first clone preparation's, lists untracked files
+under the ignore rules recorded before the dispatch (the paths ignored then,
+whether by `.gitignore` files at any depth or by local excludes), so a
+delegate's new or edited ignore rule cannot hide a file; the bundle is validated
+before anything is reset or removed. It prints the bundle's sha, the base HEAD, the item digest (§7.1) and the
+scope; the main session writes them into the `## Needs decision` entry in
+`STATE.md` (governance, §4). If saving fails, the reset does not run and the
+loop pauses. It never uses `git stash`, whose `refs/stash` is shared across
+worktrees.
+
+**The private clone starts clean.** Nothing in `<W>` belongs to the owner, so
+the firing's first clone preparation (never a retry, which keeps its attempt)
+saves any leftovers of an interrupted firing into a recovery bundle bound to
+that firing's generation, then removes them. The tracked diff is saved and the
+tracked files (`.gitignore` included) are restored to the base first, so the
+untracked files are listed under the base's ignore rules and a delegate's edit
+to `.gitignore` cannot hide one. Cleanliness is checked again after the reset
+and after dependency preparation. `U` is therefore empty at every dispatch,
+and a delegate cannot edit a file the loop is not allowed to save or reset
+(audit cx-lr04).
+
+**Out-of-scope files in a bundle.** A recovery bundle keeps them, but a release
+refuses such a bundle before applying anything: the entry asks the owner to
+drop those files or widen `scope:`, and a new bundle is bound for review. On
+every release the scope rail runs before verify.
 
 **Release by a human decision.** Loop §3.1 handles an acceptance or verify
 release before any reclassification or level parking. `Decision: accept`
@@ -716,16 +813,20 @@ a fresh bundle for a new review. `Decision: reject: …` moves the item to
 ### 7.6 Unattended containment
 
 **Runners.** Two supported forms, both started from `<V>` with the runner
-settings:
+settings. Until stage 2 ships the runner settings, both forms start from `<P>`
+(`cd <P> && claude -p 'Run /tech-lead:loop <P>'`): a session started in `<V>`
+without them would lose the allow rules the owner keeps in `<P>`'s settings.
 
-- OS cron or launchd: `cd <V> && claude -p --settings <X>/runners/<project_id>.json 'Run /tech-lead:loop <P>'`;
+- OS cron or launchd: `cd <V> && claude -p --settings <X>/runners/<key>.json 'Run /tech-lead:loop <P>'`;
 - an interactive session opened the same way (`cd <V> && claude --settings …`),
   which then uses CronCreate. CronCreate enqueues into that open session and
   inherits its cwd and settings; it cannot start a new process.
 
-The loop checks at §1 what it can observe: that the runner settings are loaded
-and that the P5 sandbox check passes. If either fails, it runs without any
-write-capable dispatch.
+From stage 2, the loop checks at §1 what it can observe: that the runner
+settings are loaded and that the P5 sandbox check passes. If either fails, it
+runs without any write-capable dispatch. Before stage 2 the runners are a
+headless `cd <P> && claude -p 'Run /tech-lead:loop <P>'` and an interactive
+session opened in `<P>` that uses CronCreate.
 
 **Settings.**
 
@@ -809,7 +910,7 @@ for Codex.
   - Inline interpreters and nested shells (`node -e`, `python -c`, `sh -c`,
     `bash -c`, `eval`) are denied.
   - Every guard decision for `loop-worker`, including allows, is appended to
-    `<X>/guard/<project_id>.jsonl` with the record's `dispatch_id`.
+    `<X>/guard/<key>.jsonl` with the record's `dispatch_id`.
 - A block is final: the reason tells the delegate to stop and report.
 - Interactive panel seat B (`codex:codex-rescue`) is not a tech-lead delegate
   and is not covered.
@@ -878,7 +979,7 @@ the usage. Because the owner puts quality above cost, this is measured first:
 | Journal write or chain check fails | `pause-loop` | same |
 | Policy verdict `paused` | n/a | `pause-loop` |
 | Runtime identity unverified | row excluded from evidence | `pause-loop` |
-| Runner settings or sandbox check fails | no write-capable dispatch | same |
+| Runner settings or sandbox check fails (from stage 2) | no write-capable dispatch | same |
 | Guard: non-delegate or unreadable `agent_type` | exit 0 | exit 0 |
 | Guard: script error for a delegate | exit 2 ("guard error") | same |
 | Registrar: missing dispatch header | Agent call denied | same |
@@ -889,23 +990,53 @@ the usage. Because the owner puts quality above cost, this is measured first:
 
 ### 9.1 Existing spines
 
-Run once, in an interactive session (the loop refuses scheduled runs with
-"migration needs an interactive run" until it is done):
+Run in an interactive session (the loop refuses scheduled runs with "migration
+needs an interactive run" until it is done). Migration is staged: each delivery
+stage migrates what it introduces, and `LOOP.md`'s `spine_version:` key records
+the last stage whose migration completed (a missing key means a spine from
+before stage 0c). Stages are installed in order: a stage's migration requires
+the previous stage's to be complete. Bootstrap writes `spine_version:` set to
+the current stage, since a new spine has nothing to migrate. Every step is
+idempotent and safe to re-run after an interruption.
 
-- untrack the spine: refuse on a dirty index, then `git commit --only` on the
-  spine paths with the ignore rule (a named exception to the loop's no-commit
-  rail);
-- replace the git worktree with the isolated clone (§7.6) and move journals
-  into `<V>` (`~/.cache/tech-lead/<project_id>`, outside `<P>`); start fresh
-  hash chains;
-- assign stable ids to items lacking them; the loop
-  never picks an item without an id;
+Stage 0c:
+
+- untrack the spine (a named exception to the loop's no-commit rail): refuse
+  when the index holds changes other than this step's own, or when
+  `.gitignore` exists but is untracked or differs from HEAD by anything other
+  than this step's own line (the step's own state, recorded in
+  `<V>/migration/`, is recognized before these checks, and a migration commit
+  already made is detected and not repeated); record the original HEAD and the
+  expected change in `<V>/migration/`; run
+  `git rm --cached -r -- .tech-lead` (skipped when nothing under it is
+  tracked) and add the `/.tech-lead/` line to `.gitignore` (when absent);
+  check that the staged change is exactly those removals and that line; and
+  commit without `--only` or `-a`. The files stay on disk. A re-run resumes
+  only that recorded change. (`git commit --only` on the spine paths would
+  commit their content and leave them tracked.)
+- replace the git worktree with the isolated clone (§7.6): stop any Codex job
+  in the old worktree, save its uncommitted work with the patch helper, adopt
+  the dated loop branches into the clone, and retire the old worktree without
+  `--force` or a recursive delete; when git refuses, the owner is asked;
+- assign stable ids and origins to items lacking them; the loop never picks an
+  item without an id;
+- check `scope:`: a scope of `./` (the whole repository) is refused, and the
+  owner sets a narrower one (audit loop07).
+
+Stage 1:
+
+- move journals into `<V>` (`~/.cache/tech-lead/<key>`, outside `<P>`); start
+  fresh hash chains;
 - map `triage:`: off → `loop.class: off` pending the owner's signed off (shadow
   until then); shadow or missing → shadow; gate → shadow plus a paused loop and a
   notice, since gate under the old checker is not carried over;
 - remove the `triage:` key; mark old ledger `triage` objects as legacy, never
   counted toward promotion;
-- write runner settings to `<X>/runners/` and run `--init-policy`.
+- run `--init-policy`.
+
+Stage 2:
+
+- write runner settings to `<X>/runners/`.
 
 ### 9.2 Plugin files
 
@@ -915,8 +1046,15 @@ Run once, in an interactive session (the loop refuses scheduled runs with
   `skills/loop/references/loop-templates.md`, `skills/loop/references/bootstrap.md`,
   `skills/loop/references/worktree.md` (replaced by the clone),
   `templates/rules-tech-lead.md` (its workflow list names `tech-lead:triage`),
-  `SKILL.md` and `README.md` are updated in the same PR. The release notes tell
-  users to re-copy the routing rule and how to fetch loop branches from bundles.
+  `SKILL.md` and `README.md` are updated in the PR of the stage that changes
+  them (stage 0c adds the loop §2 scope gate). The release notes tell users to
+  re-copy the routing rule and how to fetch loop branches from bundles.
+- `skills/quick/SKILL.md` changes with the untracked spine (stage 0c): its
+  check for a tracked `.tech-lead/` no longer fires after migration, and its
+  branch switch to `origin/<base>` hits the branch-switch hazard (§4) while the
+  base still tracks the spine. Quick therefore inspects the target tree, and
+  works in a separate worktree when the current or the target tree tracks
+  `.tech-lead/`.
 
 ### 9.3 Rules text
 
@@ -926,17 +1064,23 @@ transitions, the write-authority table, and the envelope and journal contracts.
 
 ## 10. Delivery stages
 
-Each stage is one PR (0' is several) and closes with a cross-family review (a
-Claude fan-out plus Codex run from the main session). Audit finding ids refer to
-the owner's audit report.
+Each stage is one PR and closes with a cross-family review (a Claude fan-out
+plus Codex run from the main session). Stage 0' is several independent PRs.
+Stage 0c is four plans (0c-1 to 0c-4); each is its own PR, with its own plan
+dry run before execution and its own closing review. Within stage 0c, each
+concern has one owner module that later plans import and never redefine. Audit
+finding ids refer to the owner's audit report.
 
 | Stage | Contents | Accepted when |
 |---|---|---|
 | 0a | `scripts/check.mjs` from the prototype with the §5.1 loader contract; `tests/` scaffold. | check.mjs green on the repo. |
 | 0b | Loop safety fixes: Codex L3 timeout (loop09, cx-lp04); neutralize `Decision:` and markup in delegate- and seat-written text; LOOP.md `base:` key (loop12); CronCreate `durable` removal and the runner forms of §7.6 (cons01). | Each fix has a test or a scripted reproduction. |
-| 0c | Firing lock (pid, start time, generation, child pids; a live holder makes the firing exit without writing; reclaim only when the pid and every child are gone, never by age alone); shared patch helper, never `git stash`; stable ids and origin fields, unique open titles (cx-lr07); isolated clone and bundle delivery (loop04); spine untracking (loop02); §9.1 migration; `scope: ./` refused by bootstrap (loop07). | Concurrency, interruption and migration tests pass. |
+| 0c-1 | Foundation: the `<key>` and `<V>` resolver (§3), process facts, atomic records, a safe git runner for `<W>`. Firing lock: the holder is the runner process, identified by pid and start time; children (each verify run and dependency install, run by an exec wrapper in its own process group and registered before it starts, and each Codex job) are recorded with the same identity before anything is signalled; a read-only recovery-planner skeleton. A live holder makes the firing exit without writing (the lock protocol's own temporary file excepted). Reclaim needs every child gone and either the holder gone or the holder being this same process with no in-process dispatch (agent or workflow) of its generation still open; firings in one process do not overlap, but a background agent can outlive an interrupted firing. A same-process reclaim is noted in `## Last run`; never by age alone. The next firing stops a dead holder's children itself (process groups killed, Codex quiesced with stage 0b's `quiesce`) and reclaims once they are gone; no watchdog or supervisor process is started (the exec wrapper may stop its own group when its holder dies, but correctness never depends on it). The generation strictly increases, with gaps allowed, and is the ledger `iteration`: each acquire takes one more than the larger of the lock's last generation and the largest `iteration` in `LEDGER.jsonl`, so a wiped `<V>` never repeats one. | Concurrency (live holder, races, reclaim) and lock interruption tests pass. |
+| 0c-2 | Isolated clone and bundle delivery (loop04); the shared patch helper, never `git stash` (§7.5); the clean-clone rule; recovery of an interrupted firing. | Interruption tests at each persistence boundary pass. |
+| 0c-3 | Stable ids, origins and unique open titles (§7.1; cx-lr07). | Item grammar and blocker tests pass. |
+| 0c-4 | Spine untracking (loop02) and the branch-switch guard (§4); the stage 0c steps of the §9.1 migration with `spine_version:`; the scope validator (§4) in bootstrap, the migration and a loop §2 gate, refusing `./` and every other whole-repository spelling, absolute paths and `..` (loop07); bootstrap no longer commits, writes `spine_version:` and records itself in `## Last run`; the quick skill's target-tree check (§9.2). | Each migration case has a passing test. |
 | 0d | Root SKILL.md trim: "Models and effort" moves to `references/models.md`; Workflow opt-in becomes one closed sentence copied into each sub-skill (prom02, cons02). | check.mjs green; text reviewed. |
-| 0' | Independent PRs: the Fable decision (owner's choice pending; removal edits prepared, uncommitted); fanout and research contracts (work01, work02, work10, cons05, cons06); panel contract (work04, cons03, cons04, work03); quick git hygiene (loop13, cx-ss01–04, loop14); write-capable brief contract (cx-rt03, cx-rt05, cx-rt06, cx-ag01, cx-ag03); routing rule, audit shape and slash-command redirect (rout01–07); README accuracy (cx-rd01, cx-rd02, cx-rd07, cx-rd08). | Per PR. |
+| 0' | Independent PRs: the Fable decision (done: removed in 0.3.4); fanout and research contracts (work01, work02, work10, cons05, cons06); panel contract (work04, cons03, cons04, work03); quick git hygiene (loop13, cx-ss01–04, loop14); write-capable brief contract (cx-rt03, cx-rt05, cx-rt06, cx-ag01, cx-ag03); routing rule, audit shape and slash-command redirect (rout01–07); README accuracy (cx-rd01, cx-rd02, cx-rd07, cx-rd08). | Per PR. |
 | 1 | Registry, decide.js, decider agent, reflex-facts.mjs, reflex-bundle.mjs, chained journals, snapshots and archives, reflex-report.mjs (journal, stats, review, ingest, replay, init-policy, mark), `loop.class` in shadow with log-only routing questions, the workflow permission rule. Needs probes P6–P9. | Unit and invariant tests green; one live shadow firing journaled end to end. |
 | 2 | Containment: runner settings, registrar hooks, guard, `loop-worker`, §7.8 checks, the Codex path. Needs probes P1–P5. Can run in parallel with stage 1 after 0c. | Guard integration test and sandbox checks pass. |
 | 3 | `loop.accept` and `loop.verify_failure` in shadow, the red-base check (loop06), the release path. | Transition tests (§7.5) pass. |
@@ -978,6 +1122,14 @@ the owner's audit report.
   each persistence boundary; a live child at recovery time; a tampered journal
   and a tampered patch; each migration case; each §7.5 transition; §7.8 checks
   for a moved HEAD, a changed ref and a changed work file after a verify run.
+- **Stage 0c contracts:** `<key>` through a symlink alias and with an
+  over-long or empty basename, and an `identity.json` mismatch; a same-process
+  reclaim with an open in-process dispatch (refused) and without (noted); the
+  generation after a wiped `<V>`; a regressed and a lost spine versus owner
+  edits, and a tampered copy; untracking interrupted after each step, and with
+  unstaged `.gitignore` edits (refused); every whole-repository scope
+  spelling, `..`, an absolute path and a prefix-sibling directory; a release of
+  a bundle holding an out-of-scope file (refused before applying).
 
 ## 12. Cost and measurement
 
@@ -1051,6 +1203,14 @@ the owner's audit report.
   Detection runs after every untrusted execution and before any read.
 - The decided-item cap does not track code drift; `loop.accept` covers it at
   execution time.
+- **Lock integrity under the sandbox.** The firing lock lives in `<V>`, which
+  delegates and verify commands can write, so a delegate could delete it
+  (admitting a concurrent firing) or forge a live holder (stalling the loop).
+  Stage 2 revisits this with the runner settings.
+- **Governance writes before stage 2.** Until stage 2 ships the runner settings
+  and the §7.8 checks, runs start in `<P>`, so a delegate's relative
+  `.tech-lead/` path reaches the live spine, and stage 0c does not detect such
+  a write.
 
 ## 16. Left to implementation plans
 
@@ -1095,9 +1255,10 @@ contract comes back here first.
 | 2026-09-30 | Autonomy (b): earned per decision type, with sign-off | owner |
 | 2026-09-30 | Shadow means the model verdict is log-only; floors and caution-ward changes bind immediately | owner |
 | 2026-09-30 | Architecture `hybrid-staged`. Seat A (deep-reasoner, Opus 5.5, xhigh) chose it and moved the hooks into `hooks/hooks.json`; seat B (Codex, gpt-6.1-sol, xhigh) chose `registry-workflow`. Audit findings loop04, loop05 and cx-lp05 settled the differing assumption. Prompt hooks wait for a measured spike. | owner, on the tech lead's recommendation |
-| 2026-09-30 | Fable 5.1: a verified re-check recommends removal; the keep/remove choice is the owner's | pending |
+| 2026-09-30 | Fable 5.1 removed from the plugin (0.3.4): a verified re-check found no role for it that Opus 5.5 does not fill | tech lead, on the owner's delegation |
 | 2026-09-30 | Revision 2: floors and facts bind in shadow; kills pause instead of demoting; OS sandbox for containment and the guard as a veto; decision models pinned by full id; promotion on a uniform cohort; paired Haiku parity | tech lead; for owner review |
 | 2026-09-30 | Revision 3: floors computed in the main session; `off` needs sign-off; uncertified changes to a gated type pause; runner settings and dispatch records under `~/.claude/tech-lead/`, written by hooks; `codex exec` in sandboxed runs; eval/tune split and blind labels | tech lead; for owner review |
 | 2026-09-30 | Revision 4: write-authority split (governance outside every untrusted write path; sign-offs, guard evidence and dispatch records in `~/.claude/tech-lead/`); isolated worker clone with bundle delivery, so the user's tree and `.git` leave the write set; hash-chained journals; checks after every untrusted execution including verify runs; caution certificates in the plugin tree; per-call model identity from transcripts; script-built bundles with `parts_read`; append-only floors; kill acknowledgement; malicious project code declared out of scope | tech lead; for owner review |
 | 2026-09-30 | Revision 5 (round 4 found no blockers): the work area moves outside `<P>` to `~/.cache/tech-lead/<project_id>`; the governance write mechanism is chosen by probe P5 with no-dispatch as the fallback; the decided-item cap binds to the approved title, notes and decision text; re-signing needs a fresh eval cohort, and replay on a used cohort is diagnostic only; kills bind to the signed lineage and clear only from the owner's terminal; post-switch Haiku monitoring fires on evidence of regression, not on too few samples; releases survive unrelated commits; injected egress controls (read boundary, publish denial, egress floors); Codex off in sandboxed runs unless signed on | tech lead; for owner review |
 | 2026-09-30 | Runner-model comparison (§7.9): Opus runner by default; a Sonnet runner only after a signed, measured comparison | owner |
+| 2026-10-01 | Revision 6, the stage 0c amendment set from the stage 0c design run: `<key>` replaces `project_id` as a path segment (§3); a new spine is ignored through `.git/info/exclude` and never committed, a tracked spine is untracked by `git rm --cached` plus a committed `.gitignore` rule, and a spine copy in `<V>` guards the branch-switch hazard (§4, §9.1); migration is staged with `spine_version:`; runs start in `<P>` until stage 2's runner settings; the lock reclaims from the same process and stops a dead holder's children itself, and its generation is the ledger `iteration`; recovery bundles keep out-of-scope untracked files and the private clone starts clean (§7.5); item origins, open-title uniqueness and the item digest (§7.1); "in scope" defined and `./` refused at bootstrap and at §2; lock integrity and pre-stage-2 governance writes recorded as residual risks (§15); 0c split into 0c-1 to 0c-4 (§10); `skills/quick` added to §9.2. A verification round (a Claude find-and-refute workflow and Codex) made these exact: the canonical, bounded, collision-checked `<key>`; the ignore rule on every branch through the exclude file; the spine anchor in `<S>/SPINE.json`, lost and regressed defined by the append-only ledger, and an interactive, confirmed restore that never touches `POLICY.json`; the scope validator; same-process reclaim refused while an in-process dispatch is open; no watchdog daemons; the generation floor; safe, resumable untracking; out-of-scope bundles refused at release; the clean-clone timing; stage qualifiers for the runner checks | owner, on the tech lead's recommendation |

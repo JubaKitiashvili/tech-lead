@@ -66,6 +66,11 @@ human-editable: the user may reorder, add, or veto items directly.
 (never run)
 ```
 
+**`## Now`** holds the item a firing is working on, and exactly `(empty)`
+otherwise: the firing resets it before it ends (loop §8), and the recovery
+planner (loop §1 step 5) reads any other text there as an interrupted
+item.
+
 **Backlog item fields:**
 
 - `class:` ∈ `mechanical | hard | high-stakes | unclassified`. §4 appends a
@@ -119,7 +124,11 @@ bootstrap, and the loop never commits them.
 
 ## LEDGER.jsonl entry schema
 
-Append one JSON object per line, every firing, without exception:
+Append one JSON object per line for every firing that acquired the firing
+lock (loop §1 step 3) and kept it, whatever its outcome. Two firings write
+nothing, not even an entry: one that ends at the lock (held, or a lock
+error), and one that loses the lock (the owner or another firing took its
+generation over while it ran). Those are the only exceptions:
 
 ```json
 {"ts": "<ISO-8601 UTC>", "iteration": <int>, "task": "<title or null>",
@@ -139,8 +148,11 @@ Append one JSON object per line, every firing, without exception:
 
 - `reason`, `models`, `triage`, `panel` and `workflow_run_id` are null or
   absent when they do not apply. Older entries without them remain valid.
-- `iteration` is the previous entry's iteration + 1, or 1 when the file is
-  empty.
+- `iteration` is the firing's lock generation `<N>` (loop §1 step 3). It
+  strictly increases, and gaps are allowed: a firing that was interrupted
+  before its append, or that lost its lock, leaves one. Acquire takes one
+  more than the larger of the lock's last generation and the largest
+  `iteration` here, so a lost lock directory never repeats a number.
 - `delegate` is the literal string `"panel"` for panel firings (the
   `high-stakes` path that runs both seats).
 - `triage.agreement` values:
@@ -158,9 +170,10 @@ Append one JSON object per line, every firing, without exception:
   outcome is `done`, `failed`, `blocked`, `flagged`, `report-only` or
   `needs-decision`. `halted` and `skipped` do not count.
 - **Infra incidents** never retry in a loop. A missing Codex parks the item
-  (`waiting-infra`). A dependency-install failure, a missing base, or a
-  worktree that `loop-codex.mjs quiesce` cannot show quiet sets
-  `paused: true`.
+  (`waiting-infra`). A dependency-install failure, a missing base, a
+  worktree that `loop-codex.mjs quiesce` cannot show quiet, an `exec` run
+  that left a process behind (`lingering`), or a lock error from
+  `dispatch open` or `dispatch close` sets `paused: true`.
 
 ## Project .gitignore addition (bootstrap)
 
