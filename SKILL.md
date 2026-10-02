@@ -262,6 +262,11 @@ all happen in the main session, before or after the Workflow call.
 | `verify-failed` | Inspect the diff, then fix or re-dispatch. |
 | `no-report` | Inspect the diff, then fix or re-dispatch. |
 
+Every task is in `results`, also one whose worker could not run (for example,
+once a `+Nk` budget is spent) or whose report could not be checked. Such a
+task is `no-report`, and its `error` says why. `error` is `null` on every
+other result, including a worker that returned nothing.
+
 Workers share one working tree, and a worker's self-reported file list is
 only a claim. So, once every task is settled:
 

@@ -313,8 +313,8 @@ The plugin registers four workflows at session start:
 | Workflow | Args | Returns | Enforced in code |
 |---|---|---|---|
 | `tech-lead:panel-seats` | **Required:** `briefPath` (absolute) and `options` (2+ `{id, label}` with unique ids). **Optional:** `seatModel` (default `opus`), `seatEffort` (default `xhigh`; one of `low`…`max`), `codexEffort` (default `xhigh`) | `agreement`, plus `seatA` and `seatB`, each with its model, verdict, and the option order it saw | Typed verdicts; agreement computed from the two option ids; seat B sees the options in reverse order; empty-seat detection; one retry on Sonnet at `high` if the Opus seat returns nothing |
-| `tech-lead:fanout` | `repo` (absolute) and `tasks` (`{id, brief, files: [absolute paths]}`, with disjoint file sets) | `summary` (count per status) and `results` (one entry per task: `id`, `status`, `report`, `out_of_scope`) | Paths are normalized, kept inside the repo, and never shared by two tasks; each task gets a status |
-| `tech-lead:research-lanes` | **Required:** `question` and `scratch` (absolute). **Optional:** `context`, `lanes` (`{key, prompt}`), `model` | `lanes` (one entry per lane, with `corrected_summary`, `confirmed_facts`, `verified_ideas`, `verified_risks`, `refuted`, `unverifiable`) and `unverified_lanes` | An independent fact-checker verifies every lane, and only the verifier's output is returned |
+| `tech-lead:fanout` | `repo` (absolute) and `tasks` (`{id, brief, files: [absolute paths]}`, with unique ids and disjoint file sets) | `summary` (count per status) and `results` (one entry per task: `id`, `status`, `report`, `out_of_scope`, `error`) | Paths are normalized, kept inside the repo, and never shared or nested between two tasks; directory entries are refused; every task gets a status, also when its worker could not run |
+| `tech-lead:research-lanes` | **Required:** `question` and `scratch` (absolute). **Optional:** `context`, `lanes` (a non-empty list of default lane keys and `{key, prompt}` entries, with unique keys; replaces the default set), `model` (lanes only; default `sonnet`), `effort` (lanes only; default `high`) | `lanes` (one entry per lane, with `corrected_summary`, `confirmed_facts`, `verified_ideas`, `verified_risks`, `refuted`, `unverifiable`) and `unverified_lanes` | An independent fact-checker on the session model at `high` verifies every lane, and only the verifier's output is returned; a lane whose agent fails is still listed in `unverified_lanes` |
 | `tech-lead:triage` | `item` (`{title, notes}`) and `orchestratorClass` | `agreement`, `checker`, `derived`, `signals` | A Haiku verdict under a schema; the class is derived from the signals in code; it can only escalate |
 
 **What stays outside the scripts.** Scripts cannot touch files, git, clocks,
@@ -338,7 +338,9 @@ Restart the session to fix it.
 | 5 | `ok` | None of the above | Keeps the changes |
 
 A task that returns no report at all gets `no-report`, and the orchestrator
-inspects its diff, then fixes or re-dispatches. A worker's optional
+inspects its diff, then fixes or re-dispatches. A task whose worker could not
+run (for example, once a `+Nk` budget is spent) is `no-report` too, and its
+`error` says why. A worker's optional
 `suggestions` (extras nobody asked for) never affect the status. After all
 tasks settle, the orchestrator:
 
@@ -445,7 +447,9 @@ The fast lane for a small change that ships as a draft PR.
 - **Lanes.** By default four lanes run in parallel: `primary` (the source
   itself), `ecosystem` (real-world use), `alternatives`, and `fit` (with your
   code). Every lane gets its own adversarial fact-checker, so a run starts 8
-  agents.
+  agents. Lanes run on Sonnet at effort `high`, and fact-checkers on your
+  session model at `high`. Custom `lanes` replace the defaults; list a
+  default's key to keep it.
 - **Synthesis** uses only what survived verification:
   - refuted claims never enter it;
   - claims that could not be verified are labeled as such;

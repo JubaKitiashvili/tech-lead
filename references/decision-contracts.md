@@ -78,8 +78,14 @@ The script's code checks each report and sets a status:
 | any `judgment_calls` | `needs-decision` |
 | any verification `fail` | `verify-failed` |
 | any `skipped_flagged` item | `incomplete` |
-| no report | `no-report` |
+| no report (the worker returned nothing, or could not run) | `no-report` |
 | otherwise | `ok` |
+
+Every task appears in the results, keyed by its unique `id`. Each result
+carries `error`: a string when the worker could not run (for example, its
+agent could not start once a token budget was spent) or its report could not
+be checked, and `null` otherwise, including for a worker that returned
+nothing.
 
 ### Triage verdict (`workflows/triage.js` → `tech-lead:triage` agent, loop §4)
 

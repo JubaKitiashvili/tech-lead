@@ -10,8 +10,9 @@ Web research routinely invents names, numbers, features, and integrations.
 This skill runs every research lane past an independent fact-checker, and
 you synthesize only from what survived.
 
-**Cost check.** A research run spends many agents: 4 lanes and 4
-fact-checkers by default, with repository clones and web searches.
+**Cost check.** A research run spends many agents: 4 lanes (Sonnet at effort
+`high`) and 4 fact-checkers (the session model at `high`) by default, with
+repository clones and web searches.
 
 **Workflow opt-in.** Run §2 as a Workflow in these cases:
 
@@ -43,13 +44,18 @@ Workflow({name: "tech-lead:research-lanes",
 ```
 
 - **Default lanes:** `primary`, `ecosystem`, `alternatives`, `fit`.
-- **Custom lanes:** pass `args.lanes: [{key, prompt}]` only when the defaults
-  do not fit. For example, with two subjects, use one `primary` lane per
-  subject.
+- **Custom lanes:** pass `args.lanes` only when the defaults do not fit. It
+  replaces the default set. Each entry is a default lane's key, which keeps
+  that lane's prompt, or a `{key, prompt}`; keys must be unique. For example,
+  with two subjects:
+  `lanes: ["ecosystem", "alternatives", "fit", {key: "primary-drizzle", prompt: "…"}, {key: "primary-prisma", prompt: "…"}]`.
+- **Model and effort:** `args.model` and `args.effort` change the lanes only.
+  Fact-checkers always run on the session model at `high`.
 - **If the Workflow tool is not available, or says "not found":** dispatch the same lanes as
-  general-purpose Agent calls in one message. Then dispatch one verifier
-  Agent per lane, using the lane and fact-check prompts in
-  `../../workflows/research.js`.
+  general-purpose Agent calls with `model: "sonnet"`, in one message. Then
+  dispatch one verifier Agent per lane on the session model, using the lane
+  and fact-check prompts in `../../workflows/research.js`. Agent calls cannot
+  pin effort, so on this path every agent runs at the session's effort.
 
 ## 3 · Synthesize
 
