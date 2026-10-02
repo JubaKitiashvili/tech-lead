@@ -158,6 +158,23 @@ export async function checkRepo(ctx, r) {
     assert.deepEqual(bad, [])
   })
 
+  await r.check('scripts: every scripts/*.mjs path the docs name exists', () => {
+    // Paths the plugin owns: after `<T>/`, a backtick or a space. A companion path such as
+    // `…/codex/*/scripts/codex-companion.mjs` belongs to another plugin and is skipped.
+    const bad = []
+    for (const f of mdFiles) {
+      for (const m of rd(f).matchAll(/(?:<T>\/|[`\s])(scripts\/[\w-]+(?:\/[\w-]+)*\.mjs)\b/g)) {
+        if (!fs.existsSync(path.join(root, m[1]))) bad.push(`${f}: ${m[1]}`)
+      }
+    }
+    assert.deepEqual([...new Set(bad)], [])
+  })
+
+  await r.check('runners: no doc tells the model to pass CronCreate a durable flag', () => {
+    // CronCreate jobs are session-only; `durable` has no effect (spec §7.6, audit cons01).
+    assert.deepEqual(mdFiles.filter(f => /\bdurable\s*:\s*true\b/.test(rd(f))), [])
+  })
+
   const installed = path.join(os.homedir(), '.claude/rules/tech-lead.md')
   if (fs.existsSync(installed) && fs.readFileSync(installed, 'utf8') !== rd('templates/rules-tech-lead.md')) {
     r.warn(`${installed} differs from templates/rules-tech-lead.md: re-copy it`)

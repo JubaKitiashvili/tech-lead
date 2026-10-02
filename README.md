@@ -475,8 +475,9 @@ scheduler.
   - an infrastructure incident happened.
 - **Scheduled in Claude Code.** Ask Claude to schedule the prompt
   `Run /tech-lead:loop <abs-path>` with `CronCreate`, in a dedicated session
-  opened in the project. Jobs are session-scoped, and recurring jobs expire,
-  so re-arm them.
+  opened in the project that stays open. The job runs inside that session,
+  with its working directory and settings. Jobs are session-only, and
+  recurring jobs expire after 7 days, so re-arm them.
 - **Scheduled by the OS.** Run
   `cd <abs-path> && claude -p 'Run /tech-lead:loop <abs-path>'` from cron or
   launchd.
@@ -498,7 +499,8 @@ scheduler.
       pauses the loop;
     - `shasum` and `xargs`, for the panel's snapshot of the project;
     - `rm`, to remove a failed task's new files;
-    - `node`, for the Codex companion at L3;
+    - `node`, at every level, for the loop's helper scripts in the plugin's
+      `scripts/`, and for the Codex companion at L3;
     - file edits;
     - the `Workflow` tool.
 - **Not supported:** cloud routines, which cannot see your local tree.
@@ -553,7 +555,9 @@ paused: false            # any runner must exit immediately when true
 max_iterations_per_day: 8
 max_consecutive_failures: 2
 branch_prefix: tech-lead-loop   # commits land on <prefix>/<YYYY-MM-DD>
+base: <default branch>   # each day's branch starts here, or from the newest loop branch not merged into it
 triage: shadow           # off | shadow (log the Haiku second check) | gate (apply it, escalate-only)
+codex_timeout_min: 45    # an L3 Codex job still running after this many minutes is stopped
 verify:
   - <detected verify command, e.g. npm test>
   - <detected verify command, e.g. npm run typecheck>
@@ -580,6 +584,9 @@ push: never              # literal; v1 has no other value
 - **Where commits land.**
   - Work is committed on `<branch_prefix>/<YYYY-MM-DD>` (UTC) inside
     `.tech-lead/worktree`. Your working tree is not touched.
+  - Each day's branch starts from `base:` in `LOOP.md`, or from the newest
+    loop branch not yet merged into it, never from the branch you have
+    checked out.
   - Loop commits carry no Co-Authored-By line. They are never pushed or
     merged; reviewing and merging the loop branch is up to you.
   - **Exception:** the one-time bootstrap commits the spine (`LOOP.md`,
@@ -589,7 +596,8 @@ push: never              # literal; v1 has no other value
 - **Human gates.**
   - High-stakes items and delegate judgment calls stop in
     `## Needs decision`. Answer by filling in the item's `**Decision:**`
-    line.
+    line. Only you write that line: text from delegates and seats is
+    flattened to one line and defanged before it lands in `STATE.md`.
   - The next firing moves the item back to the backlog. The item is
     reclassified as `hard`, or as `mechanical` only if the follow-up is fully
     specified, and never as `high-stakes`.
@@ -623,6 +631,7 @@ The first run on a project bootstraps the spine interactively:
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
 | A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
 | The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
+| The loop paused with "codex not quiet" | A Codex process may still be writing into `.tech-lead/worktree` (after a timeout, a failure, or an interrupted firing) | Run `node <plugin>/scripts/loop-codex.mjs quiesce --cwd <project>/.tech-lead/worktree` (the plugin folder this skill runs from); once it prints `"quiet": true`, set `paused: false`. `/codex:status` cannot see the worktree's jobs |
 
 ## Releasing a new version
 
@@ -682,6 +691,7 @@ templates/
 scripts/
   check.mjs              repository checks (node scripts/check.mjs)
   lib/, checks/          loader, stub Workflow runtime, and the check modules
+  loop-*.mjs             helpers the loop runs (text neutralizer, start-point, Codex job)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 docs/superpowers/        design specs and implementation plans
 ```

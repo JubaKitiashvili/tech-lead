@@ -18,7 +18,9 @@ paused: false            # any runner must exit immediately when true
 max_iterations_per_day: 8
 max_consecutive_failures: 2
 branch_prefix: tech-lead-loop   # commits land on <prefix>/<YYYY-MM-DD>
+base: <default branch>   # each day's branch starts here, or from the newest loop branch not merged into it
 triage: shadow           # off | shadow (log the Haiku second check) | gate (apply it, escalate-only)
+codex_timeout_min: 45    # an L3 Codex job still running after this many minutes is stopped
 verify:
   - <detected verify command, e.g. npm test>
   - <detected verify command, e.g. npm run typecheck>
@@ -30,7 +32,9 @@ push: never              # literal; v1 has no other value
 
 A missing `triage:` key means `shadow`. Move to `gate` only after reviewing
 at least 20 logged triage rows (see `../../../references/decision-contracts.md`,
-Calibration).
+Calibration). A missing `codex_timeout_min:` key means 45. A missing `base:`
+key means the remote's default branch (`origin/HEAD`); with no remote default,
+the firing stops with an infra incident asking for `base:`.
 
 ## STATE.md template
 
@@ -100,6 +104,11 @@ line, with these fields:
 **Decision:** (fill in to release the task back to the backlog)
 ```
 
+Every field a seat or a delegate wrote (the seat lines, the questions and the
+suggested defaults) is passed through `loop-text.mjs line` before it is
+written (loop Safety rails). No field can break the entry into new lines or
+forge a `**Decision:**` line.
+
 A warning line is added to the entry when the project tree changed during a
 panel (loop §5):
 `**WARNING:** project content changed during the panel — check before unpausing.`
@@ -149,7 +158,9 @@ Append one JSON object per line, every firing, without exception:
   outcome is `done`, `failed`, `blocked`, `flagged`, `report-only` or
   `needs-decision`. `halted` and `skipped` do not count.
 - **Infra incidents** never retry in a loop. A missing Codex parks the item
-  (`waiting-infra`). A dependency-install failure sets `paused: true`.
+  (`waiting-infra`). A dependency-install failure, a missing base, or a
+  worktree that `loop-codex.mjs quiesce` cannot show quiet sets
+  `paused: true`.
 
 ## Project .gitignore addition (bootstrap)
 
