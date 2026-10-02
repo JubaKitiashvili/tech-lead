@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.3.3.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.3.4.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -286,11 +286,14 @@ Anthropic's documentation on 2026-09-29. In short:
   default to `medium`. Go to `high` when verification matters, and to
   `xhigh` for long agentic work. Anthropic says to reserve `xhigh` and `max`
   for measured gains, and the Claude Code docs call `max` "prone to
-  overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, switch
-  to Fable 5.1 (`/model fable`).
+  overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, change
+  the approach, then bring in the Codex peer or a fresh-context
+  deep-reasoner; `max` is the last effort step.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
   `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
-  announced, for example.
+  announced, for example. The plugin never names `fable`, or `best`, which
+  resolves to Fable: a verified re-check on 2026-09-30 found no role for
+  Fable 5.1 here (see "No Fable tier" in SKILL.md).
 
 ### Workflow mode
 
@@ -625,17 +628,25 @@ The first run on a project bootstraps the spine interactively:
 
 1. Bump `version` in `.claude-plugin/plugin.json`. Leave it out of
    `marketplace.json`, because `plugin.json` wins.
-2. Validate the marketplace file and the manifest:
+2. Run the repository checks and the unit tests; both must pass:
+
+   ```sh
+   node scripts/check.mjs
+   node --test "tests/**/*.test.mjs"
+   ```
+
+   Quote the glob: `node --test tests/` does not run the suite on Node 22.
+3. Validate the marketplace file and the manifest:
 
    ```sh
    claude plugin validate --strict .
    claude plugin validate --strict .claude-plugin/plugin.json
    ```
 
-3. Commit and push. Optionally, tag the release with
+4. Commit and push. Optionally, tag the release with
    `claude plugin tag --push`, which creates `tech-lead--v<version>` and
    refuses to run on a dirty tree.
-4. Users update:
+5. Users update:
    - marketplace install: `claude plugin update tech-lead@tech-lead`;
    - clone: `git pull`.
 
@@ -668,6 +679,11 @@ references/
   decision-contracts.md  the reflex rules and JSON contracts
 templates/
   rules-tech-lead.md     the optional always-on routing rule
+scripts/
+  check.mjs              repository checks (node scripts/check.mjs)
+  lib/, checks/          loader, stub Workflow runtime, and the check modules
+tests/                   unit tests (node --test "tests/**/*.test.mjs")
+docs/superpowers/        design specs and implementation plans
 ```
 
 ## Credits
