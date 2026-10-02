@@ -5,9 +5,10 @@ fast-worker path and the L3 Codex path). A §7 retry reuses the prepared
 worktree and its `U` unchanged. It never re-runs these steps.
 
 `<P>` is the absolute project path, `<S>` = `<P>/.tech-lead`,
-`<W>` = `<S>/worktree`, and `<T>` is the plugin root (loop §1). Every
-command names its directory explicitly: use `git -C` with an absolute path,
-never a bare `git` or a relative path.
+`<W>` = `<S>/worktree`, `<T>` is the plugin root, and `<N>` is the
+firing's lock generation (all from loop §1). Every command names its
+directory explicitly: use `git -C` with an absolute path, never a bare
+`git` or a relative path.
 
 ## Steps
 
@@ -60,9 +61,27 @@ never a bare `git` or a relative path.
    fixes it.
    - `<S>/worktree-deps.ok` holds `<branch> <lockfile hash>`.
    - If that file is missing, or its content differs from the current values,
-     install dependencies in `<W>` (e.g. `cd <W> && npm ci`).
-     - **Success:** rewrite the marker.
-     - **Failure:** delete the marker, then:
+     install dependencies in `<W>`. The install runs as a child of the
+     firing lock, in a process group of its own, through one foreground
+     Bash call with `timeout: 600000`. The words after `--` are the
+     project's install command (`npm ci` here):
+
+     ```
+     node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label deps --cwd <W> --timeout-ms 540000 -- npm ci
+     ```
+
+     `--timeout-ms 540000` ends the install, and kills its process group,
+     before the Bash call's own limit: a Bash call that reaches its
+     `timeout` is moved to the background, still running in `<W>`. If one
+     ever is, wait for its completion notification before going on.
+
+     The install's output passes through, and the last stderr line is
+     `loop-lock exec: {"state": …, "exit": …}`.
+     - **Success** (`state` `exited`, `exit` 0): rewrite the marker.
+     - **Lost lock** (`state` `not-holder` or `holder-gone`): follow
+       loop §1 step 3.
+     - **Failure** (any other `state`, or no such line): delete the
+       marker, then:
        - write the incident to `## Last run`;
        - set `paused: true` in `LOOP.md`;
        - return the item to `## Backlog` with its `status:` unchanged;

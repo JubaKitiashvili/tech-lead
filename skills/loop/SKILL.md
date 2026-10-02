@@ -40,19 +40,83 @@ This skill executes exactly one iteration of the backlog executor.
    - Every command in this skill uses these absolute paths with `git -C`.
      Runners may start in another directory.
 2. **Missing spine.** If `<S>` is missing, follow `references/bootstrap.md`.
-   Bootstrap ends the firing.
-3. **Read state.**
+   Bootstrap ends the firing. It takes no lock.
+3. **Acquire the firing lock,** before anything under `<S>` is read:
+
+   ```
+   node <T>/scripts/loop-lock.mjs acquire <P>
+   ```
+
+   The lock lives outside the project (in `~/.cache/tech-lead/`), so one
+   firing at a time works on `<P>`, whichever runner started it.
+   - **Exit 3** (`"state": "held"`: another firing holds the lock, or a
+     child of an earlier firing may still be running) **or exit 2**
+     (`"state": "error"`): end the firing at once and write nothing: no
+     spine edit and no ledger entry. Ending at the lock, and losing the lock
+     (below), are the only exceptions to §8's one-entry rule. Report the printed `reason` or `detail`, and stop the
+     runner.
+   - **Exit 0** (`"state": "acquired"`): `generation` is this firing's
+     `<N>`. Write it literally into every later command; shell variables
+     do not survive between Bash calls. `<N>` is also this firing's ledger
+     `iteration`.
+   - **`reclaimed` is set:** an earlier firing ended without releasing, and
+     acquire stopped its children before taking over. Note "reclaimed
+     generation <generation> (<how>)" and what it `stopped` in `## Last run`.
+     A `same-process` reclaim is always noted.
+   - **`stopped` is set:** children of an earlier, released generation were
+     still running (an owner release stops nothing), and acquire stopped
+     them first. Note each `file` in `## Last run`.
+   - **Dispatch records.** Bracket every Agent and Workflow dispatch of
+     this firing (the triage workflow, the panel workflow or each of its
+     Agent-form seats, each delegate, a §7 retry) with a record of `<N>`.
+     Right before the call:
+
+     ```
+     node <T>/scripts/loop-lock.mjs dispatch open <P> --generation <N> --label <agent or workflow name>
+     ```
+
+     It prints `{"id": …}`. Once the dispatch's result has arrived (§8,
+     completion rule), or the call failed, close it with that id:
+
+     ```
+     node <T>/scripts/loop-lock.mjs dispatch close <P> --generation <N> --id <id>
+     ```
+
+     An open record tells the next firing in this process that an agent of
+     `<N>` may still be running, so it does not take the lock over.
+   - **Lost lock.** A not-holder answer from a lock-checked command means
+     the owner or another firing took `<N>` over: `dispatch open` or
+     `dispatch close` exit 3, an `exec` state of `not-holder` or
+     `holder-gone`, `loop-codex.mjs start` exit 4, or `release` exit 3.
+     Stop at once. Write nothing more to `<S>` or `<W>`, append no ledger
+     entry, and report it. The next firing recovers what this one left.
+4. **Read state.**
    - `LOOP.md` (config). A missing `triage:` key means `shadow`, and a
      missing `codex_timeout_min:` means 45.
    - Every section of `STATE.md`.
    - From `LEDGER.jsonl`: the last `max(10, max_consecutive_failures)`
      entries, plus every entry whose `ts` date (UTC) is today.
-4. **Stale `## Now`.** If `## Now` is non-empty, a prior firing was
-   interrupted.
-   - Move that item back to the top of `## Backlog`, keeping its recorded
-     `status:` and `class:`.
-   - Fold a "recovered stale Now" note into this firing's `## Last run` and
-     into its single ledger entry. One firing, one entry.
+5. **Stale `## Now`.** Plan the recovery of an interrupted firing. The
+   planner only reads:
+
+   ```
+   node <T>/scripts/loop-recover.mjs <P> --worktree <W> --reclaimed <generation>
+   ```
+
+   Pass `--reclaimed` only when acquire reported `reclaimed`, with its
+   `generation`. Exit 2 means the planner could not read the project: write
+   its `detail` as an incident in `## Last run`, set `paused: true`, record
+   outcome `skipped`, note "recovery planner", and stop the runner.
+   Otherwise, take its `actions` in order:
+   - `requeue-now`: `## Now` holds an item, so a prior firing was
+     interrupted. Move that item back to the top of `## Backlog`, keeping
+     its recorded `status:` and `class:`. Fold a "recovered stale Now" note
+     into this firing's `## Last run` and into its single ledger entry. One
+     firing, one entry.
+   - `reset-worktree`: `<W>` holds staged or tracked changes that an
+     interrupted firing left. Note it in `## Last run`. Do not touch `<W>`
+     here: `references/worktree.md` step 2 quiesces and resets it before
+     the next write-capable dispatch.
 
 ## 2 · Gates (in order; the first hit wins; each hit appends a ledger entry)
 
@@ -123,6 +187,7 @@ and a one-line reason, back to the item.
 
 1. Run `Workflow({name: "tech-lead:triage", args: {item: {title, notes},
    orchestratorClass: <your class>}})`. Only the title and notes go in.
+   Bracket it with a dispatch record (§1 step 3).
 2. The workflow enforces the verdict schema and computes `derived`,
    `checker` and `agreement` in code.
 3. If the workflow is unavailable, returns "not found", or returns no verdict,
@@ -156,14 +221,16 @@ includes a class set in §3.
 - **L2+, `mechanical`.**
   1. Prepare the worktree (`references/worktree.md`).
   2. Dispatch `tech-lead:fast-worker` (`name: "loop-worker"`) with a
-     self-contained brief that carries the execution contract from that file.
-     Its verify commands run inside `<W>`.
+     self-contained brief that carries the execution contract from that file,
+     bracketed by a dispatch record (§1 step 3). Its verify commands run
+     inside `<W>`.
 - **L2, `hard`.** Park it by level:
   - write the plan into `## Last run`;
   - mark the item `status: waiting-level`;
   - record outcome `report-only`, note "waiting-level".
-- **L3, `hard`, analysis-shaped.** Dispatch `tech-lead:deep-reasoner`. It is
-  read-only, so its analysis must land somewhere:
+- **L3, `hard`, analysis-shaped.** Dispatch `tech-lead:deep-reasoner`,
+  bracketed by a dispatch record (§1 step 3). It is read-only, so its
+  analysis must land somewhere:
   - Write its Recommendation and Risks into `## Last run`, through
     `loop-text.mjs block`.
   - If the analysis implies code changes, add a follow-up item at the top of
@@ -182,18 +249,23 @@ includes a class set in §3.
      `timeout: 600000`, and prints one JSON line:
 
      ```
-     node <T>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <S>/briefs/<slug>.md --cap-min <codex_timeout_min>
+     node <T>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <S>/briefs/<slug>.md --cap-min <codex_timeout_min> --project <P> --generation <N>
      ```
 
-     - Exit 2: `codex_timeout_min` is not a number of minutes from 1 to
-       1440, and nothing was launched. Write an incident naming the value,
-       set `paused: true`, return the item with its `status:` unchanged, and
-       record outcome `skipped`, note "codex_timeout_min invalid".
+     - Exit 2: nothing was launched. Either `codex_timeout_min` is not a
+       number of minutes from 1 to 1440, or the lock could not register
+       the job (`"state": "error"` with a `detail`). Write an incident
+       naming the value or the `detail`, set `paused: true`, return the
+       item with its `status:` unchanged, and record outcome `skipped`,
+       note "codex_timeout_min invalid" or "codex start error".
      - Exit 3 (`"state": "unavailable"`): Codex could not be launched (not
        installed, a version error, or a launch whose outcome is unknown).
        Run step 5's quiesce without `--job`. When it is quiet, return the
        item with `status: waiting-infra`, and record outcome `skipped`, note
        "codex unavailable".
+     - Exit 4 (`"state": "not-holder"`): the firing lost its lock (§1
+       step 3). The helper launched nothing, or quiesced the job it had
+       just launched (its `quiet` tells whether that worked).
   4. **Wait.** Repeat while `state` is `running`. Write the printed `jobId`
      literally into each call; shell variables do not survive between Bash
      calls:
@@ -243,7 +315,8 @@ includes a class set in §3.
      (cd <P> && { git rev-parse HEAD; git diff HEAD --binary -- . ':(exclude).tech-lead'; git ls-files -o --exclude-standard -z -- . ':(exclude).tech-lead' | xargs -0 shasum; } | shasum)
      ```
 
-  3. **Run the seats:**
+  3. **Run the seats,** each dispatch bracketed by a dispatch record (§1
+     step 3):
      - Workflow opted in → `Workflow({name: "tech-lead:panel-seats", args:
        {briefPath, options}})`;
      - otherwise, or if the workflow is "not found" → the protocol's Agent
@@ -311,6 +384,29 @@ index for the next firing.
      working tree: `git -C <W> restore --staged .`. Then assert again.
      - Never run §7's working-tree revert here. It would discard the current
        task's work.
+   - Run each command as a child of the firing lock, in a process group of
+     its own. For the `verify:` item at index `<K>` (counting from 0), one
+     foreground Bash call with `timeout: 600000`:
+
+     ```
+     node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label verify --cwd <W> --timeout-ms 540000 --verify <K>
+     ```
+
+     `--verify <K>` makes the wrapper read the command from `LOOP.md`
+     itself, so never retype or quote a verify command. `--timeout-ms
+     540000` ends the run, and kills its process group, before the Bash
+     call's own limit: a Bash call that reaches its `timeout` is not
+     killed but moved to the background, where it keeps running in `<W>`.
+     If a Bash call is ever moved to the background, wait for its
+     completion notification before you run any other `exec`, dispatch,
+     or change to `<W>`. Its output passes
+     through, and the last stderr line is
+     `loop-lock exec: {"state": …, "exit": …}`. Judge by that `state`, not
+     by the exit code alone (a command may exit 124 or 125 itself):
+     - `exited` with `exit` 0: the command passed.
+     - `not-holder` or `holder-gone`: the firing lost its lock (§1 step 3).
+     - `timeout` (the run passed 540000 ms), anything else, or no such
+       line: it failed.
    - Any verify failure is an attempt failure (§7).
 4. **Commit.**
    - **All pass, files changed:**
@@ -355,16 +451,36 @@ attempts. Record outcome `failed`, `verify: "fail"`.
 
 ## 8 · Report & runner handling
 
-**Always:**
+**Always,** in this order:
 
-- Update `## Last run`: timestamp, level, what happened, and the next planned
-  action.
-- Append exactly one ledger entry, even for failed or halted firings.
+1. Update `## Last run`: timestamp, level, what happened, and the next
+   planned action.
+2. Append exactly one ledger entry, even for failed or halted firings. Its
+   `iteration` is `<N>`. A firing that ended at the lock or lost it (§1
+   step 3) writes nothing; those are the only exceptions.
+3. **Release the firing lock,** as the firing's last command:
+
+   ```
+   node <T>/scripts/loop-lock.mjs release <P> --generation <N>
+   ```
+
+   - It stops any child of `<N>` still on record and lists it in
+     `lingering`. Every child should be gone by now, so a non-empty
+     `lingering` is a bug: name it in the summary. The next acquire stops
+     a lingering child again before it takes the lock.
+   - Exit 3 with `"state": "dispatch-open"`: a dispatch record of `<N>` is
+     still open, and nothing was released. Wait for that dispatch's result
+     (completion rule below), close it with the printed `id`, then run the
+     release again.
+   - Exit 3 with `"state": "not-holder"`: the lock was lost (§1 step 3).
+   - After the release, only the runner handling below remains: no other
+     command, and no write to `<S>` or `<W>`.
 
 **Completion rule.** Every dispatch must COMPLETE inside the firing.
 
 - Agent and Workflow results arrive as completion notifications. Wait for
-  them before §6. Headless `claude -p` waits too.
+  them before §6, then close their dispatch records (§1 step 3). Headless
+  `claude -p` waits too. Never release with a dispatch record open.
 - A Codex job is waited on with foreground `loop-codex.mjs wait` calls
   until its state is no longer `running`, then quiesced (§5).
 - Never end the turn, call ScheduleWakeup, or exit while a dispatch is

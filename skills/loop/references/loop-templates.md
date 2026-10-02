@@ -119,7 +119,9 @@ bootstrap, and the loop never commits them.
 
 ## LEDGER.jsonl entry schema
 
-Append one JSON object per line, every firing, without exception:
+Append one JSON object per line for every firing that acquired the firing
+lock (loop §1 step 3), whatever its outcome. A firing that ends at the lock
+(held, or a lock error) writes nothing, not even an entry:
 
 ```json
 {"ts": "<ISO-8601 UTC>", "iteration": <int>, "task": "<title or null>",
@@ -139,8 +141,11 @@ Append one JSON object per line, every firing, without exception:
 
 - `reason`, `models`, `triage`, `panel` and `workflow_run_id` are null or
   absent when they do not apply. Older entries without them remain valid.
-- `iteration` is the previous entry's iteration + 1, or 1 when the file is
-  empty.
+- `iteration` is the firing's lock generation `<N>` (loop §1 step 3). It
+  strictly increases, and gaps are allowed: a firing that was interrupted
+  before its append, or that lost its lock, leaves one. Acquire takes one
+  more than the larger of the lock's last generation and the largest
+  `iteration` here, so a lost lock directory never repeats a number.
 - `delegate` is the literal string `"panel"` for panel firings (the
   `high-stakes` path that runs both seats).
 - `triage.agreement` values:

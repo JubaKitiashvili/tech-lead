@@ -493,10 +493,12 @@ scheduler.
   - **Allow what one firing runs.** Headless runs can't answer permission
     prompts. The loop needs:
     - git;
-    - your verify commands;
-    - your dependency install (for example `npm ci`). It runs in
-      `.tech-lead/worktree` on the first write-capable firing, and a denial
-      pauses the loop;
+    - your verify commands. The delegate runs them in
+      `.tech-lead/worktree`; the loop's own verify runs go through
+      `node <plugin>/scripts/loop-lock.mjs exec`;
+    - your dependency install (for example `npm ci`), through the same
+      `exec` wrapper. It runs in `.tech-lead/worktree` on the first
+      write-capable firing, and a denial pauses the loop;
     - `shasum` and `xargs`, for the panel's snapshot of the project;
     - `rm`, to remove a failed task's new files;
     - `node`, at every level, for the loop's helper scripts in the plugin's
@@ -510,8 +512,10 @@ Scheduled firings never ask questions. Anything that needs you goes into
 
 ### One iteration
 
-1. **Rehydrate.** Read `LOOP.md`, `STATE.md`, and the recent ledger. An
-   interrupted item goes back to the backlog.
+1. **Rehydrate.** Take the project's [firing lock](#the-firing-lock); a
+   firing that finds it held exits and writes nothing. Then read
+   `LOOP.md`, `STATE.md`, and the recent ledger. An interrupted item goes
+   back to the backlog.
 2. **Gates.** Stop if the loop is paused, if the circuit breaker has tripped
    (too many consecutive failures), or if the daily budget is spent.
 3. **Pick.** Take an item you just decided, or the first eligible backlog
@@ -526,7 +530,8 @@ Scheduled firings never ask questions. Anything that needs you goes into
    - Only then does the loop commit.
 7. **Failure path.** Retry once with the failure excerpt. After a second
    failure, reset the task's changes and move the item to `## Blocked`.
-8. **Report.** Update `## Last run`, and append exactly one ledger entry.
+8. **Report.** Update `## Last run`, append exactly one ledger entry, and
+   release the lock.
 
 | Level | `mechanical` | `hard` | `high-stakes` |
 |---|---|---|---|
@@ -540,7 +545,7 @@ Scheduled firings never ask questions. Anything that needs you goes into
 |---|---|
 | `LOOP.md` | Configuration (see below) |
 | `STATE.md` | Six sections: `## Now`, `## Backlog`, `## Needs decision`, `## Blocked`, `## Done`, `## Last run`. You can edit it directly to reorder, add, or veto items |
-| `LEDGER.jsonl` | One JSON line per firing: task, class, outcome, verify, commits, triage, and panel |
+| `LEDGER.jsonl` | One JSON line per firing that took the lock: task, class, outcome, verify, commits, triage, and panel |
 | `briefs/` | Panel and Codex briefs (gitignored) |
 | `worktree/` | The loop's git worktree (gitignored) |
 | `worktree-deps.ok` | Marker for installed dependencies (gitignored) |
@@ -566,6 +571,41 @@ scope:
 push: never              # literal; v1 has no other value
 ---
 ```
+
+### The firing lock
+
+Every firing that finds a spine takes the project's firing lock before it
+reads the spine, and releases it as its last command. Only one firing works
+on a project at a time, whichever runner started it.
+
+- **Where it lives.** Outside the project, in
+  `~/.cache/tech-lead/<key>/lock`. `<key>` is the project folder's name
+  plus a hash of its real path, so every path to the project, symlinks
+  included, finds the same lock. A moved project gets a fresh one.
+- **A held lock.** A firing that finds the lock held exits at once and
+  writes nothing, not even a ledger entry.
+- **Generations.** Each firing gets the next generation number, which is
+  also its ledger `iteration`. Numbers only grow, and gaps are normal.
+- **Children.** Verify commands and the dependency install run through
+  the lock's `exec` wrapper, each in a process group of its own, and every
+  Codex job is registered with the lock before it starts. When a firing
+  dies, the next one stops its children (it kills their process groups and
+  quiesces Codex) and only then takes the lock over. Every acquire stops
+  any child still on record first, of the last generation or an earlier
+  one. Age alone
+  never frees a lock, and no watchdog process runs.
+- **Status.** `node <plugin>/scripts/loop-lock.mjs status <project>`
+  prints the last generation, its holder and whether it is alive, and every
+  child record. It changes nothing.
+- **Owner release.** When the lock stays held and you know its firing is
+  not running (for example, a firing interrupted in a session that stays
+  open while a background agent ran: `"reason": "dispatch-open"`), run
+  `node <plugin>/scripts/loop-lock.mjs release <project> --generation <N> --owner`
+  in your own terminal. It prints the status, asks you to type `<N>`, and
+  releases without stopping anything. Without a terminal it refuses and
+  writes nothing. The next firing then stops every child the released
+  generation left running (its process groups and Codex jobs) before it
+  starts, and waits while any of them cannot be stopped.
 
 ### Safety
 
@@ -631,6 +671,7 @@ The first run on a project bootstraps the spine interactively:
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
 | A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
 | The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
+| A firing ends at once and writes nothing, not even a ledger entry | Another firing holds the project's [firing lock](#the-firing-lock), or a child of an interrupted firing could not be stopped yet (the printed `reason`). Or the lock failed (the printed `detail`, for example no holder process) | Run `node <plugin>/scripts/loop-lock.mjs status <project>`. A live holder finishes on its own. If its firing is not running and the lock stays held (`dispatch-open`, for example), use the owner release |
 | The loop paused with "codex not quiet" | A Codex process may still be writing into `.tech-lead/worktree` (after a timeout, a failure, or an interrupted firing) | Run `node <plugin>/scripts/loop-codex.mjs quiesce --cwd <project>/.tech-lead/worktree` (the plugin folder this skill runs from); once it prints `"quiet": true`, set `paused: false`. `/codex:status` cannot see the worktree's jobs |
 
 ## Releasing a new version
@@ -690,8 +731,8 @@ templates/
   rules-tech-lead.md     the optional always-on routing rule
 scripts/
   check.mjs              repository checks (node scripts/check.mjs)
-  lib/, checks/          loader, stub Workflow runtime, and the check modules
-  loop-*.mjs             helpers the loop runs (text neutralizer, start-point, Codex job)
+  lib/, checks/          loader, stub Workflow runtime, the loop's shared helpers, and the check modules
+  loop-*.mjs             helpers the loop runs (text neutralizer, start-point, Codex job, firing lock, recovery planner)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 docs/superpowers/        design specs and implementation plans
 ```

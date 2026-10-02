@@ -165,3 +165,106 @@ test('fails when a doc tells the model to pass CronCreate durable', t => {
   assert.equal(r.status, 1)
   assert.match(r.stdout, /FAIL runners: no doc tells the model to pass CronCreate a durable flag\n[\s\S]*README\.md/)
 })
+
+// Stage 0c-1 prose wiring (scripts/checks/loop.mjs): one mutation per check.
+const LOOP_SKILL = 'skills/loop/SKILL.md'
+const failBlock = (stdout, name) => stdout.split(`FAIL ${name}`)[1]?.split('\nFAIL ')[0] ?? null
+
+test('fails when loop section 1 reads LOOP.md before it acquires the firing lock', t => {
+  const name = 'loop: SKILL.md section 1 acquires the firing lock before it reads LOOP.md'
+  const early = copyRepo(t)
+  mutate(early, LOOP_SKILL, '2. **Missing spine.** If `<S>` is missing', '2. **Missing spine.** Read `LOOP.md` first. If `<S>` is missing')
+  let r = runCheck(early)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /LOOP\.md is read before loop-lock\.mjs acquire/)
+  const none = copyRepo(t)
+  mutate(none, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs acquire <P>', 'node <T>/scripts/loop-lock.mjs status <P>')
+  r = runCheck(none)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /names no loop-lock\.mjs acquire/)
+})
+
+test('fails when loop section 8 runs a command after the release or appends the ledger after it', t => {
+  const name = 'loop: SKILL.md section 8 releases the firing lock as the last command, after the ledger append'
+  const after = copyRepo(t)
+  mutate(after, LOOP_SKILL, '- **Manual.** Report the summary', '- **Manual.** Run `node <T>/scripts/loop-codex.mjs quiesce --cwd <W>`, then report the summary')
+  let r = runCheck(after)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /last command is not the release: node <T>\/scripts\/loop-codex\.mjs quiesce/)
+  const late = copyRepo(t)
+  mutate(late, LOOP_SKILL, '2. Append exactly one ledger entry, even for', '2. Write one entry, even for')
+  mutate(late, LOOP_SKILL, '- **Manual.** Report the summary', '- **Manual.** Append exactly one ledger entry, then report the summary')
+  r = runCheck(late)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /the ledger append comes after the release/)
+})
+
+test('fails when loop section 6 runs verify commands outside loop-lock.mjs exec', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label verify --cwd <W> --timeout-ms 540000 --verify <K>', 'cd <W> && <verify command K>')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, 'loop: SKILL.md section 6 runs every verify command through loop-lock.mjs exec --verify') ?? '',
+    /no loop-lock\.mjs exec .*--label verify .*--verify <K>/)
+})
+
+test('fails when worktree.md installs dependencies outside loop-lock.mjs exec', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'skills/loop/references/worktree.md', 'node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label deps --cwd <W> --timeout-ms 540000 -- npm ci', 'cd <W> && npm ci')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: worktree.md installs dependencies through loop-lock.mjs exec') ?? ''
+  assert.match(block, /no loop-lock\.mjs exec .*--label deps/)
+  assert.match(block, /runs the install directly: cd <W> && npm ci/)
+})
+
+// A Bash call that reaches its own 600000 ms limit is moved to the background, not killed,
+// so exec must end the run (and kill its group) first.
+test('fails when the verify or the dependency exec has no --timeout-ms, or one at or past the Bash limit', t => {
+  const verify = 'loop: SKILL.md section 6 runs every verify command through loop-lock.mjs exec --verify'
+  const deps = 'loop: worktree.md installs dependencies through loop-lock.mjs exec'
+  for (const [file, name, from, to] of [
+    [LOOP_SKILL, verify, ' --timeout-ms 540000 --verify <K>', ' --verify <K>'],
+    [LOOP_SKILL, verify, ' --timeout-ms 540000 --verify <K>', ' --timeout-ms 600000 --verify <K>'],
+    ['skills/loop/references/worktree.md', deps, ' --timeout-ms 540000 -- npm ci', ' -- npm ci'],
+    ['skills/loop/references/worktree.md', deps, ' --timeout-ms 540000 -- npm ci', ' --timeout-ms 999999 -- npm ci'],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, file, from, to)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, to)
+    assert.match(failBlock(r.stdout, name) ?? '', /--timeout-ms/, to)
+  }
+})
+
+test('fails and names the line when a doc starts Codex without --project and --generation', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, ' --cap-min <codex_timeout_min> --project <P> --generation <N>', ' --cap-min <codex_timeout_min>')
+  append(dir, 'README.md', '\nRun `node <plugin>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <f> --cap-min 45 --generation <N>`.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: every loop-codex.mjs start in the docs carries --project and --generation') ?? ''
+  assert.match(block, /skills\/loop\/SKILL\.md:\d+: loop-codex\.mjs start without --project, --generation/)
+  assert.match(block, /README\.md:\d+: loop-codex\.mjs start without --project/)
+  assert.doesNotMatch(block, /README\.md:\d+: loop-codex\.mjs start without --project, --generation/)
+})
+
+test('fails and names the file when git stash appears anywhere in skills/', t => {
+  const dir = copyRepo(t)
+  append(dir, 'skills/loop/references/worktree.md', '\nKeep the edits with `git -C <W> stash push` first.\n')
+  append(dir, 'skills/quick/SKILL.md', '\nThen run git stash.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: no git stash anywhere in skills/') ?? ''
+  assert.match(block, /skills\/loop\/references\/worktree\.md:\d+/)
+  assert.match(block, /skills\/quick\/SKILL\.md:\d+/)
+})
+
+test('fails when loop SKILL.md drops the dispatch close around Agent and Workflow dispatches', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs dispatch close <P> --generation <N> --id <id>', 'nothing')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, 'loop: SKILL.md brackets Agent and Workflow dispatches with dispatch open and dispatch close') ?? '',
+    /names no loop-lock\.mjs dispatch close/)
+})
