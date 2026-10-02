@@ -115,3 +115,9 @@ test('dynamic import() fails in a workflow body', async () => {
   const w = loadWorkflowSource(wf(META, "const fs = await import('node:fs')\nreturn typeof fs.readFileSync"))
   await assert.rejects(w.run({}), /dynamic import/)
 })
+
+test('pipeline stops an item at a stage that returns null, as the live runtime does', async () => {
+  const body = 'const seen = []\nconst r = await pipeline([1, 2], x => (x === 1 ? null : x), (prev, item) => { seen.push(item); return prev * 10 })\nreturn { r, seen }'
+  const { result } = await loadWorkflowSource(wf(META, body)).run({})
+  assert.deepEqual(result, { r: [null, 20], seen: [2] })
+})

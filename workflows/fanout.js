@@ -26,13 +26,27 @@ const norm = p => {
 }
 const repo = norm(A.repo)
 const owner = new Map()
+const ids = new Set()
 for (const t of A.tasks) {
-  if (!t.id || !t.brief || !Array.isArray(t.files) || t.files.length === 0) throw new Error(`task ${t.id || '?'}: id, brief and a non-empty files[] are required`)
+  const hasId = t.id !== undefined && t.id !== null && String(t.id) !== ''
+  if (!hasId || !t.brief || !Array.isArray(t.files) || t.files.length === 0) throw new Error(`task ${hasId ? t.id : '?'}: id, brief and a non-empty files[] are required`)
+  // The id is the only key that ties a result back to its task.
+  if (ids.has(String(t.id))) throw new Error(`task ids must be unique: ${t.id} appears twice`)
+  ids.add(String(t.id))
   if (!t.files.every(f => String(f).startsWith('/'))) throw new Error(`task ${t.id}: file paths must be absolute`)
-  t.files = t.files.map(norm)
+  // A directory entry would hide its files from the disjointness check below.
+  const dir = t.files.find(f => String(f).endsWith('/'))
+  if (dir) throw new Error(`task ${t.id}: ${dir} is a directory; list the files it may touch`)
+  t.files = [...new Set(t.files.map(norm))]
   for (const f of t.files) {
     if (!f.startsWith(repo + '/')) throw new Error(`task ${t.id}: ${f} is outside the repo ${repo}`)
     if (owner.has(f)) throw new Error(`tasks ${owner.get(f)} and ${t.id} both touch ${f}: file sets must be disjoint — merge or sequence them`)
+    // Lexically, so '/r/src', '/r/src/.' and '/r/src/x/..' are all caught.
+    for (const [g, id] of owner) {
+      if (String(id) === String(t.id)) continue
+      const [outer, inner] = g.startsWith(f + '/') ? [f, g] : f.startsWith(g + '/') ? [g, f] : []
+      if (outer) throw new Error(`tasks ${id} and ${t.id}: ${outer} contains ${inner}, so a directory entry would hide its files from the disjointness check — list files`)
+    }
     owner.set(f, t.id)
   }
 }
@@ -63,11 +77,20 @@ ${t.files.map(f => `  - ${f}`).join('\n')}
 - Run the narrowest verification that exists for these files and report it. Other workers are editing other files in the same tree at the same time: do not run write-mode formatters or \`--fix\` linters, and do not fix failures in files outside your allowed list — report them instead. The orchestrator runs the project-wide verify afterwards.
 - Any judgment call (two reasonable readings, a design choice): do not guess — leave that part undone and list it under judgment_calls with your suggested default.`
 
+// agent() throws when the worker cannot run (for example, once a token budget is spent).
+// The error is kept, so a task that never ran is told apart from one that returned nothing.
+const errorText = e => String((e && e.message) || e)
+const noReport = (t, error) => ({ id: t.id, status: 'no-report', report: null, out_of_scope: [], error })
+
 const results = await pipeline(
   A.tasks,
-  t => agent(brief(t), { agentType: 'tech-lead:fast-worker', schema: REPORT, label: `exec:${t.id}`, phase: 'Execute' }),
-  (r, t) => {
-    if (!r) return { id: t.id, status: 'no-report', report: null, out_of_scope: [] }
+  t => agent(brief(t), { agentType: 'tech-lead:fast-worker', schema: REPORT, label: `exec:${t.id}`, phase: 'Execute' })
+    .then(report => ({ report, error: null }), e => {
+      log(`exec:${t.id} has no report: ${errorText(e)}`)
+      return { report: null, error: errorText(e) }
+    }),
+  ({ report: r, error }, t) => {
+    if (!r) return noReport(t, error)
     const allowed = new Set(t.files)
     const abs = f => norm(String(f).startsWith('/') ? String(f) : `${repo}/${f}`)
     const outOfScope = r.files_touched.map(abs).filter(f => !allowed.has(f))
@@ -76,11 +99,13 @@ const results = await pipeline(
       : r.verification.some(v => v.result === 'fail') ? 'verify-failed'
       : r.skipped_flagged.length ? 'incomplete'
       : 'ok'
-    return { id: t.id, status, report: r, out_of_scope: outOfScope }
+    return { id: t.id, status, report: r, out_of_scope: outOfScope, error: null }
   },
 )
 
+// A stage that throws drops its item to null; keyed by index, every task stays in the results.
+const settled = results.map((r, i) => r || noReport(A.tasks[i], 'the contract check threw on this report'))
 const byStatus = {}
-for (const r of results.filter(Boolean)) byStatus[r.status] = (byStatus[r.status] || 0) + 1
+for (const r of settled) byStatus[r.status] = (byStatus[r.status] || 0) + 1
 log(`fan-out: ${JSON.stringify(byStatus)}`)
-return { summary: byStatus, results: results.filter(Boolean) }
+return { summary: byStatus, results: settled }

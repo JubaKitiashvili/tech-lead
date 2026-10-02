@@ -124,7 +124,11 @@ export function loadWorkflowSource(src, file = '<workflow>') {
     const pipeline = (items, ...stages) => Promise.all(items.map(async (item, i) => {
       try {
         let r = item
-        for (const stage of stages) r = await stage(r, item, i)
+        // As live: a stage that returns null ends that item's chain.
+        for (const stage of stages) {
+          if (r === null) break
+          r = await stage(r, item, i)
+        }
         return r
       } catch {
         return null
