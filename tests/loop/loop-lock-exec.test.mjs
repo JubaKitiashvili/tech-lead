@@ -418,3 +418,118 @@ test('a signal to the wrapper (SIGTERM, SIGINT, SIGHUP) kills its group and repo
     assert.deepEqual(children(lockDir), [], sig)
   }
 })
+
+test('verifyCommands refuses a list whose items do not all start at one indentation with "- " (unsupported verify: syntax)', T, () => {
+  const refused = {
+    // PyYAML reads the next two as one command, "npm test - rm -rf build".
+    'a more-indented "- " under an item': ['---\nverify:\n  - npm test\n    - rm -rf build\n---\n', 4],
+    'a column-0 sibling after indented items': ['---\nverify:\n  - npm test\n- rm -rf build\n---\n', 4],
+    'an indented item after column-0 items': ['---\nverify:\n- npm test\n  - rm -rf build\n---\n', 4],
+    'a less-indented item': ['---\nverify:\n    - npm test\n  - rm -rf build\n---\n', 4],
+    'a continuation line': ['---\nverify:\n  - npm test\n    --coverage\n---\n', 4],
+    'a continuation after a blank line': ['---\nverify:\n  - npm test\n\n    more\n---\n', 5],
+    'a column-0 line that is not a key': ['---\nverify:\n  - npm test\nrm -rf build\n---\n', 4],
+    'a tab before the dash': ['---\nverify:\n\t- npm test\n---\n', 3],
+  }
+  for (const [why, [text, line]] of Object.entries(refused)) {
+    assert.throws(() => verifyCommands(text), new RegExp(`^Error: bad-verify: unsupported verify: syntax at line ${line}\\b`), why)
+  }
+  // Comments at any indentation and blank lines between items are fine; a key ends the list.
+  assert.deepEqual(verifyCommands('---\nverify:\n  - npm test\n\n    # a note\n  - make lint\nscope:\n  - src\n---\n'), ['npm test', 'make lint'])
+  assert.deepEqual(verifyCommands('---\nverify:\n- npm test\n# a note\n- make lint\nbase: main\n---\n'), ['npm test', 'make lint'])
+})
+
+test('exec --verify refuses an unsupported verify: list: exit 2, nothing runs, nothing is left on record', T, async t => {
+  const { p, e, lockDir } = await held(t)
+  fs.writeFileSync(path.join(p.S, 'LOOP.md'), '---\nverify:\n  - echo ran > ran.txt\n    - echo nested > nested.txt\n---\n')
+  const r = exec(e, p.P, '--generation', '1', '--label', 'verify', '--cwd', p.W, '--verify', '0')
+  assert.deepEqual([r.status, r.st.state], [2, 'error'], r.stderr)
+  assert.match(r.st.detail, /unsupported verify: syntax at line 4/)
+  assert.ok(!fs.existsSync(path.join(p.W, 'ran.txt')) && !fs.existsSync(path.join(p.W, 'nested.txt')), 'a command ran')
+  assert.deepEqual(children(lockDir), [])
+})
+
+test('exec stops its group when another holder holds its generation number after a <V> wipe', T, async t => {
+  const { p, e, lockDir, V } = await held(t)
+  const run = execAsync(t, e, p.P, '--generation', '1', '--label', 'verify', '--cwd', p.W, '--', '/bin/sh', '-c', `${GRANDCHILD}; sleep 300`)
+  const found = await waitFor(runningRecord.bind(null, lockDir))
+  assert.ok(found, 'the proc record never learned its group')
+  reap(t, -found.rec.pgid)
+  const gc = await pidFile(t, path.join(p.W, 'gc.pid'))
+  fs.rmSync(V, { recursive: true, force: true })
+  // No ledger line was written, so the new firing takes generation 1 again (plan Appendix D).
+  const again = await acquire(p.P, { env: env(p, sleeper(t)) })
+  assert.equal(again.generation, 1)
+  const r = await Promise.race([run.done, sleep(10000).then(() => null)])
+  assert.ok(r, 'exec kept running under another holder of its generation number')
+  assert.equal(r.status, 125)
+  assert.equal(statusOf(r.stderr).state, 'not-holder')
+  assert.equal(groupAlive(found.rec.pgid), false)
+  assert.ok(await waitFor(() => gone(gc)), `grandchild ${gc} survived`)
+})
+
+// A daemon in a session of its own, which the group kill cannot reach; its pid lands in escaped.pid.
+const ESCAPE = `${JSON.stringify(process.execPath)} -e "const c = require('node:child_process').spawn('/bin/sleep', ['120'], { detached: true, stdio: 'ignore' }); require('node:fs').writeFileSync('escaped.pid', String(c.pid)); c.unref()"`
+
+test('a process that escaped the group but still runs in <cwd> fails the run: state lingering, exit 123, and it is never signalled', T, async t => {
+  const { p, e, lockDir } = await held(t)
+  const r = exec(e, p.P, '--generation', '1', '--label', 'verify', '--cwd', p.W, '--', '/bin/sh', '-c', `${ESCAPE}; exit 0`)
+  const esc = await pidFile(t, path.join(p.W, 'escaped.pid'))
+  assert.equal(r.status, 123, r.stderr)
+  assert.deepEqual([r.st.state, r.st.exit, r.st.generation, r.st.label], ['lingering', 123, 1, 'verify'])
+  assert.deepEqual(r.st.outcome, { state: 'exited', exit: 0 })
+  assert.ok(Array.isArray(r.st.alive) && r.st.alive.some(x => x.pid === esc), JSON.stringify(r.st))
+  assert.equal(typeof r.st.left, 'string')
+  assert.equal(startToken(esc).state, 'live', 'the escaped process was signalled')
+  assert.deepEqual(children(lockDir), [])
+})
+
+test('a run whose cwd sweep cannot run is lingering, exit 123, whatever the command exited', { ...T, skip: process.platform !== 'darwin' && 'the sweep reads lsof on darwin only' }, async t => {
+  const { p, e } = await held(t)
+  const fake = path.join(tmp(t), 'lsof')
+  fs.writeFileSync(fake, '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+  const r = exec({ ...e, TECH_LEAD_LSOF: fake }, p.P, '--generation', '1', '--label', 'verify', '--cwd', p.W, '--', '/bin/sh', '-c', 'exit 0')
+  assert.deepEqual([r.status, r.st.state, r.st.exit], [123, 'lingering', 123], r.stderr)
+  assert.deepEqual(r.st.outcome, { state: 'exited', exit: 0 })
+  assert.match(r.st.left, /sweep/)
+})
+
+test('a generation marked closing just after a registration landed: the registration removes its record and refuses (exec, dispatch open)', T, async t => {
+  const { p, e, lockDir } = await held(t)
+  const marker = path.join(lockDir, 'slots', '1.closing.json')
+  const hooked = { ...e, LINK_HOOK_DIR: path.join(lockDir, 'children'), LINK_HOOK_WRITE: marker }
+  const r = spawnSync(process.execPath, ['--require', HOOK, SCRIPT, 'exec', p.P, '--generation', '1', '--label', 'verify', '--cwd', p.W, '--', '/bin/sh', '-c', 'echo ran > ran.txt'], {
+    encoding: 'utf8', env: hooked, timeout: 60000,
+  })
+  assert.ok(fs.existsSync(marker), `the link hook never fired: ${r.stderr}`)
+  assert.equal(r.status, 125, r.stderr)
+  const st = statusOf(r.stderr)
+  assert.deepEqual([st.state, st.reason], ['not-holder', 'closing'])
+  assert.ok(!fs.existsSync(path.join(p.W, 'ran.txt')), 'the command ran in a closing generation')
+  assert.deepEqual(children(lockDir), [])
+  fs.rmSync(marker)
+  const d = spawnSync(process.execPath, ['--require', HOOK, SCRIPT, 'dispatch', 'open', p.P, '--generation', '1', '--label', 'loop-worker'], {
+    encoding: 'utf8', env: hooked, timeout: 60000,
+  })
+  assert.ok(fs.existsSync(marker), `the link hook never fired: ${d.stderr}`)
+  assert.equal(d.status, 3, d.stdout + d.stderr)
+  assert.deepEqual([JSON.parse(d.stdout).state, JSON.parse(d.stdout).reason], ['not-holder', 'closing'])
+  assert.deepEqual(children(lockDir), [])
+})
+
+test('a release while exec runs waits for the wrapper to finish its own cleanup, a slow sweep included', { ...T, skip: process.platform !== 'darwin' && 'the sweep reads lsof on darwin only' }, async t => {
+  const { p, e, lockDir } = await held(t)
+  // The wrapper's sweep takes 3 s; the release must still see the wrapper end.
+  const slow = path.join(tmp(t), 'lsof')
+  fs.writeFileSync(slow, '#!/bin/sh\nsleep 3\nexec /usr/sbin/lsof "$@"\n', { mode: 0o755 })
+  const run = execAsync(t, { ...e, TECH_LEAD_LSOF: slow }, p.P, '--generation', '1', '--label', 'deps', '--cwd', p.W, '--', '/bin/sh', '-c', 'sleep 300')
+  const found = await waitFor(runningRecord.bind(null, lockDir))
+  assert.ok(found, 'the proc record never learned its group')
+  reap(t, -found.rec.pgid)
+  const rel = await release(p.P, 1, { env: e })
+  assert.deepEqual(rel.lingering, [], JSON.stringify(rel.lingering))
+  assert.deepEqual(rel.stopped.map(s => s.kind), ['proc'])
+  const r = await run.done
+  assert.notEqual(r.status, 0)
+  assert.deepEqual(children(lockDir), [])
+})

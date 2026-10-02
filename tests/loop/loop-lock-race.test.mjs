@@ -78,5 +78,6 @@ test(`${RACERS} concurrent reclaimers of a dead holder: exactly one takes the ne
   for (let i = 0; i < 60 && startToken(first.pid).state !== 'gone'; i++) await sleep(50)
   const won = check(await race(p, Array.from({ length: RACERS }, () => sleeper(t))), 2)
   assert.equal(won.out.reclaimed.how, 'dead-holder')
-  assert.deepEqual(fs.readdirSync(path.join(won.out.lockDir, 'slots')).sort(), ['1.json', '2.json'])
+  // The reclaimed generation is marked closing (by the first reclaimer to get there).
+  assert.deepEqual(fs.readdirSync(path.join(won.out.lockDir, 'slots')).sort(), ['1.closing.json', '1.json', '2.json'])
 })

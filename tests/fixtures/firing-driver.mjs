@@ -5,6 +5,9 @@
 // prose does, prints one JSON event line per step, and stops at a boundary:
 //   node firing-driver.mjs <P> <W> <stop>
 //     acquired  after acquire                        {"event":"acquired",...acquire output}
+//     stray     after acquire, with a process left running in <W> that no record names
+//               (as a delegate's command would be), in a session of its own
+//                                                    {"event":"stray","pid":<pid>}
 //     exec      while exec runs LOOP.md verify[0]    {"event":"exec","wrapper":<pid>,"pgid":<pgid>}
 //     ledger    after exec --verify 1 and the ledger append, before release
 //                                                    {"event":"ledger","generation":N}
@@ -19,8 +22,8 @@ import { fileURLToPath } from 'node:url'
 
 const LOCK = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'loop-lock.mjs')
 const [P, W, stop] = process.argv.slice(2)
-if (!P || !W || !['acquired', 'exec', 'ledger', 'none'].includes(stop)) {
-  process.stderr.write('usage: firing-driver.mjs <P> <W> acquired|exec|ledger|none\n')
+if (!P || !W || !['acquired', 'stray', 'exec', 'ledger', 'none'].includes(stop)) {
+  process.stderr.write('usage: firing-driver.mjs <P> <W> acquired|stray|exec|ledger|none\n')
   process.exit(2)
 }
 const env = { ...process.env, TECH_LEAD_HOLDER_PID: String(process.pid) }
@@ -47,6 +50,11 @@ emit({ event: 'acquired', ...acq.out })
 const exec = ['exec', P, '--generation', String(N), '--label', 'verify', '--cwd', W]
 
 if (stop === 'acquired') {
+  hang()
+} else if (stop === 'stray') {
+  const stray = spawn('/bin/sleep', ['120'], { cwd: W, detached: true, stdio: 'ignore' })
+  stray.unref()
+  emit({ event: 'stray', pid: stray.pid })
   hang()
 } else if (stop === 'exec') {
   const wrapper = spawn(process.execPath, [LOCK, ...exec, '--verify', '0'], { env, stdio: 'ignore' })

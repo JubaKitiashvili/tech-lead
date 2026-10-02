@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync, execSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import {
   acquire, assertHeld, closeDispatch, ledgerFloor, openDispatch, registerCodex, release, setCodexJob, status, stopChildren,
@@ -57,12 +57,35 @@ const deadProcess = async t => {
 }
 // A process group of its own led by /bin/sh running script. A short-lived node launcher
 // starts it and exits at once, so the group's parent is init, which reaps it.
+// cwd, when given, is the group's working directory.
 const LAUNCH = "const c = require('node:child_process').spawn('/bin/sh', ['-c', process.argv[1]], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
-const group = (t, script) => {
-  const pgid = Number(execFileSync(process.execPath, ['-e', LAUNCH, script], { encoding: 'utf8' }).trim())
+const group = (t, script, cwd) => {
+  const pgid = Number(execFileSync(process.execPath, ['-e', LAUNCH, script], { encoding: 'utf8', cwd }).trim())
   t.after(() => { try { process.kill(-pgid, 'SIGKILL') } catch { /* gone */ } })
   return pgid
 }
+const killGroupNow = async pgid => {
+  process.kill(-pgid, 'SIGKILL')
+  assert.ok(await waitFor(() => groupAlive(pgid) === false), `group ${pgid} survived SIGKILL`)
+}
+// The process group id of this test process, as ps reports it.
+const ownPgid = () => Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim())
+// An executable shell script standing in for a system tool (TECH_LEAD_PS, TECH_LEAD_LSOF).
+const fakeTool = (t, name, body) => {
+  const file = path.join(tmp(t), name)
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  return file
+}
+// A CLI acquire started without waiting; resolves {status, out, stderr}.
+const acquireAsync = (t, e, P) => {
+  const c = spawn(process.execPath, [SCRIPT, 'acquire', P], { env: e, stdio: ['ignore', 'pipe', 'pipe'] })
+  let out = '', err = ''
+  c.stdout.on('data', d => { out += d })
+  c.stderr.on('data', d => { err += d })
+  t.after(() => { try { c.kill('SIGKILL') } catch { /* gone */ } })
+  return new Promise(resolve => c.on('close', status => resolve({ status, out: out.trim() ? JSON.parse(out) : null, stderr: err })))
+}
+const genSlots = lockDir => fs.readdirSync(path.join(lockDir, 'slots')).filter(n => /^\d+\.json$/.test(n)).sort()
 
 // A repository with one commit and a spine directory, plus a cache root for <V>.
 const project = t => {
@@ -215,7 +238,8 @@ test('a child that cannot be proven gone blocks the reclaim, and no generation i
     assert.equal(r.reason, 'child-live', name)
     assert.equal(r.generation, 1, name)
     assert.deepEqual(r.alive.map(c => c.file), [name])
-    assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')), ['1.json'])
+    // No generation is taken; generation 1 is marked closing, so nothing registers in it.
+    assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')).sort(), ['1.closing.json', '1.json'])
     assert.deepEqual(children(first.lockDir), [name])
     fs.rmSync(path.join(first.lockDir, 'children', name))
   }
@@ -431,7 +455,7 @@ test('registerCodex records the job before launch; a dead holder\'s Codex record
   const first = await acquire(p.P, { env: ea })
   // By default the calling process is the starter, which a reclaim waits for.
   const self = registerCodex(p.P, 1, path.join(first.V, 'clone'), { env: ea })
-  assert.deepEqual(readJSON(self).starter, { pid: process.pid, start: startToken(process.pid).token })
+  assert.deepEqual(readJSON(self).starter, { pid: process.pid, start: startToken(process.pid).token, pgid: ownPgid() })
   fs.rmSync(self)
   // A start that has ended since it launched the job.
   const starter = await deadProcess(t)
@@ -526,7 +550,7 @@ test('a child a holder release left lingering blocks every later acquire until i
     assert.equal(r.status, 3, JSON.stringify(r.out))
     assert.equal(r.out.reason, 'child-live')
     assert.deepEqual(r.out.alive.map(c => c.file), [path.basename(file)])
-    assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')).sort(), ['1.json', '1.released.json'])
+    assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')).sort(), ['1.closing.json', '1.json', '1.released.json'])
   }
   const ok = cli(fakeCodex(t, p, b, { active: [] }), 'acquire', p.P)
   assert.equal(ok.status, 0, JSON.stringify(ok.out))
@@ -577,7 +601,7 @@ test('a dispatch record goes only once its holder is gone or the owner released 
   assert.equal(same.state, 'held')
   assert.equal(same.reason, 'child-live')
   assert.deepEqual(same.alive.map(c => c.file), [name])
-  assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')).sort(), ['1.json', '1.released.json'])
+  assert.deepEqual(fs.readdirSync(path.join(first.lockDir, 'slots')).sort(), ['1.closing.json', '1.json', '1.released.json'])
   await kill(a)
   const next = await acquire(p.P, { env: env(p, b) })
   assert.equal(next.generation, 2)
@@ -617,4 +641,221 @@ test('a proc record whose live leader has no recorded start cannot be verified: 
   assert.equal(r.state, 'held')
   assert.equal(r.reason, 'child-live')
   assert.equal(groupAlive(leader), true, 'an unverifiable process group was signalled')
+})
+
+test('a proc record whose pid is not its pgid, or not an integer above 1, cannot be verified: it blocks the reclaim and is never signalled', async t => {
+  const p = project(t), a = sleeper(t), b = sleeper(t)
+  const first = await acquire(p.P, { env: env(p, a) })
+  await kill(a)
+  const leader = group(t, 'sleep 120')
+  const start = startToken(leader).token
+  const cases = {
+    'the pid of another process': { pid: (await deadProcess(t)).pid, pgid: leader, start },
+    'a pid spelled as a string': { pid: String(leader), pgid: leader, start },
+    'pid 1': { pid: 1, pgid: leader, start },
+  }
+  for (const [why, ids] of Object.entries(cases)) {
+    writeChild(first.lockDir, '1-verify.json', procRecord(1, { wrapper: await deadProcess(t), ...ids }))
+    const r = await acquire(p.P, { env: env(p, b) })
+    assert.deepEqual([r.state, r.reason], ['held', 'child-live'], why)
+    assert.equal(groupAlive(leader), true, `${why}: an unverifiable process group was signalled`)
+    assert.equal(status(p.P, { env: env(p, b) }).children[0].alive, null, why)
+    fs.rmSync(path.join(first.lockDir, 'children', '1-verify.json'))
+  }
+})
+
+test('acquire stops the children of every generation below the one it takes, also when their slots were lost', async t => {
+  const p = project(t), a = sleeper(t), b = sleeper(t)
+  const first = await acquire(p.P, { env: env(p, a) })
+  await release(p.P, 1, { env: env(p, a) })
+  // A child of generation 3, whose slot is lost; the ledger reached 5, so acquire takes 6.
+  const g3 = group(t, 'sleep 120')
+  writeChild(first.lockDir, '3-verify.json', procRecord(3, { wrapper: await deadProcess(t), pid: g3, pgid: g3, start: startToken(g3).token }))
+  fs.writeFileSync(path.join(p.S, 'LEDGER.jsonl'), '{"iteration":5}\n')
+  const r = await acquire(p.P, { env: env(p, b) })
+  assert.equal(r.state, 'acquired', JSON.stringify(r))
+  assert.equal(r.generation, 6)
+  assert.deepEqual((r.stopped ?? []).map(s => s.file), ['3-verify.json'])
+  assert.equal(groupAlive(g3), false, 'a child below the new generation outlived the acquire')
+  // No slot on record at all: every child record is stopped, and the generation exceeds
+  // each of theirs (a generation that had children existed).
+  fs.rmSync(path.join(first.lockDir, 'slots'), { recursive: true })
+  const g9 = group(t, 'sleep 120')
+  writeChild(first.lockDir, '9-verify.json', procRecord(9, { wrapper: await deadProcess(t), pid: g9, pgid: g9, start: startToken(g9).token }))
+  const r2 = await acquire(p.P, { env: env(p, b) })
+  assert.equal(r2.state, 'acquired', JSON.stringify(r2))
+  assert.equal(r2.generation, 10)
+  assert.equal(r2.previous, null)
+  assert.deepEqual((r2.stopped ?? []).map(s => s.file), ['9-verify.json'])
+  assert.equal(groupAlive(g9), false)
+  assert.deepEqual(children(first.lockDir), [])
+})
+
+test('a process left with its cwd in <S>/worktree or <V> blocks a reclaim and is never signalled; the caller\'s own ancestors do not', async t => {
+  const p = project(t), a = sleeper(t), b = sleeper(t)
+  const W = path.join(p.S, 'worktree')
+  fs.mkdirSync(W)
+  const first = await acquire(p.P, { env: env(p, a) })
+  // A delegate's command the dead firing never recorded, still running in the work tree.
+  const stray = group(t, 'sleep 120; exit 0', W)
+  await kill(a)
+  const r = await acquire(p.P, { env: env(p, b) })
+  assert.deepEqual([r.state, r.reason, r.generation], ['held', 'child-live', 1], JSON.stringify(r))
+  assert.ok(r.procs.some(x => x.pid === stray), JSON.stringify(r.procs))
+  assert.ok(r.procs.every(x => typeof x.cwd === 'string'), JSON.stringify(r.procs))
+  assert.equal(groupAlive(stray), true, 'a stray process was signalled')
+  assert.deepEqual(genSlots(first.lockDir), ['1.json'])
+  await killGroupNow(stray)
+  const ok = await acquire(p.P, { env: env(p, b) })
+  assert.deepEqual([ok.state, ok.generation, ok.reclaimed.how], ['acquired', 2, 'dead-holder'])
+  // The same process reclaiming its own generation: a process in <V> blocks it too.
+  const inV = path.join(ok.V, 'scratch')
+  fs.mkdirSync(inV)
+  const stray2 = group(t, 'sleep 120; exit 0', inV)
+  const same = await acquire(p.P, { env: env(p, b) })
+  assert.deepEqual([same.state, same.reason], ['held', 'child-live'], JSON.stringify(same))
+  assert.ok(same.procs.some(x => x.pid === stray2), JSON.stringify(same.procs))
+  assert.equal(groupAlive(stray2), true)
+  await killGroupNow(stray2)
+  // The caller's own ancestors may stand in the work tree: an acquire run from two nested
+  // shells there (neither execs its command, so both stay in the chain).
+  const inner = `${JSON.stringify(process.execPath)} ${JSON.stringify(SCRIPT)} acquire ${JSON.stringify(p.P)}; exit $?`
+  const nested = spawnSync('/bin/sh', ['-c', 'cd "$1" || exit 9; /bin/sh -c "$2"; exit $?', 'sh', W, inner], { encoding: 'utf8', env: env(p, b) })
+  assert.equal(nested.status, 0, nested.stdout + nested.stderr)
+  const out = JSON.parse(nested.stdout)
+  assert.deepEqual([out.state, out.generation, out.reclaimed.how], ['acquired', 3, 'same-process'])
+})
+
+test('a reclaim whose process sweep cannot run is held sweep-unknown', { skip: process.platform !== 'darwin' && 'the sweep reads lsof on darwin only' }, async t => {
+  const p = project(t), a = sleeper(t), b = sleeper(t)
+  const first = await acquire(p.P, { env: env(p, a) })
+  await kill(a)
+  const r = cli(env(p, b, { TECH_LEAD_LSOF: fakeTool(t, 'lsof', 'exit 1') }), 'acquire', p.P)
+  assert.equal(r.status, 3, JSON.stringify(r.out))
+  assert.deepEqual([r.out.state, r.out.reason, r.out.generation], ['held', 'sweep-unknown', 1])
+  assert.equal(typeof r.out.detail, 'string')
+  assert.deepEqual(genSlots(first.lockDir), ['1.json'])
+  assert.equal(cli(env(p, b), 'acquire', p.P).out.generation, 2)
+})
+
+test('a reclaim closes the generation it stops: no child registers in it afterwards, and its holder can no longer release it', async t => {
+  const p = project(t), a = sleeper(t), e = env(p, a)
+  const first = await acquire(p.P, { env: e })
+  writeChild(first.lockDir, '1-x.json', '{"v":1,')
+  const r = await acquire(p.P, { env: e })
+  assert.deepEqual([r.state, r.reason], ['held', 'child-live'])
+  assert.ok(fs.existsSync(path.join(first.lockDir, 'slots', '1.closing.json')), 'no closing marker')
+  const paths = loopPaths(p.P, { env: e })
+  assert.throws(() => assertHeld(paths, 1, e), err => err.code === 'NOT_HOLDER' && err.reason === 'closing')
+  assert.throws(() => openDispatch(p.P, 1, 'late', { env: e }), { code: 'NOT_HOLDER' })
+  assert.throws(() => registerCodex(p.P, 1, path.join(first.V, 'clone'), { env: e, starter: null }), { code: 'NOT_HOLDER' })
+  const d = cli(e, 'dispatch', 'open', p.P, '--generation', '1', '--label', 'late')
+  assert.deepEqual([d.status, d.out.state, d.out.reason], [3, 'not-holder', 'closing'])
+  const x = spawnSync(process.execPath, [SCRIPT, 'exec', p.P, '--generation', '1', '--label', 'verify', '--cwd', p.S, '--', '/bin/sh', '-c', 'echo ran > ran.txt'], { encoding: 'utf8', env: e })
+  assert.equal(x.status, 125, x.stderr)
+  assert.ok(!fs.existsSync(path.join(p.S, 'ran.txt')), 'exec ran a command in a closing generation')
+  await assert.rejects(release(p.P, 1, { env: e }), { code: 'NOT_HOLDER' })
+  assert.deepEqual(children(first.lockDir), ['1-x.json'])
+  assert.equal(status(p.P, { env: e }).closing, true)
+})
+
+test('a reclaimer that finds a newer generation before a destructive step backs off: it quiesces nothing, kills nothing and removes nothing', { timeout: 60000 }, async t => {
+  const p = project(t), a = sleeper(t), c = sleeper(t)
+  const first = await acquire(p.P, { env: env(p, a) })
+  // A Codex job whose starter still runs, so the reclaim waits on it before it quiesces.
+  const starter = group(t, 'sleep 120; exit 0')
+  const codexFile = registerCodex(p.P, 1, path.join(first.V, 'clone'), { env: env(p, a), starter: { pid: starter, start: startToken(starter).token, pgid: starter } })
+  const pgid = group(t, 'sleep 120')
+  writeChild(first.lockDir, '1-verify.json', procRecord(1, { wrapper: await deadProcess(t), pid: pgid, pgid, start: startToken(pgid).token }))
+  await kill(a)
+  const dir = tmp(t), state = path.join(dir, 'state.json'), log = path.join(dir, 'calls.log')
+  fs.writeFileSync(state, JSON.stringify({ active: [] }))
+  const slow = acquireAsync(t, env(p, sleeper(t), { TECH_LEAD_CODEX_COMPANION: FAKE, FAKE_CODEX_STATE: state, FAKE_CODEX_LOG: log }), p.P)
+  await waitFor(() => fs.existsSync(path.join(first.lockDir, 'slots', '1.closing.json')), 5000)
+  // Meanwhile another firing took generation 2; then the starter ends.
+  fs.writeFileSync(path.join(first.lockDir, 'slots', '2.json'), JSON.stringify({
+    v: 1, generation: 2, holder: { pid: c, start: startToken(c).token, how: 'TECH_LEAD_HOLDER_PID' }, session: null, acquired_at: new Date().toISOString(), previous: null,
+  }))
+  await killGroupNow(starter)
+  const r = await slow
+  assert.equal(r.status, 3, JSON.stringify(r))
+  assert.deepEqual([r.out.state, r.out.reason, r.out.generation], ['held', 'race', 1])
+  assert.ok(!fs.existsSync(log), `the slow reclaimer ran Codex: ${fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : ''}`)
+  assert.ok(fs.existsSync(codexFile), 'the Codex record was removed')
+  assert.ok(children(first.lockDir).includes('1-verify.json'), 'the proc record was removed')
+  assert.equal(groupAlive(pgid), true, 'the slow reclaimer killed a process group after a newer generation appeared')
+})
+
+test('a Codex record is quiesced only once its starter and the starter\'s process group are gone; an unusable group id blocks', { timeout: 60000 }, async t => {
+  const p = project(t), a = sleeper(t)
+  const first = await acquire(p.P, { env: env(p, a) })
+  // The starter itself has ended, but a process of its group (a companion child) still runs.
+  const grp = group(t, 'sleep 120; exit 0')
+  const file = registerCodex(p.P, 1, path.join(first.V, 'clone'), { env: env(p, a), starter: { ...(await deadProcess(t)), pgid: grp } })
+  await kill(a)
+  const dir = tmp(t), state = path.join(dir, 'state.json'), log = path.join(dir, 'calls.log')
+  fs.writeFileSync(state, JSON.stringify({ active: [] }))
+  const b = sleeper(t)
+  const ce = env(p, b, { TECH_LEAD_CODEX_COMPANION: FAKE, FAKE_CODEX_STATE: state, FAKE_CODEX_LOG: log })
+  const run = acquireAsync(t, ce, p.P)
+  await sleep(2000)
+  assert.ok(!fs.existsSync(log), 'Codex was quiesced while the starter\'s process group was alive')
+  await killGroupNow(grp)
+  const r = await run
+  assert.equal(r.status, 0, JSON.stringify(r))
+  assert.deepEqual(r.out.reclaimed.stopped.map(s => s.kind), ['codex'])
+  assert.ok(!fs.existsSync(file))
+  assert.ok(fs.readFileSync(log, 'utf8').includes('"--all"'))
+  // A starter whose recorded group id is not a usable one cannot be waited on: it blocks
+  // (here the same process reclaims its own generation 2).
+  const bad = registerCodex(p.P, 2, path.join(first.V, 'clone'), { env: env(p, b), starter: { ...(await deadProcess(t)), pgid: 0 } })
+  const held = cli(ce, 'acquire', p.P)
+  assert.deepEqual([held.status, held.out.reason], [3, 'child-live'], JSON.stringify(held.out))
+  assert.ok(fs.existsSync(bad))
+})
+
+test('an owner release discards the child records no acquire could stop (unreadable, unknown kind), kills nothing, and the next acquire proceeds', async t => {
+  const p = project(t), a = sleeper(t), b = sleeper(t), e = env(p, a)
+  const first = await acquire(p.P, { env: e })
+  const pgid = group(t, 'sleep 120')
+  writeChild(first.lockDir, '1-x.json', '{"v":1,')
+  writeChild(first.lockDir, '1-y.json', { v: 1, kind: 'mystery', generation: 1 })
+  writeChild(first.lockDir, '1-verify.json', procRecord(1, { wrapper: await deadProcess(t), pid: pgid, pgid, start: startToken(pgid).token }))
+  const printed = []
+  const io = answer => ({ isTTY: true, print: s => printed.push(s), ask: async () => answer })
+  await assert.rejects(release(p.P, 1, { env: e, owner: true, io: io('2') }), /not-confirmed/)
+  assert.deepEqual(children(first.lockDir), ['1-verify.json', '1-x.json', '1-y.json'])
+  const r = await release(p.P, 1, { env: e, owner: true, io: io('1') })
+  assert.equal(r.state, 'released')
+  assert.deepEqual(r.discarded.map(d => d.file), ['1-x.json', '1-y.json'])
+  assert.deepEqual(children(first.lockDir), ['1-verify.json'])
+  assert.equal(groupAlive(pgid), true, 'an owner release signalled a process group')
+  assert.match(printed.join('\n'), /1-x\.json/)
+  const next = await acquire(p.P, { env: env(p, b) })
+  assert.equal(next.state, 'acquired', JSON.stringify(next))
+  assert.equal(next.generation, 2)
+  assert.deepEqual((next.stopped ?? []).map(s => s.file), ['1-verify.json'])
+  assert.equal(groupAlive(pgid), false)
+})
+
+test('a holder whose start token cannot be read is holder-unknown: exit 2 for every lock-checked command, a held refusal for acquire', { skip: process.platform !== 'darwin' && 'the start token comes from ps on darwin only' }, async t => {
+  const p = project(t), a = sleeper(t), e = env(p, a)
+  const first = await acquire(p.P, { env: e })
+  const id = openDispatch(p.P, 1, 'loop-worker', { env: e })
+  const u = { ...e, TECH_LEAD_PS: fakeTool(t, 'ps', 'exit 1') }
+  const before = snapshot(first.V, p.S)
+  for (const args of [['release', p.P, '--generation', '1'], ['dispatch', 'open', p.P, '--generation', '1', '--label', 'x'], ['dispatch', 'close', p.P, '--generation', '1', '--id', id]]) {
+    const r = cli(u, ...args)
+    assert.deepEqual([r.status, r.out.state], [2, 'error'], `${args.join(' ')}: ${JSON.stringify(r.out)}`)
+    assert.match(r.out.detail, /^holder-unknown: /, args.join(' '))
+  }
+  const acq = cli(u, 'acquire', p.P)
+  assert.deepEqual([acq.status, acq.out.state, acq.out.reason], [3, 'held', 'holder-unknown'], JSON.stringify(acq.out))
+  assert.match(acq.out.detail, /^holder-unknown: /)
+  const x = spawnSync(process.execPath, [SCRIPT, 'exec', p.P, '--generation', '1', '--label', 'verify', '--cwd', p.S, '--', '/bin/sh', '-c', 'echo ran > ran.txt'], { encoding: 'utf8', env: u })
+  assert.equal(x.status, 2, x.stderr)
+  const st = JSON.parse(/loop-lock exec: (\{.*\})\s*$/.exec(x.stderr)[1])
+  assert.equal(st.state, 'error')
+  assert.match(st.detail, /^holder-unknown: /)
+  assert.deepEqual(snapshot(first.V, p.S), before)
 })

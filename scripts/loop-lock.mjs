@@ -7,53 +7,74 @@
 // Layout under <V>/lock:
 //   slots/<N>.json            holder record, immutable (link(2), so one racer wins N)
 //   slots/<N>.released.json   release record, immutable
+//   slots/<N>.closing.json    closing marker: an acquire has begun to stop N's children, so
+//                             no child registers in N any more (assertHeld refuses it)
 //   children/<N>-<name>.json  child records: kind proc (exec), codex, dispatch
 //
-// Acquire takes N = max(last generation, largest ledger iteration) + 1. An unreleased
-// last generation blocks it while its holder is alive (or unknown) and while the same
-// process still has a dispatch of it open. Then every child on record up to that last
-// generation (a released one's too: an owner release stops nothing) is stopped, and any
-// that cannot be stopped blocks it; age plays no part. A held result creates nothing outside
-// slots/.tmp-*; it removes only the records of children it proved gone.
+// Acquire takes N = max(last generation, largest ledger iteration) + 1; with no slot on
+// record at all, N also exceeds every child record's generation (a generation that had
+// children existed). An unreleased last generation blocks it while its holder is alive (or
+// unknown) and while the same process still has a dispatch of it open. Then the children
+// of every generation below N (a released one's too: an owner release stops nothing) are
+// stopped, each generation marked closing first, and any child that cannot be stopped
+// blocks it; age plays no part. A newer generation appearing meanwhile ends the acquire
+// before its next signal, quiesce or record removal (held `race`). A reclaim (of a dead
+// holder's or this same process's generation) then sweeps <S>/worktree and <V> for live
+// processes outside the caller's own ancestry: any it finds block it (never signalled).
+// A held result creates nothing outside slots/.tmp-* and closing markers; it removes only
+// the records of children it proved gone.
 //
 // Records name the processes behind them: an exec child its wrapper and process group
 // (the command is started through a gate only once the group is on record), a Codex job
-// the `loop-codex.mjs start` that launches it (a reclaim waits for that starter to be gone
-// before it quiesces), a dispatch nothing (it lives in its holder's process).
+// the `loop-codex.mjs start` that launches it (a reclaim waits for that starter, and its
+// process group, to be gone before it quiesces), a dispatch nothing (it lives in its
+// holder's process).
 //
 // CLI (one JSON line on stdout; exit 0, 2 error or usage, 3 held or not holder):
 //   acquire <P>                                         {state:'acquired', generation, V, lockDir, previous, reclaimed} (no W until stage 0c-2's clone)
+//                                                       exit 3 {state:'held', reason, generation, ...}
 //   release <P> --generation <N> [--owner]              {state:'released', generation, ...}
 //                                                       exit 3 {state:'dispatch-open', ...}: nothing released
 //   dispatch open <P> --generation <N> --label <L>      {id}
 //   dispatch close <P> --generation <N> --id <ID>       {closed:true}
 //   status <P>                                          read-only
+//   not the holder: exit 3 {state:'not-holder', detail[, reason:'closing']}; a holder whose
+//   start token cannot be read: exit 2 {state:'error', detail:'holder-unknown: ...'}
+//   (acquire: exit 3 held 'holder-unknown')
 // and exec, which prints nothing of its own on stdout:
 //   exec <P> --generation <N> --label <L> --cwd <dir> [--timeout-ms <T>] (--verify <K> | -- <argv>...)
 //     runs the command as a registered child of generation N in a process group of its
 //     own; its stdout and stderr pass through, and the last stderr line is
 //     `loop-lock exec: {"state":...,"exit":...,...}`. Exit: the command's own code (128 + n when
 //     a signal ended it), 124 timeout, 125 not the holder or the holder gone, 2 usage or
-//     setup error, 126/127 the command could not start.
+//     setup error (holder-unknown too), 126/127 the command could not start, 123 lingering:
+//     the cleanup failed (the group survived or its liveness is unknown, or a process still
+//     runs in <dir> or the sweep for one could not run), whatever the command exited;
+//     `outcome` then holds the state the run would otherwise have reported.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createExclusive, readJson, writeReplace } from './lib/atomic.mjs'
 import { ensureV, loopPaths } from './lib/loop-paths.mjs'
-import { groupAlive, isAlive, killGroup, resolveHolder, startToken } from './lib/loop-proc.mjs'
+import { cwdSweep, groupAlive, isAlive, killGroup, resolveHolder, startToken } from './lib/loop-proc.mjs'
 import { quiesce } from './loop-codex.mjs'
 
 const ATTEMPTS = 5
-const WRAPPER_WAIT_MS = 2000
+// A wrapper sent SIGTERM ends once its own cleanup is done, which includes its sweep for
+// processes left in <dir> (ps and lsof, PS_TIMEOUT_MS and 20 s at most).
+const WRAPPER_WAIT_MS = 40000
 const STARTER_WAIT_MS = 10000
 const POLL_MS = 100
 const EXEC_POLL_MS = 1000
 const MAX_TIMEOUT_MS = 2 ** 31 - 1 // the largest delay setTimeout honours
+const PS_TIMEOUT_MS = 10000
 const EXEC_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGTERM']
+const EXIT_LINGERING = 123
+const KINDS = ['proc', 'codex', 'dispatch']
 // The start gate: /bin/sh waits for the line `go` on its stdin, then becomes the command.
 // The wrapper writes that line only once the gate's process group is on record, so a wrapper
 // that dies first closes the pipe and the gate exits 125 without running anything.
@@ -68,11 +89,15 @@ const slotsDir = paths => path.join(paths.lockDir, 'slots')
 const childrenDir = paths => path.join(paths.lockDir, 'children')
 const slotFile = (paths, g) => path.join(slotsDir(paths), `${g}.json`)
 const releasedFile = (paths, g) => path.join(slotsDir(paths), `${g}.released.json`)
+const closingFile = (paths, g) => path.join(slotsDir(paths), `${g}.closing.json`)
 const held = (reason, generation, extra = {}) => ({ state: 'held', reason, generation, ...extra })
+const unknownFact = detail => ({ state: 'unknown', detail })
 
-function notHolder(detail) {
+// reason, when given, names why in one word (e.reason, and `reason` in the CLI output).
+function notHolder(detail, reason) {
   const e = new Error(`not-holder: ${detail}`)
   e.code = 'NOT_HOLDER'
+  if (reason) e.reason = reason
   return e
 }
 
@@ -144,18 +169,89 @@ export function ledgerFloor(S) {
   return floor
 }
 
+// TECH_LEAD_PS replaces /bin/ps in tests only, as in loop-proc.mjs.
+const PS = () => process.env.TECH_LEAD_PS || '/bin/ps'
+const ps = args => spawnSync(PS(), args, {
+  encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' },
+})
+
+// The process group id of pid (ps -o pgid=; linux: /proc/<pid>/stat), or null when it
+// cannot be read or is not a usable one (an integer above 1).
+function processGroup(pid) {
+  let pgid = null
+  try {
+    if (process.platform === 'linux') {
+      const text = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+      pgid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[2])
+    } else {
+      const r = ps(['-o', 'pgid=', '-p', String(pid)])
+      if (r.status === 0 && /^\s*\d+\s*$/.test(r.stdout)) pgid = Number(r.stdout)
+    }
+  } catch { /* unreadable: null */ }
+  return Number.isInteger(pgid) && pgid > 1 ? pgid : null
+}
+
+// ancestry() -> {state:'ok', pids} | {state:'unknown', detail}: this process and each of
+// its ancestors up to (not including) pid 1. darwin: one `ps -A -o pid= -o ppid=` listing;
+// linux: the ppid field of /proc/<pid>/stat.
+function ancestry() {
+  let parentOf
+  if (process.platform === 'linux') {
+    parentOf = pid => {
+      try {
+        const text = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+        const ppid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[1])
+        return Number.isInteger(ppid) && ppid >= 0 ? ppid : undefined
+      } catch {
+        return undefined
+      }
+    }
+  } else {
+    const r = ps(['-A', '-o', 'pid=', '-o', 'ppid='])
+    if (r.error || r.status !== 0) return unknownFact(`ps -A: ${r.error ? r.error.code || r.error.message : `exit ${r.status}`}`)
+    const map = new Map()
+    for (const line of r.stdout.split('\n')) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+      if (m) map.set(Number(m[1]), Number(m[2]))
+    }
+    parentOf = pid => map.get(pid)
+  }
+  const pids = []
+  for (let pid = process.pid; pid > 1 && !pids.includes(pid);) {
+    pids.push(pid)
+    const ppid = parentOf(pid)
+    if (ppid === undefined) return unknownFact(`cannot read the parent of pid ${pid}`)
+    pid = ppid
+  }
+  return { state: 'ok', pids }
+}
+
+// cwdSweep over dirs, never listing this process or any of its ancestors (the runner, its
+// shell, a terminal standing in the work tree): {state:'ok', procs} | {state:'unknown', detail}.
+function sweep(dirs) {
+  const a = ancestry()
+  if (a.state !== 'ok') return a
+  return cwdSweep(dirs, { exclude: a.pids })
+}
+
 // The slot of generation N when the caller's holder holds it: N is the last generation,
-// it is not released, and its holder has the caller's pid and start token.
+// it is neither released nor closing, and its holder has the caller's pid and start token.
+// Throws NOT_HOLDER (reason 'closing' for a closing generation), or the HOLDER_UNKNOWN of
+// resolveHolder as it is: a holder whose token cannot be read is not known to be absent.
 export function assertHeld(paths, generation, env = process.env) {
   if (!validGeneration(generation)) throw notHolder(`bad generation ${generation}`)
   const max = maxSlot(paths)
   if (max !== generation) throw notHolder(max === null ? 'no generation is held' : `generation ${generation} is not the current one (${max})`)
   if (fs.existsSync(releasedFile(paths, generation))) throw notHolder(`generation ${generation} was released`)
+  if (fs.existsSync(closingFile(paths, generation))) {
+    throw notHolder(`generation ${generation} is closing: an acquire has begun to stop its children`, 'closing')
+  }
   let slot, me
   try {
     slot = readJson(slotFile(paths, generation))
     me = resolveHolder(env)
   } catch (e) {
+    if (e.code === 'HOLDER_UNKNOWN') throw e
     throw notHolder(e.message)
   }
   const h = slot && slot.holder
@@ -180,9 +276,47 @@ function openDispatches(paths, g) {
   return out
 }
 
+// A newer generation than observed (the last one an acquire read; null for none): a reason
+// to stop at once, or null. Slots that cannot be listed count as superseded, so a stop that
+// cannot tell never goes on.
+function superseded(paths, observed) {
+  let m
+  try {
+    m = maxSlot(paths)
+  } catch (e) {
+    return `the slots cannot be listed: ${e.code || e.message}`
+  }
+  return m !== null && (observed === null || m > observed) ? `generation ${m} was taken meanwhile` : null
+}
+
+// Throws SUPERSEDED before a destructive step of a stop whose generation was overtaken.
+function guardStep(guard) {
+  const why = guard && superseded(guard.paths, guard.observed)
+  if (why) throw Object.assign(new Error(`superseded: ${why}`), { code: 'SUPERSEDED' })
+}
+
+// Marks generation g closing (already marked is fine): from now on assertHeld refuses g, so
+// a child that registers after this acquire listed g's children is removed again by its
+// own registration.
+function markClosing(paths, g, me) {
+  fs.mkdirSync(slotsDir(paths), { recursive: true })
+  createExclusive(closingFile(paths, g), { v: 1, generation: g, by: { pid: me.pid, start: me.start }, closed_at: now() })
+}
+
 export async function acquire(P, { env = process.env } = {}) {
   const base = loopPaths(P, { env })
-  const me = resolveHolder(env) // before ensureV, so a firing without a holder writes nothing
+  let me
+  try {
+    me = resolveHolder(env) // before ensureV, so a firing without a holder writes nothing
+  } catch (e) {
+    if (e.code !== 'HOLDER_UNKNOWN') throw e
+    // This runner may well be alive: a transient refusal, like an unknown holder on record.
+    let generation = null
+    try {
+      generation = maxSlot(base)
+    } catch { /* null */ }
+    return held('holder-unknown', generation, { holder: null, detail: e.message })
+  }
   const paths = ensureV(base)
   let max = null
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
@@ -212,24 +346,47 @@ export async function acquire(P, { env = process.env } = {}) {
         reclaim = same ? 'same-process' : 'dead-holder'
       }
     }
-    // Every child on record up to the last generation is stopped first: the reclaimed one's,
-    // and those of a generation released while they ran (an owner release stops nothing, and
-    // a holder release may leave some lingering) or left below the last by any other window.
-    // A generation above max was taken by a racer after max was read: its children are not
-    // ours to stop.
+    // With no slot on record, every child record is an orphan of lost slots, and its
+    // generation existed: N exceeds it too, so no generation repeats. With slots, a child
+    // above the last one read can only be a racer's, which N does not count.
+    const gens = childGenerations(paths)
+    const top = max ?? (gens.length ? gens[gens.length - 1] : 0)
+    const N = Math.max(top, floor) + 1
+    if (!validGeneration(N)) throw new Error(`bad-generation: ${N}`)
+    // The children of every generation below N are stopped first: the reclaimed one's, those
+    // of a generation released while they ran (an owner release stops nothing, and a holder
+    // release may leave some lingering), and those left below N by any other window (lost
+    // slots). Each generation is marked closing before its children are listed. A newer
+    // generation appearing meanwhile was taken by a racer: the acquire stops at once.
+    const stop = new Set(gens.filter(g => g < N))
+    if (reclaim) stop.add(max) // closed even with no child on record yet
     const mine = [], others = [], left = []
-    for (const g of childGenerations(paths).filter(x => max !== null && x <= max)) {
-      const r = await stopChildren(paths, g)
+    const stoppedSoFar = () => [...mine, ...others]
+    for (const g of [...stop].sort((x, y) => x - y)) {
+      const why = superseded(paths, max)
+      if (why) return held('race', max, { detail: `superseded: ${why}`, stopped: stoppedSoFar() })
+      markClosing(paths, g, me)
+      const r = await stopChildren(paths, g, { observed: max })
       ;(reclaim && g === max ? mine : others).push(...r.stopped)
+      if (r.superseded) return held('race', max, { detail: r.superseded, stopped: stoppedSoFar() })
       left.push(...r.alive)
     }
-    if (left.length) return held('child-live', max, { alive: left, stopped: [...mine, ...others] })
+    if (left.length) return held('child-live', max, { alive: left, stopped: stoppedSoFar() })
     if (reclaim) {
+      // Spec 16's sweep: a process the dead (or interrupted) firing never recorded, such as
+      // a delegate's command, may still write in the work tree. It is reported, never signalled.
+      const dirs = [path.join(paths.S, 'worktree'), paths.V]
+      const sw = sweep(dirs)
+      if (sw.state !== 'ok') return held('sweep-unknown', max, { detail: `cannot sweep ${dirs.join(' and ')} for live processes: ${sw.detail}`, stopped: stoppedSoFar() })
+      if (sw.procs.length) {
+        return held('child-live', max, {
+          alive: [], procs: sw.procs, stopped: stoppedSoFar(),
+          detail: `${sw.procs.length} process(es) outside this runner's ancestry still have their working directory in ${dirs.join(' or ')}; none was signalled`,
+        })
+      }
       previous.reclaim = reclaim
       reclaimed = { generation: max, how: reclaim, stopped: mine }
     }
-    const N = Math.max(max ?? 0, floor) + 1
-    if (!validGeneration(N)) throw new Error(`bad-generation: ${N}`)
     fs.mkdirSync(slotsDir(paths), { recursive: true })
     const record = { v: 1, generation: N, holder: me, session: env.CLAUDE_CODE_SESSION_ID || null, acquired_at: now(), previous }
     if (createExclusive(slotFile(paths, N), record)) {
@@ -250,31 +407,33 @@ export async function acquire(P, { env = process.env } = {}) {
 // empty. Returns true | false | null, or undefined when the record never learned its group.
 function groupState(rec) {
   if (rec.pgid === null || rec.pgid === undefined) return undefined
-  if (!Number.isInteger(rec.pgid) || rec.pgid <= 1) return null
+  // exec records its child as the leader of a group of its own (pid === pgid). Any other
+  // shape, or an id that is not an integer above 1, cannot be verified: never signalled.
+  if (!Number.isInteger(rec.pgid) || rec.pgid <= 1 || rec.pid !== rec.pgid) return null
   // A live leader is ours only when its start token matches the record; without a recorded
   // start, or with an unreadable token, the group cannot be verified and is never signalled.
-  if (rec.pid === rec.pgid) {
-    const t = startToken(rec.pid)
-    if (t.state === 'unknown') return null
-    if (t.state === 'live') {
-      if (typeof rec.start !== 'string') return null
-      if (t.token !== rec.start) return false
-    }
+  const t = startToken(rec.pid)
+  if (t.state === 'unknown') return null
+  if (t.state === 'live') {
+    if (typeof rec.start !== 'string') return null
+    if (t.token !== rec.start) return false
   }
   return groupAlive(rec.pgid)
 }
 
-async function stopGroup(rec) {
+async function stopGroup(rec, guard) {
   const g = groupState(rec)
   if (g !== true) return g
+  guardStep(guard)
   return !(await killGroup(rec.pgid))
 }
 
 // SIGTERM to a wrapper that is alive by identity, then up to WRAPPER_WAIT_MS for it to go.
-async function stopWrapper(wrapper) {
+async function stopWrapper(wrapper, guard) {
   if (!wrapper) return false
   let alive = isAlive(wrapper)
   if (alive !== true) return alive
+  guardStep(guard)
   try {
     process.kill(wrapper.pid, 'SIGTERM')
   } catch { /* gone meanwhile */ }
@@ -284,15 +443,15 @@ async function stopWrapper(wrapper) {
 }
 
 // null once the proc child is gone, else why it is not.
-async function stopProc(file, rec) {
-  let group = await stopGroup(rec)
-  const wrapper = await stopWrapper(rec.wrapper)
+async function stopProc(file, rec, guard) {
+  let group = await stopGroup(rec, guard)
+  const wrapper = await stopWrapper(rec.wrapper, guard)
   if (group === undefined && wrapper === false) {
     // The wrapper is gone, so its last write is final: it may have learned its group.
     const last = readJson(file)
     if (!last) return null
     rec = last
-    group = await stopGroup(last)
+    group = await stopGroup(last, guard)
   }
   if (wrapper !== false) return wrapper === null ? 'wrapper liveness unknown' : 'wrapper still running'
   // A gated command runs only once its group is on record, so a gated record whose wrapper
@@ -304,21 +463,34 @@ async function stopProc(file, rec) {
 }
 
 // A Codex child is quiesced only once its starter (the `loop-codex.mjs start` that recorded
-// it) is gone: a starter still in the companion's task call may launch its job after
-// quiesce has listed the jobs. Its last write is final, so the record is read again.
-async function stopCodex(file, rec) {
+// it, {pid, start, pgid}) is gone by identity and, when its pgid is an integer above 1, so
+// is that process group: a starter still in the companion's task call, or the companion
+// child of a starter that was killed, may launch its job after quiesce has listed the jobs.
+// pgid null means unread (the starter alone is waited on); any other value cannot be
+// verified, and unknown liveness blocks. Its last write is final, so the record is read again.
+async function stopCodex(file, rec, guard) {
   if (rec.starter) {
-    let alive = isAlive(rec.starter)
+    const s = rec.starter, pgid = s.pgid
+    if (pgid !== undefined && pgid !== null && !(Number.isInteger(pgid) && pgid > 1)) {
+      return `codex starter's process group ${JSON.stringify(pgid)} cannot be verified`
+    }
+    const state = () => {
+      const alive = isAlive(s)
+      if (alive !== false || pgid === undefined || pgid === null) return [alive, `codex starter pid ${s.pid}`]
+      return [groupAlive(pgid), `codex starter's process group ${pgid}`]
+    }
+    let [alive, what] = state()
     const deadline = Date.now() + STARTER_WAIT_MS
     while (alive === true && Date.now() < deadline) {
       await sleep(POLL_MS)
-      alive = isAlive(rec.starter)
+      ;[alive, what] = state()
     }
-    if (alive !== false) return alive === null ? 'codex starter liveness unknown' : `codex starter pid ${rec.starter.pid} still running`
+    if (alive !== false) return alive === null ? `${what}: liveness unknown` : `${what} still running`
     rec = readJson(file)
     if (!rec) return null // removed meanwhile by another reclaim
   }
   if (typeof rec.cwd !== 'string' || !rec.cwd) return 'codex record without cwd'
+  guardStep(guard)
   const q = await quiesce(rec.cwd, typeof rec.jobId === 'string' ? rec.jobId : undefined)
   return q.quiet ? null : `codex not quiet: ${q.detail}`
 }
@@ -346,40 +518,51 @@ function dispatchesGone(paths, g) {
 
 // Stops every child of generation g and removes the records of those proven gone.
 // Anything that cannot be proven gone, including an unreadable record, is in `alive`.
-export async function stopChildren(paths, generation) {
+// observed is the last generation the caller read (default: g itself, for its holder's
+// release): before each signal, quiesce and record removal the slots are read again, and a
+// newer generation ends the stop at once with `superseded` set to why.
+export async function stopChildren(paths, generation, { observed = generation } = {}) {
+  const guard = { paths, observed }
   const stopped = [], alive = []
   let gone = null
-  for (const file of childFiles(paths, generation)) {
-    const name = path.basename(file)
-    let rec
-    try {
-      rec = readJson(file)
-    } catch {
-      alive.push({ file: name, kind: null, detail: 'unreadable record' })
-      continue
-    }
-    if (!rec) continue // its wrapper removed it meanwhile
-    let left
-    try {
-      if (rec.kind === 'proc') left = await stopProc(file, rec)
-      else if (rec.kind === 'codex') {
-        left = await stopCodex(file, rec)
-        rec = readJson(file) ?? rec // the facts it ended with, such as the job id
+  try {
+    for (const file of childFiles(paths, generation)) {
+      const name = path.basename(file)
+      let rec
+      try {
+        rec = readJson(file)
+      } catch {
+        alive.push({ file: name, kind: null, detail: 'unreadable record' })
+        continue
       }
-      else if (rec.kind === 'dispatch') {
-        gone ??= dispatchesGone(paths, generation)
-        left = gone ? null : 'an agent of this generation may still be running: its holder is alive or unknown'
+      if (!rec) continue // its wrapper removed it meanwhile
+      let left
+      try {
+        if (rec.kind === 'proc') left = await stopProc(file, rec, guard)
+        else if (rec.kind === 'codex') {
+          left = await stopCodex(file, rec, guard)
+          rec = readJson(file) ?? rec // the facts it ended with, such as the job id
+        }
+        else if (rec.kind === 'dispatch') {
+          gone ??= dispatchesGone(paths, generation)
+          left = gone ? null : 'an agent of this generation may still be running: its holder is alive or unknown'
+        }
+        else left = `unknown kind ${JSON.stringify(rec.kind)}`
+      } catch (e) {
+        if (e.code === 'SUPERSEDED') throw e
+        left = e.message
       }
-      else left = `unknown kind ${JSON.stringify(rec.kind)}`
-    } catch (e) {
-      left = e.message
+      if (left) {
+        alive.push({ ...summary(name, rec), detail: left })
+      } else {
+        guardStep(guard)
+        fs.rmSync(file, { force: true })
+        stopped.push(summary(name, rec))
+      }
     }
-    if (left) {
-      alive.push({ ...summary(name, rec), detail: left })
-    } else {
-      fs.rmSync(file, { force: true })
-      stopped.push(summary(name, rec))
-    }
+  } catch (e) {
+    if (e.code !== 'SUPERSEDED') throw e
+    return { stopped, alive, superseded: e.message }
   }
   return { stopped, alive }
 }
@@ -413,7 +596,8 @@ export async function release(P, generation, { env = process.env, owner = false,
     Object.assign(e, { code: 'DISPATCH_OPEN', generation, dispatches })
     throw e
   }
-  const { stopped, alive } = await stopChildren(paths, generation)
+  const { stopped, alive, superseded: lost } = await stopChildren(paths, generation)
+  if (lost) throw notHolder(`generation ${generation} was taken over while its children were stopped (${lost})`)
   if (!createExclusive(releasedFile(paths, generation), { v: 1, generation, by: 'holder', released_at: now() })) {
     throw notHolder(`generation ${generation} was released meanwhile`)
   }
@@ -435,14 +619,45 @@ async function ownerRelease(P, generation, env, io) {
   }
   const open = st.children.filter(c => c.generation === generation && c.alive !== false)
   if (open.length) io.print(`note: ${open.length} child record(s) of generation ${generation} remain; an owner release stops none of them, and the next acquire stops them before it takes the lock`)
+  const paths = openPaths(P, env)
+  const list = recs => recs.map(d => `${d.file} (${d.detail})`).join(', ')
+  const doomed = unstoppable(paths, generation)
+  if (doomed.length) io.print(`note: the release also discards ${doomed.length} child record(s) that no acquire can stop, and signals nothing: ${list(doomed)}`)
   const answer = String((await io.ask(`Type ${generation} to release generation ${generation}: `)) ?? '').trim()
   if (answer !== String(generation)) throw new Error(`not-confirmed: typed ${JSON.stringify(answer)}, not ${generation}; nothing was written`)
-  const paths = openPaths(P, env)
   if (maxSlot(paths) !== generation) throw new Error(`not-current: generation ${generation} is no longer the last generation`)
   if (!createExclusive(releasedFile(paths, generation), { v: 1, generation, by: 'owner', released_at: now() })) {
     throw new Error(`already-released: generation ${generation}`)
   }
-  return { state: 'released', generation, by: 'owner' }
+  // Records no acquire can ever stop would hold every later acquire: the owner, having
+  // confirmed, has them discarded (listed again, as they are now). Nothing is signalled.
+  const discarded = []
+  for (const d of unstoppable(paths, generation)) {
+    fs.rmSync(d.path, { force: true })
+    discarded.push({ file: d.file, detail: d.detail })
+  }
+  if (discarded.length) io.print(`discarded ${discarded.length} child record(s): ${list(discarded)}`)
+  return { state: 'released', generation, by: 'owner', discarded }
+}
+
+// The child records of generations up to g that no acquire can ever stop: unreadable ones
+// and those of a kind it does not know. [{file, path, detail}]
+function unstoppable(paths, g) {
+  const out = []
+  for (const gen of childGenerations(paths).filter(x => x <= g)) {
+    for (const file of childFiles(paths, gen)) {
+      let detail
+      try {
+        const rec = readJson(file)
+        if (!rec || KINDS.includes(rec.kind)) continue
+        detail = `unknown kind ${JSON.stringify(rec.kind)}`
+      } catch {
+        detail = 'unreadable record'
+      }
+      out.push({ file: path.basename(file), path: file, detail })
+    }
+  }
+  return out
 }
 
 function describeChild(file) {
@@ -466,11 +681,12 @@ export function status(P, { env = process.env } = {}) {
   const paths = openPaths(P, env)
   const generation = maxSlot(paths)
   const out = {
-    V: paths.V, lockDir: paths.lockDir, generation, released: null, released_by: null, holder: null,
+    V: paths.V, lockDir: paths.lockDir, generation, released: null, released_by: null, closing: null, holder: null,
     holder_alive: null, mine: null, session: null, acquired_at: null, floor: ledgerFloor(paths.S), children: [],
   }
   if (generation !== null) {
     out.released = fs.existsSync(releasedFile(paths, generation))
+    out.closing = fs.existsSync(closingFile(paths, generation))
     try {
       const rel = readJson(releasedFile(paths, generation))
       out.released_by = rel ? rel.by ?? null : null
@@ -535,8 +751,9 @@ export function closeDispatch(P, generation, id, { env = process.env } = {}) {
 }
 
 // Registers a Codex job in cwd before it is launched; setCodexJob adds its id afterwards.
-// The record names its starter, by default the calling process, which launches the job:
-// a reclaim waits for the starter to be gone before it quiesces cwd. null: no starter.
+// The record names its starter {pid, start, pgid}, by default the calling process, which
+// launches the job: a reclaim waits for the starter, and for its process group (pgid null
+// when unreadable), to be gone before it quiesces cwd. null: no starter.
 export function registerCodex(P, generation, cwd, { env = process.env, starter = 'self' } = {}) {
   if (typeof cwd !== 'string' || !cwd) throw new Error('bad-cwd: a Codex record needs its cwd')
   const paths = openPaths(P, env)
@@ -544,7 +761,7 @@ export function registerCodex(P, generation, cwd, { env = process.env, starter =
   if (who === 'self') {
     const t = startToken(process.pid)
     if (t.state !== 'live') throw new Error(`no-identity: the starter cannot read its own start token (${t.detail || t.state})`)
-    who = { pid: process.pid, start: t.token }
+    who = { pid: process.pid, start: t.token, pgid: processGroup(process.pid) }
   }
   const abs = path.resolve(cwd)
   return newHeldChild(paths, generation, env, 'codex', () => ({ v: 1, kind: 'codex', generation, cwd: abs, jobId: null, starter: who })).file
@@ -557,9 +774,13 @@ export function setCodexJob(file, jobId) {
 }
 
 // LOOP.md's verify: list as YAML reads it: a block sequence under the front matter's
-// top-level `verify:` key, each item a plain, single-quoted or double-quoted scalar, with
-// comments dropped. Every other shape is refused rather than guessed, so exec never runs
-// text other than the command the owner reads in the file.
+// top-level `verify:` key whose items all start at one indentation with "- ", each item a
+// plain, single-quoted or double-quoted scalar on one line, with comments and blank lines
+// dropped; a top-level key ends it. Every other shape is refused rather than guessed (a
+// more-indented "- ", a sibling at another indentation, a continuation line, anything else
+// before the next key: `unsupported verify: syntax at line N`), so exec never runs text
+// other than the command the owner reads in the file.
+const TOP_KEY = /^(?:[^\s#\-?:,[\]{}&*!|>%@`'"][^:]*|"[^"]*"|'[^']*')\s*:(?:\s|$)/
 export function verifyCommands(text) {
   const lines = String(text).split(/\r?\n/)
   if (lines[0] !== '---') throw new Error('bad-loop-md: LOOP.md has no front matter')
@@ -571,13 +792,22 @@ export function verifyCommands(text) {
   const at = keys[0]
   if (!/^verify\s*:\s*(#.*)?$/.test(lines[at])) throw new Error(`bad-verify: line ${at + 1}: verify: must be a block list of "  - <command>" lines`)
   const out = []
+  let indent = null
+  const unsupported = (n, why) => new Error(`bad-verify: unsupported verify: syntax at line ${n} (${why})`)
   for (let i = at + 1; i < end; i++) {
     const line = lines[i]
     if (/^\s*(#.*)?$/.test(line)) continue
-    const item = /^\s*-(?:[ \t]+(.*))?$/.exec(line)
-    if (item) out.push(verifyItem(item[1] ?? '', i + 1))
-    else if (/^\s/.test(line)) throw new Error(`bad-verify: line ${i + 1}: not a "- <command>" item`)
-    else break // the next top-level key
+    const item = /^( *)-(?:[ \t]+(.*))?$/.exec(line)
+    if (item && (indent === null || item[1].length === indent)) {
+      indent = item[1].length
+      out.push(verifyItem(item[2] ?? '', i + 1))
+    } else if (item) {
+      throw unsupported(i + 1, `a "- " ${item[1].length > indent ? 'more' : 'less'} indented than the items above it`)
+    } else if (TOP_KEY.test(line)) {
+      break // the next top-level key
+    } else {
+      throw unsupported(i + 1, /^\s/.test(line) ? 'a continuation line or other text inside the list' : 'a line that is neither an item nor a key')
+    }
   }
   return out
 }
@@ -666,13 +896,16 @@ function parseExecArgs(argv) {
   }
 }
 
-// Why the holder of generation N no longer holds it, or null while it does. Unknown holder
-// liveness counts as alive, so a failing ps never ends a verify run.
-function lostHold(paths, generation, holder) {
-  let max, released
+// Why the holder of generation N no longer holds it, or null while it does. slot is the
+// holder record the run started under: a slot of N with another holder or another
+// acquired_at (a <V> wiped and N taken again) is not the run's. Unknown holder liveness, and
+// a slot that cannot be read just now, count as held, so a failing ps never ends a verify run.
+function lostHold(paths, generation, slot) {
+  let max, released, cur
   try {
     max = maxSlot(paths)
     released = fs.existsSync(releasedFile(paths, generation))
+    cur = max === generation ? readJson(slotFile(paths, generation)) : null
   } catch {
     return null
   }
@@ -680,7 +913,11 @@ function lostHold(paths, generation, holder) {
     return { state: 'not-holder', exit: 125, detail: max === null ? `the lock no longer has generation ${generation}` : `generation ${max} replaced ${generation}` }
   }
   if (released) return { state: 'not-holder', exit: 125, detail: `generation ${generation} was released` }
-  if (isAlive(holder) === false) return { state: 'holder-gone', exit: 125, detail: `holder pid ${holder.pid} is gone` }
+  const was = slot.holder, h = cur && cur.holder
+  if (cur && (!h || h.pid !== was.pid || h.start !== was.start || cur.acquired_at !== slot.acquired_at)) {
+    return { state: 'not-holder', exit: 125, detail: `generation ${generation} is now held by pid ${h ? h.pid : 'unknown'}, acquired ${cur.acquired_at}` }
+  }
+  if (isAlive(was) === false) return { state: 'holder-gone', exit: 125, detail: `holder pid ${was.pid} is gone` }
   return null
 }
 
@@ -705,6 +942,10 @@ function cannotExecute(name, env, cwd) {
   return denied ? 'EACCES' : 'ENOENT'
 }
 
+// A run whose cleanup failed: something it started may still run, so it never reads as the
+// command's own result, which stays in outcome.
+const lingering = (outcome, facts) => ({ state: 'lingering', exit: EXIT_LINGERING, outcome, ...facts })
+
 // Registers, starts and supervises one exec child; resolves {state, exit, ...facts}. The
 // record exists before the child does and is removed only once its group is gone, so a
 // firing that dies at any point leaves the next acquire a record to stop the group by.
@@ -728,13 +969,13 @@ async function superviseChild(paths, slot, pending, timeoutMs, env) {
   const onSignal = sig => stop({ state: 'interrupted', exit: signalExit(sig), signal: sig })
   for (const s of EXEC_SIGNALS) process.on(s, onSignal)
   try {
-    file = newChild(paths, generation, 'proc', () => pending).file
-    // A reclaim that listed the children just before the record existed has not seen it.
+    // A reclaim that listed the children just before the record existed has not seen it:
+    // the hold is checked again once the record is on disk, and the record removed if lost.
     try {
-      assertHeld(paths, generation, env)
+      file = newHeldChild(paths, generation, env, 'proc', () => pending).file
     } catch (e) {
-      fs.rmSync(file, { force: true })
-      return { state: 'not-holder', exit: 125, detail: e.message }
+      if (e.code !== 'NOT_HOLDER') throw e // holder-unknown and setup errors: exit 2
+      return { state: 'not-holder', exit: 125, detail: e.message, ...(e.reason ? { reason: e.reason } : {}) }
     }
     const why = cannotExecute(pending.command[0], env, pending.cwd)
     if (why) {
@@ -770,30 +1011,39 @@ async function superviseChild(paths, slot, pending, timeoutMs, env) {
     else child.stdin.end('go\n')
     if (timeoutMs !== null) timer = setTimeout(() => stop({ state: 'timeout', exit: 124, detail: `still running after ${timeoutMs} ms` }), timeoutMs)
     poll = setInterval(() => {
-      const lost = lostHold(paths, generation, slot.holder)
+      const lost = lostHold(paths, generation, slot)
       if (lost) stop(lost)
     }, EXEC_POLL_MS)
     const r = await Promise.race([exited, abandoned])
-    if (!r) return { ...outcome, left: `process group ${pid} survived SIGKILL; its record stays` }
+    if (!r) return lingering(outcome, { left: `process group ${pid} survived SIGKILL; its record stays` })
     if (killing) await killing
     // Grandchildren still in the group after the command ended are killed with it.
-    let lingering = false, alive = groupAlive(pid)
+    let grandchildren = false, alive = groupAlive(pid)
     if (alive === true) {
-      lingering = outcome === null
+      grandchildren = outcome === null
       alive = !(await killGroup(pid))
     }
     const result = outcome
       ? { ...outcome }
       : r.code !== null ? { state: 'exited', exit: r.code } : { state: 'signalled', exit: signalExit(r.signal), signal: r.signal }
-    if (lingering) result.lingering = true
-    if (alive !== false) return { ...result, left: `process group ${pid} is still running; its record stays` }
+    if (grandchildren) result.lingering = true
+    if (alive !== false) {
+      return lingering(result, { left: alive === null ? `the liveness of process group ${pid} cannot be read; its record stays` : `process group ${pid} is still running; its record stays` })
+    }
     fs.rmSync(file, { force: true })
+    // Spec 16's sweep: a process that left the group (a daemon in a session of its own) is
+    // not ours to signal, but a run that leaves one behind in <dir> did not end cleanly.
+    const sw = sweep([pending.cwd])
+    if (sw.state !== 'ok') return lingering(result, { left: `the sweep of ${pending.cwd} for processes left behind could not run: ${sw.detail}` })
+    if (sw.procs.length) {
+      return lingering(result, { left: `${sw.procs.length} process(es) outside the group still run in ${pending.cwd}; none was signalled`, alive: sw.procs })
+    }
     return result
   } catch (e) {
     // A failed record write: stop the group if one was started; its record stays while
     // anything in the group may still run.
     if (started() && groupAlive(child.pid) !== false && !(await killGroup(child.pid))) {
-      return { state: 'error', exit: 2, detail: e.message, left: `process group ${child.pid} may still be running; its record stays` }
+      return lingering({ state: 'error', exit: 2, detail: e.message }, { left: `process group ${child.pid} may still be running; its record stays` })
     }
     if (file) fs.rmSync(file, { force: true })
     return { state: 'error', exit: 2, detail: e.message }
@@ -828,7 +1078,10 @@ async function execMain(argv, env = process.env) {
     paths = openPaths(a.P, env)
     slot = assertHeld(paths, a.generation, env)
   } catch (e) {
-    return report(e.code === 'NOT_HOLDER' ? { state: 'not-holder', exit: 125, detail: e.message } : { state: 'error', exit: 2, detail: e.message })
+    // holder-unknown (the holder's token cannot be read) is an error, never a lost hold.
+    return report(e.code === 'NOT_HOLDER'
+      ? { state: 'not-holder', exit: 125, detail: e.message, ...(e.reason ? { reason: e.reason } : {}) }
+      : { state: 'error', exit: 2, detail: e.message })
   }
   try {
     const command = a.verify === null ? a.argv : ['/bin/sh', '-c', verifyCommand(paths.S, a.verify)]
@@ -894,7 +1147,7 @@ async function main(argv) {
     return code
   } catch (e) {
     if (e.code === 'NOT_HOLDER') {
-      print({ state: 'not-holder', detail: e.message })
+      print({ state: 'not-holder', detail: e.message, ...(e.reason ? { reason: e.reason } : {}) })
       return 3
     }
     if (e.code === 'DISPATCH_OPEN') {

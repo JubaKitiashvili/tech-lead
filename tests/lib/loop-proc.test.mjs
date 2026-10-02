@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
-import { commandLine, groupAlive, isAlive, killGroup, parseProcStat, resolveHolder, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { commandLine, cwdSweep, groupAlive, isAlive, killGroup, parseProcStat, procCwds, resolveHolder, startToken } from '../../scripts/lib/loop-proc.mjs'
 
 const MODULE = path.join(ROOT, 'scripts', 'lib', 'loop-proc.mjs')
 const tmp = t => {
@@ -24,8 +24,9 @@ const waitFor = async (fn, ms = 3000) => {
 }
 // A real process standing in for a holder. It is started through a shell that exits at
 // once, so the test runner is not its parent and a killed one never lingers as a zombie.
-const sleeper = t => {
-  const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
+// Its working directory is cwd (the test runner's when cwd is not given).
+const sleeper = (t, cwd) => {
+  const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8', cwd }).trim())
   t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
   return pid
 }
@@ -205,7 +206,48 @@ test('resolveHolder throws no-holder unless the variable it reads names a live p
     { CLAUDE_PID: `${live}x` },
     // The override, once set, is the holder: a dead one never falls back to CLAUDE_PID.
     { TECH_LEAD_HOLDER_PID: String(dead), CLAUDE_PID: String(live) },
-  ]) assert.throws(() => resolveHolder(env), /^Error: no-holder: /, JSON.stringify(env))
+  ]) {
+    assert.throws(() => resolveHolder(env), err => err.code === 'NO_HOLDER' && /^no-holder: /.test(err.message), JSON.stringify(env))
+  }
+})
+
+// Points TECH_LEAD_PS at a fake ps for the rest of the test. The script appends a line to
+// `count` on every run, then runs body.
+const fakePs = (t, body) => {
+  const dir = tmp(t)
+  const count = path.join(dir, 'count'), file = path.join(dir, 'ps')
+  fs.writeFileSync(file, `#!/bin/sh\necho run >> '${count}'\n${body}\n`, { mode: 0o755 })
+  const before = process.env.TECH_LEAD_PS
+  process.env.TECH_LEAD_PS = file
+  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+  return () => { try { return fs.readFileSync(count, 'utf8').split('\n').filter(Boolean).length } catch { return 0 } }
+}
+
+test('resolveHolder retries a live holder whose token ps cannot read, then throws holder-unknown, never no-holder', { skip: process.platform !== 'darwin' }, t => {
+  const live = sleeper(t)
+  const runs = fakePs(t, 'exit 1')
+  const t0 = Date.now()
+  assert.throws(() => resolveHolder({ TECH_LEAD_HOLDER_PID: String(live) }),
+    err => err.code === 'HOLDER_UNKNOWN' && /^holder-unknown: /.test(err.message) && err.message.includes(String(live)))
+  // The first read and three retries, 100 ms apart.
+  assert.equal(runs(), 4)
+  assert.ok(Date.now() - t0 >= 300, 'the retries were not spaced 100 ms apart')
+})
+
+test('resolveHolder rides out a transient ps failure on the last retry', { skip: process.platform !== 'darwin' }, t => {
+  const live = sleeper(t)
+  const real = startToken(live).token
+  // The first three runs fail; the fourth is the real ps.
+  const runs = fakePs(t, '[ "$(grep -c run "$(dirname "$0")/count")" -gt 3 ] && exec /bin/ps "$@"\nexit 1')
+  assert.deepEqual(resolveHolder({ TECH_LEAD_HOLDER_PID: String(live) }), { pid: live, start: real, how: 'TECH_LEAD_HOLDER_PID' })
+  assert.equal(runs(), 4)
+})
+
+test('resolveHolder does not retry a gone holder: it is no-holder at once', { skip: process.platform !== 'darwin' }, async t => {
+  const dead = await deadPid(t)
+  const runs = fakePs(t, 'exit 1')
+  assert.throws(() => resolveHolder({ CLAUDE_PID: String(dead) }), err => err.code === 'NO_HOLDER' && /^no-holder: /.test(err.message))
+  assert.equal(runs(), 0, 'kill(pid, 0) already said gone, so ps never ran')
 })
 
 test('commandLine reads a live process\'s argv as words, and reports a gone process, a zombie and a bad pid', async t => {
@@ -230,4 +272,145 @@ test('a live pid that ps fails to read is unknown, never gone', { skip: process.
   process.env.TECH_LEAD_PS = fakePs
   t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
   assert.equal(startToken(process.pid).state, 'unknown')
+})
+
+const sweepable = process.platform === 'darwin' || process.platform === 'linux'
+const pidsOf = r => r.procs.map(p => p.pid)
+const byPid = pids => [...pids].sort((a, b) => a - b)
+// The sweep of dirs once it lists every pid in want, or the last sweep after 3 s. A sleeper
+// is in its directory from the fork, so the wait only covers the exec into sleep.
+const sweepUntil = async (dirs, want, opts) => {
+  let r
+  await waitFor(() => { r = cwdSweep(dirs, opts); return r.state === 'ok' && want.every(p => r.procs.some(x => x.pid === p && x.command === 'sleep')) })
+  return r
+}
+
+test('cwdSweep lists the processes working in a directory or below it, compared by real path, and leaves out the rest', { skip: !sweepable }, async t => {
+  // os.tmpdir() is behind a symlink on macOS (/var -> /private/var), so dir itself is not a
+  // real path.
+  const dir = tmp(t), elsewhere = tmp(t)
+  const nested = path.join(dir, 'a', 'b')
+  fs.mkdirSync(nested, { recursive: true })
+  const link = path.join(elsewhere, 'link')
+  fs.symlinkSync(dir, link)
+  const inDir = sleeper(t, dir), inNested = sleeper(t, nested), viaLink = sleeper(t, path.join(link, 'a'))
+  const outside = sleeper(t, elsewhere)
+
+  const r = await sweepUntil([dir], [inDir, inNested, viaLink])
+  assert.equal(r.state, 'ok', r.detail)
+  assert.deepEqual(byPid(pidsOf(r)), byPid([inDir, inNested, viaLink]))
+  const real = fs.realpathSync.native(dir)
+  assert.deepEqual(r.procs.find(p => p.pid === inDir), { pid: inDir, cwd: real, command: 'sleep' })
+  assert.equal(r.procs.find(p => p.pid === inNested).cwd, path.join(real, 'a', 'b'))
+
+  // The symlink names the same directory; a nested directory alone holds only its own.
+  assert.deepEqual(byPid(pidsOf(cwdSweep([link]))), byPid(pidsOf(r)))
+  const below = cwdSweep([nested])
+  assert.equal(below.state, 'ok')
+  assert.deepEqual(pidsOf(below), [inNested])
+  // exclude drops the pids it names, and a directory that does not exist contributes nothing.
+  assert.deepEqual(pidsOf(cwdSweep([path.join(dir, 'missing'), dir], { exclude: [inDir, viaLink] })), [inNested])
+  assert.deepEqual(cwdSweep([path.join(dir, 'missing')]), { state: 'ok', procs: [] })
+  assert.deepEqual(cwdSweep([]), { state: 'ok', procs: [] })
+  // A sibling whose name extends the directory's is not inside it.
+  const sibling = `${dir}-sib`
+  fs.mkdirSync(sibling)
+  t.after(() => fs.rmSync(sibling, { recursive: true, force: true }))
+  const inSibling = sleeper(t, sibling)
+  await sweepUntil([sibling], [inSibling])
+  assert.equal(pidsOf(cwdSweep([dir])).includes(inSibling), false)
+})
+
+test('cwdSweep matches a directory whose name holds a backslash, a caret, a tab and non-ASCII text', { skip: !sweepable }, async t => {
+  const dir = tmp(t)
+  const odd = path.join(dir, `odd \\ ^A\t${String.fromCharCode(0x10d0, 0x10d1)} x`)
+  fs.mkdirSync(path.join(odd, 'in'), { recursive: true })
+  const top = sleeper(t, odd), deeper = sleeper(t, path.join(odd, 'in'))
+  const r = await sweepUntil([odd], [top, deeper])
+  assert.equal(r.state, 'ok', r.detail)
+  assert.deepEqual(byPid(pidsOf(r)), byPid([top, deeper]))
+  assert.deepEqual(byPid(pidsOf(cwdSweep([dir]))), byPid([top, deeper]))
+})
+
+test('cwdSweep never lists the calling process or its parent', { skip: !sweepable }, async t => {
+  const dir = tmp(t)
+  const other = sleeper(t, dir)
+  await sweepUntil([dir], [other])
+  // A shell working in dir runs node (not as its last command, so it forks rather than
+  // execs); node sweeps its own directory, which holds itself, the shell and the sleeper.
+  const script = `import { cwdSweep } from ${JSON.stringify(new URL(`file://${MODULE}`).href)}
+console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, r: cwdSweep([process.cwd()]) }))`
+  const out = execFileSync('/bin/sh', ['-c', '"$0" --input-type=module -e "$1"; :', process.execPath, script], { cwd: dir, encoding: 'utf8' })
+  const { pid, ppid, r } = JSON.parse(out)
+  assert.equal(r.state, 'ok', r.detail)
+  assert.ok(ppid !== process.pid, 'the shell, not the test runner, is the parent')
+  assert.deepEqual(pidsOf(r), [other])
+  assert.ok(pid > 0)
+})
+
+test('cwdSweep refuses arguments it cannot judge', { skip: !sweepable }, t => {
+  const dir = tmp(t)
+  for (const [dirs, opts] of [['x'], [[1]], [['relative/dir']], [[dir], { exclude: 'x' }], [undefined]]) {
+    assert.equal(cwdSweep(dirs, opts).state, 'unknown', JSON.stringify([dirs, opts]))
+  }
+})
+
+// Points TECH_LEAD_LSOF at a fake lsof for the rest of the test.
+const fakeLsof = (t, body) => {
+  const file = path.join(tmp(t), 'lsof')
+  fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+  const before = process.env.TECH_LEAD_LSOF
+  process.env.TECH_LEAD_LSOF = file
+  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_LSOF; else process.env.TECH_LEAD_LSOF = before })
+  return file
+}
+
+test('cwdSweep judges lsof by what it printed: a failed, killed or garbled run, or one that does not list this process, is unknown', { skip: process.platform !== 'darwin' }, t => {
+  const dir = tmp(t)
+  const real = fs.realpathSync.native(dir)
+  // lsof exits 1 on partial errors too; the listing it printed still counts.
+  fakeLsof(t, `printf 'p${process.pid}\\ncnode\\nfcwd\\nn/\\np4242421\\ncsleep\\nfcwd\\nn${real}/x\\n'\nexit 1`)
+  assert.deepEqual(cwdSweep([dir]), { state: 'ok', procs: [{ pid: 4242421, cwd: `${real}/x`, command: 'sleep' }] })
+  for (const body of [
+    'exit 1', // nothing listed, not even this process: lsof saw nothing
+    `printf 'p4242421\\ncsleep\\nfcwd\\nn${real}\\n'`, // a listing without this process
+    'kill -9 $$',
+    `printf 'n${real}\\np${process.pid}\\nn/\\n'`, // a name before any process
+    `printf 'p${process.pid}\\nn/\\npx\\nn${real}\\n'`, // a pid that is not one
+  ]) {
+    fakeLsof(t, body)
+    assert.equal(cwdSweep([dir]).state, 'unknown', body)
+  }
+  process.env.TECH_LEAD_LSOF = path.join(dir, 'no-such-lsof')
+  assert.match(cwdSweep([dir]).detail, /ENOENT/)
+})
+
+test('procCwds reads every numeric entry of a proc tree, skips unreadable and gone ones, and is unknown without the tree', t => {
+  const root = tmp(t)
+  const proc = (pid, cwd, comm) => {
+    fs.mkdirSync(path.join(root, pid))
+    if (cwd !== undefined) fs.symlinkSync(cwd, path.join(root, pid, 'cwd'))
+    if (comm !== undefined) fs.writeFileSync(path.join(root, pid, 'comm'), comm)
+  }
+  proc('12', '/work/a', 'sleep\n')
+  proc('34', '/work/b (deleted)', 'sh\n') // the kernel marks a removed directory this way
+  proc('56') // exited between the listing and the read
+  proc('78', '/work/c') // no comm
+  proc('self', '/elsewhere')
+  fs.mkdirSync(path.join(root, 'sys'))
+  proc('90', '/work/d', 'x\n')
+  fs.chmodSync(path.join(root, '90'), 0o000) // another user's process: EACCES
+  let r
+  try { r = procCwds(root) } finally { fs.chmodSync(path.join(root, '90'), 0o755) }
+  assert.equal(r.state, 'ok', r.detail)
+  assert.deepEqual([...r.procs].sort((a, b) => a.pid - b.pid), [
+    { pid: 12, cwd: '/work/a', command: 'sleep' },
+    { pid: 34, cwd: '/work/b', command: 'sh' },
+    { pid: 78, cwd: '/work/c', command: null },
+  ])
+  // A cwd entry that is not a link is a read error the sweep cannot explain.
+  fs.mkdirSync(path.join(root, '99'))
+  fs.writeFileSync(path.join(root, '99', 'cwd'), 'not a link')
+  assert.equal(procCwds(root).state, 'unknown')
+  assert.equal(procCwds(path.join(root, 'missing')).state, 'unknown')
 })

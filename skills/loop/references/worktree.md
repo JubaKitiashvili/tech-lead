@@ -76,17 +76,29 @@ directory explicitly: use `git -C` with an absolute path, never a bare
      ever is, wait for its completion notification before going on.
 
      The install's output passes through, and the last stderr line is
-     `loop-lock exec: {"state": …, "exit": …}`.
-     - **Success** (`state` `exited`, `exit` 0): rewrite the marker.
-     - **Lost lock** (`state` `not-holder` or `holder-gone`): follow
+     `loop-lock exec: {"state": …, "exit": …}`. Judge by that `state`, not
+     by the exit code alone:
+     - **Success** (`state` `exited`, `exit` 0): rewrite the marker. This
+       is the only success.
+     - **Lost lock** (`state` `not-holder` or `holder-gone`, or a
+       `lingering` run whose `outcome.state` is one of them): follow
        loop §1 step 3.
-     - **Failure** (any other `state`, or no such line): delete the
-       marker, then:
+     - **Failure** (`state` `exited` with any other `exit`, `lingering`,
+       any other `state`, or no such line): delete the marker, and never
+       write it after a failure, then:
        - write the incident to `## Last run`;
        - set `paused: true` in `LOOP.md`;
        - return the item to `## Backlog` with its `status:` unchanged;
        - record outcome `skipped`, note "worktree deps";
        - stop the runner.
+     - `lingering` (exit 123) means a process of the install outlived it:
+       its process group survived the cleanup or its liveness could not
+       be read (`left`), or a process still runs in `<W>` (`alive`, never
+       signalled), or the check for one could not run. Whatever the
+       install exited (`outcome`), it is the failure above and an infra
+       incident: touch nothing else in `<W>`, name `left` and every
+       process in `alive` in the incident, and add the unpause check "set
+       `paused: false` once none of these processes runs".
 5. **Untracked baseline.**
    - Record `U` = the untracked entries in
      `git -C <W> status --porcelain=v1 -uall`, excluding `.tech-lead/`.

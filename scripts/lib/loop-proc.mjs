@@ -4,13 +4,19 @@
 // never passes for the one that held the lock. Any fact this module cannot establish is
 // reported as unknown, and callers treat unknown as alive.
 import fs from 'node:fs'
+import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const POLL_MS = 100
 const KILL_WAIT_MS = 2000
 const PS_TIMEOUT_MS = 10000
+const LSOF_TIMEOUT_MS = 20000
+const HOLDER_RETRIES = 3
+const HOLDER_RETRY_MS = 100
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+// Blocks the thread for ms; for the synchronous callers of resolveHolder.
+const sleepSync = ms => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) }
 const validPid = pid => Number.isInteger(pid) && pid > 0
 // -pgid must name one process group: -0 is the caller's own group and -1 is every process
 // the caller may signal, so 0 and 1 are refused before anything is sent.
@@ -179,16 +185,157 @@ export async function killGroup(pgid, { graceMs = 5000 } = {}) {
   return waitGroupGone(pgid, KILL_WAIT_MS)
 }
 
+const holderError = (code, message) => Object.assign(new Error(message), { code })
+
 // resolveHolder(env) -> {pid, start, how}. TECH_LEAD_HOLDER_PID (tests only) wins over
 // CLAUDE_PID, which Claude Code sets for every Bash command to the long-lived claude
 // process. The first variable set is the holder: a bad one never falls back to the other.
+// Throws code NO_HOLDER ('no-holder: ...') when no variable is set, the one set is not a
+// pid, or its process is gone. A live holder whose start token cannot be read (ps failing)
+// is read again up to HOLDER_RETRIES times, HOLDER_RETRY_MS apart; if it stays unreadable
+// the error is code HOLDER_UNKNOWN ('holder-unknown: ...'), because the holder may well be
+// alive and must not be taken for absent.
 export function resolveHolder(env = process.env) {
   const how = ['TECH_LEAD_HOLDER_PID', 'CLAUDE_PID'].find(k => env[k] != null && env[k] !== '')
-  if (!how) throw new Error('no-holder: neither TECH_LEAD_HOLDER_PID nor CLAUDE_PID is set')
+  if (!how) throw holderError('NO_HOLDER', 'no-holder: neither TECH_LEAD_HOLDER_PID nor CLAUDE_PID is set')
   const raw = env[how]
-  if (!/^[1-9]\d*$/.test(raw)) throw new Error(`no-holder: ${how}=${JSON.stringify(raw)} is not a pid`)
+  if (!/^[1-9]\d*$/.test(raw)) throw holderError('NO_HOLDER', `no-holder: ${how}=${JSON.stringify(raw)} is not a pid`)
   const pid = Number(raw)
-  const t = startToken(pid)
-  if (t.state !== 'live') throw new Error(`no-holder: ${how}=${pid} is ${t.state}${t.detail ? ` (${t.detail})` : ''}`)
+  let t = startToken(pid)
+  for (let retry = 0; t.state === 'unknown' && retry < HOLDER_RETRIES; retry++) {
+    sleepSync(HOLDER_RETRY_MS)
+    t = startToken(pid)
+  }
+  if (t.state === 'unknown') throw holderError('HOLDER_UNKNOWN', `holder-unknown: ${how}=${pid} cannot be read (${t.detail})`)
+  if (t.state !== 'live') throw holderError('NO_HOLDER', `no-holder: ${how}=${pid} is ${t.state}`)
   return { pid, start: t.token, how }
+}
+
+// cwdSweep(dirs, {exclude}) -> {state:'ok', procs:[{pid, cwd, command}]} | {state:'unknown', detail}.
+// The live processes, of any user this one may read, whose working directory is one of
+// dirs or below one of them; spec 16's sweep for processes still holding files in the
+// work area. It reports and never signals. dirs are absolute paths compared by real path,
+// and one that does not exist contributes nothing. This process, its parent and every pid
+// in exclude are never listed. A listing that cannot be had, or that does not show this
+// very process (so it is not a full one), is unknown.
+//   darwin: lsof spells the cwd with every byte outside printable ASCII escaped and with
+//   the on-disk case; the dirs are spelled the same way and compared without case, so a
+//   doubtful spelling only ever adds a process. cwd is reported as lsof printed it.
+//   linux: readlink /proc/<pid>/cwd for every numeric entry (see procCwds).
+export function cwdSweep(dirs, { exclude = [] } = {}) {
+  if (!Array.isArray(dirs) || !dirs.every(d => typeof d === 'string' && path.isAbsolute(d))) {
+    return unknown(`bad dirs: ${JSON.stringify(dirs)}`)
+  }
+  if (!Array.isArray(exclude)) return unknown(`bad exclude: ${JSON.stringify(exclude)}`)
+  const roots = []
+  for (const d of dirs) {
+    try {
+      roots.push(fs.realpathSync.native(d))
+    } catch (e) {
+      if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue
+      return unknown(`realpath ${d}: ${e.code || e.message}`)
+    }
+  }
+  if (roots.length === 0) return { state: 'ok', procs: [] }
+  const darwin = process.platform === 'darwin'
+  let listing
+  if (darwin) listing = lsofCwds()
+  else if (process.platform === 'linux') listing = procCwds('/proc')
+  else return unknown(`unsupported platform: ${process.platform}`)
+  if (listing.state !== 'ok') return listing
+  if (!listing.procs.some(p => p.pid === process.pid)) return unknown('the cwd listing does not show this process, so it is not a full one')
+  const fold = darwin ? s => s.toLowerCase() : s => s
+  const prefixes = roots.map(r => fold(darwin ? lsofSpelling(r) : r))
+  const inside = cwd => {
+    const c = fold(cwd)
+    return prefixes.some(p => c === p || c.startsWith(p.endsWith('/') ? p : `${p}/`))
+  }
+  const skip = new Set([process.pid, process.ppid, ...(listing.skip ?? []), ...exclude.map(Number)])
+  const procs = []
+  for (const p of listing.procs) {
+    if (skip.has(p.pid) || !inside(p.cwd)) continue
+    skip.add(p.pid)
+    procs.push({ pid: p.pid, cwd: p.cwd, command: p.command })
+  }
+  return { state: 'ok', procs }
+}
+
+// TECH_LEAD_LSOF replaces /usr/sbin/lsof in tests only.
+const LSOF = () => process.env.TECH_LEAD_LSOF || '/usr/sbin/lsof'
+
+// Every process's cwd as lsof prints it ({state:'ok', procs, skip:[lsof's own pid]}). lsof
+// exits 1 both when nothing matched and on partial errors, so its exit status says
+// nothing; the parsed output decides. It runs in / so that it holds no dir of the sweep.
+function lsofCwds() {
+  const r = spawnSync(LSOF(), ['-a', '-d', 'cwd', '-F', 'pcn'], {
+    cwd: '/', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: LSOF_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C' },
+  })
+  if (r.error) return unknown(`lsof: ${r.error.code || r.error.message}`)
+  if (r.status === null) return unknown(`lsof: ended by ${r.signal}`)
+  const procs = []
+  let cur = null
+  for (const line of r.stdout.split('\n')) {
+    if (line === '') continue
+    const field = line[0], value = line.slice(1)
+    if (field === 'p') {
+      if (!/^[1-9]\d*$/.test(value)) return unknown(`lsof: bad process line ${JSON.stringify(line)}`)
+      cur = { pid: Number(value), command: null }
+    } else if (!cur) {
+      return unknown(`lsof: ${JSON.stringify(line)} before any process line`)
+    } else if (field === 'c') {
+      cur.command = value
+    } else if (field === 'n') {
+      procs.push({ pid: cur.pid, cwd: value, command: cur.command })
+    } // f (always printed) and any other field: nothing the sweep needs
+  }
+  return { state: 'ok', procs, skip: Number.isInteger(r.pid) ? [r.pid] : [] }
+}
+
+// How lsof (LC_ALL=C) prints a path, byte by byte: a backslash doubled; \b \t \n \f \r;
+// any other control byte as ^ and a letter (a literal ^ stays as it is, so two paths can
+// print alike, which only adds matches); every byte from 0x7f up as \x and two lowercase
+// hex digits.
+const LSOF_ESCAPES = { 8: '\\b', 9: '\\t', 10: '\\n', 12: '\\f', 13: '\\r', 92: '\\\\' }
+function lsofSpelling(s) {
+  let out = ''
+  for (const b of Buffer.from(s, 'utf8')) {
+    if (LSOF_ESCAPES[b]) out += LSOF_ESCAPES[b]
+    else if (b < 0x20) out += `^${String.fromCharCode(b + 0x40)}`
+    else if (b < 0x7f) out += String.fromCharCode(b)
+    else out += `\\x${b.toString(16).padStart(2, '0')}`
+  }
+  return out
+}
+
+// procCwds(root = '/proc') -> {state:'ok', procs:[{pid, cwd, command}]} | {state:'unknown', detail}.
+// Linux: readlink <root>/<pid>/cwd for every numeric entry; command is <root>/<pid>/comm
+// (null when unreadable). An entry that is another user's (EACCES) or has exited (ENOENT)
+// is skipped; any other error, or no readable root, is unknown. A cwd the kernel marks
+// " (deleted)" is reported without the mark, so a process left in a removed directory
+// still matches that directory's path. Exported to test it on any host.
+export function procCwds(root = '/proc') {
+  let names
+  try {
+    names = fs.readdirSync(root)
+  } catch (e) {
+    return unknown(`${root}: ${e.code || e.message}`)
+  }
+  const procs = []
+  for (const name of names) {
+    if (!/^[1-9]\d*$/.test(name)) continue
+    let cwd
+    try {
+      cwd = fs.readlinkSync(path.join(root, name, 'cwd'))
+    } catch (e) {
+      if (e.code === 'EACCES' || e.code === 'ENOENT') continue
+      return unknown(`${path.join(root, name, 'cwd')}: ${e.code || e.message}`)
+    }
+    let command = null
+    try {
+      command = fs.readFileSync(path.join(root, name, 'comm'), 'utf8').replace(/\n$/, '')
+    } catch { /* gone or unreadable: the cwd is what the sweep needs */ }
+    procs.push({ pid: Number(name), cwd: cwd.replace(/ \(deleted\)$/, ''), command })
+  }
+  return { state: 'ok', procs }
 }

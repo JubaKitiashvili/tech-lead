@@ -2,19 +2,32 @@
 // tests/fixtures/codex/scripts/codex-companion.mjs
 // Test double for the Codex companion CLI (task, status, result, cancel with --json).
 // FAKE_CODEX_STATE names a JSON scenario file; each call's argv is appended to FAKE_CODEX_LOG.
-// A scenario's watchDir makes `task` also log ['watch', {name: parsed JSON}] for every
-// record in that directory at launch time. A scenario's taskDelayMs delays `task`, and
-// launchWorker makes it start the job's worker (`task-worker`, detached, as the real
-// companion does) and add {id, pid, status:'running'} to the scenario's active jobs.
-// `task-worker --cwd <W> --job-id <id>` is that worker: it only waits to be killed, and its
-// command line names its job, as the real one's does.
+// `task` also logs ['task:cwd', <its working directory>]. A scenario's watchDir makes `task`
+// also log ['watch', {name: parsed JSON}] for every record in that directory at launch time.
+// A scenario's taskDelayMs delays `task`, and launchWorker makes it start the job's worker
+// (`task-worker`, detached, as the real companion does) and add {id, pid, status:'running'}
+// to the scenario's active jobs.
+// `task-worker --cwd <W> --job-id <id> [--member <f>] [--stubborn-member <f>]` is that
+// worker: it only waits to be killed, and its command line names its job, as the real one's
+// does; the member flags start one more process in its group (lib/group-member.mjs).
+// `cancel` does what the real one does to the job's processes and state: SIGTERM to the
+// worker's whole process group (lib/process.mjs's terminateProcessTree, which signals
+// nothing for a stubborn pid or one that is not an integer above 1), then the job is
+// rewritten as cancelled with pid null, so it leaves the active list; the scenario's
+// `cancelled` keeps {id, pid} of each cancelled job.
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+// lib/ is imported only where it is used: a copy of this file without lib/ still lists jobs.
 const argv = process.argv.slice(2)
-if (argv[0] === 'task-worker') setInterval(() => {}, 2 ** 30)
-else await main()
+if (argv[0] === 'task-worker') {
+  const { startMembers } = await import('./lib/group-member.mjs')
+  startMembers(argv)
+  setInterval(() => {}, 2 ** 30)
+} else {
+  await main()
+}
 
 async function main() {
   const log = entry => { if (process.env.FAKE_CODEX_LOG) fs.appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify(entry) + '\n') }
@@ -30,6 +43,7 @@ async function main() {
 
   switch (argv[0]) {
     case 'task': {
+      log(['task:cwd', process.cwd()])
       if (s.watchDir) {
         const names = fs.existsSync(s.watchDir) ? fs.readdirSync(s.watchDir).filter(n => !n.startsWith('.')).sort() : []
         log(['watch', Object.fromEntries(names.map(n => [n, JSON.parse(fs.readFileSync(`${s.watchDir}/${n}`, 'utf8'))]))])
@@ -66,10 +80,16 @@ async function main() {
       break
     case 'cancel': {
       if (s.cancelError) fail(s.cancelError)
-      // Like the real companion, cancel kills the job's worker process.
       const active = (s.active || []).find(j => j.id === argv[1])
-      if (active && Number.isInteger(active.pid) && !(s.stubborn || []).includes(active.pid)) {
-        try { process.kill(active.pid, 'SIGKILL') } catch { /* already gone */ }
+      if (active) {
+        const { terminateProcessTree } = await import('./lib/process.mjs')
+        terminateProcessTree(active.pid ?? Number.NaN)
+        const now = JSON.parse(fs.readFileSync(file, 'utf8'))
+        fs.writeFileSync(file, JSON.stringify({
+          ...now,
+          active: (now.active || []).filter(j => j.id !== argv[1]),
+          cancelled: [...(now.cancelled || []), { id: argv[1], pid: active.pid ?? null }],
+        }))
       }
       out({ jobId: argv[1], status: 'cancelled', title: 'Codex Task', turnInterruptAttempted: true, turnInterrupted: s.turnInterrupted ?? true })
       break

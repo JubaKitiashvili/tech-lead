@@ -132,6 +132,28 @@ test('inherited GIT_CONFIG_PARAMETERS does not reach git', t => {
   })
 })
 
+test('config injected through GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n> does not reach git', t => {
+  const r = repo(t)
+  const injected = {
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: 'alias.x', GIT_CONFIG_VALUE_0: '!echo injected',
+    GIT_CONFIG_KEY_1: 'tl.probe', GIT_CONFIG_VALUE_1: 'inherited',
+  }
+  withEnv(injected, () => {
+    assert.equal(git(r, ['x']), 'injected', 'control: plain git runs the injected alias')
+    assert.equal(git(r, ['config', '--default', 'none', '--get', 'tl.probe']), 'inherited', 'control')
+    assert.throws(() => safeGit(r, ['x']), /'x' is not a git command/)
+    assert.equal(safeGit(r, ['config', '--default', 'none', '--get', 'tl.probe']), 'none')
+    // None of the variables is left in the environment git runs with, even one whose
+    // index GIT_CONFIG_COUNT would not reach.
+    withEnv({ GIT_CONFIG_KEY_7: 'tl.far', GIT_CONFIG_VALUE_7: 'x' }, () => {
+      const env = safeGit(r, ['-c', 'alias.env=!env', 'env']).split('\n')
+      assert.deepEqual(env.filter(l => /^GIT_CONFIG_(COUNT|KEY_|VALUE_)/.test(l)), [])
+      assert.ok(env.some(l => l === 'GIT_NO_REPLACE_OBJECTS=1'), 'the listing is the environment git ran with')
+    })
+  })
+})
+
 test('replace refs are not followed', t => {
   const r = repo(t)
   const original = git(r, ['rev-parse', 'HEAD'])

@@ -2,7 +2,8 @@
 // Lock interruption (spec 10, stage 0c-1 acceptance): a firing (tests/fixtures/firing-driver.mjs,
 // its own holder) is SIGKILLed at each boundary: after acquire, during an exec child, and
 // after its ledger append but before release. The next acquire reclaims, kills the group
-// the dead firing left behind, and never repeats a generation.
+// the dead firing left behind, and never repeats a generation. The work tree is the 0c-1
+// loop's <S>/worktree, so every reclaim also sweeps it for processes no record names.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -68,7 +69,8 @@ const project = t => {
   const S = path.join(P, '.tech-lead')
   fs.mkdirSync(S)
   fs.writeFileSync(path.join(S, 'LOOP.md'), LOOP_MD)
-  return { P, S, cache: tmp(t, 'tl-int-c-'), W: fs.realpathSync(tmp(t, 'tl-int-w-')) }
+  fs.mkdirSync(path.join(S, 'worktree'))
+  return { P, S, cache: tmp(t, 'tl-int-c-'), W: fs.realpathSync(path.join(S, 'worktree')) }
 }
 const ledger = p => {
   const f = path.join(p.S, 'LEDGER.jsonl')
@@ -215,4 +217,24 @@ test('when only the firing dies, its surviving exec wrapper stops its own group 
   const next = acquireCli(p, sleeper(t))
   assert.equal(next.status, 0, next.stderr)
   assert.deepEqual(next.out.reclaimed, { generation: 1, how: 'dead-holder', stopped: [] })
+})
+
+test('a process a killed firing left in the work tree without a record blocks the next acquire until it is gone, and is never signalled', T, async t => {
+  const p = project(t)
+  const f = firing(t, p, 'stray')
+  const a = await f.event('acquired')
+  const { pid: stray } = await f.event('stray')
+  reap(t, stray)
+  await f.kill()
+  const b = sleeper(t)
+  const r = acquireCli(p, b)
+  assert.equal(r.status, 3, JSON.stringify(r.out))
+  assert.deepEqual([r.out.state, r.out.reason, r.out.generation], ['held', 'child-live', a.generation])
+  assert.ok(r.out.procs.some(x => x.pid === stray), JSON.stringify(r.out.procs))
+  assert.equal(gone(stray), false, 'the stray process was signalled')
+  process.kill(stray, 'SIGKILL')
+  assert.ok(await waitFor(() => gone(stray)), `stray ${stray} never read as gone`)
+  const ok = acquireCli(p, b)
+  assert.equal(ok.status, 0, JSON.stringify(ok.out))
+  assert.deepEqual(ok.out.reclaimed, { generation: a.generation, how: 'dead-holder', stopped: [] })
 })

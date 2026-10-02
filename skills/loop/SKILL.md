@@ -49,12 +49,25 @@ This skill executes exactly one iteration of the backlog executor.
 
    The lock lives outside the project (in `~/.cache/tech-lead/`), so one
    firing at a time works on `<P>`, whichever runner started it.
-   - **Exit 3** (`"state": "held"`: another firing holds the lock, or a
-     child of an earlier firing may still be running) **or exit 2**
-     (`"state": "error"`): end the firing at once and write nothing: no
-     spine edit and no ledger entry. Ending at the lock, and losing the lock
-     (below), are the only exceptions to §8's one-entry rule. Report the printed `reason` or `detail`, and stop the
-     runner.
+   - **Exit 3** (`"state": "held"`) **or exit 2** (`"state": "error"`): end
+     the firing at once and write nothing: no spine edit and no ledger
+     entry. Ending at the lock, and losing the lock (below), are the only
+     exceptions to §8's one-entry rule. Report the printed `reason` or
+     `detail`, and any children it lists in `stopped`. Then, by `reason`:
+     - `holder-live`, `race` or `holder-unknown` (transient contention:
+       another firing holds the lock or took it first, or a holder's
+       liveness could not be read just now): keep the runner. In `/loop`
+       dynamic mode, schedule the next wakeup as usual (§8, Runners); a
+       scheduled runner simply ends this firing.
+     - `corrupt`, `dispatch-open`, `child-live`, `sweep-unknown`, or exit 2:
+       stop the runner, because a human must look first. These mean an
+       unreadable lock record, a dispatch of an interrupted firing in this
+       process still on record, a child of an earlier firing that cannot be
+       stopped (`alive`) or a process still running in `<W>` or in the
+       lock's cache directory (`procs`; the lock never signals a process it
+       did not record), a check for such processes that could not run, or a
+       lock error (its `detail`, for example `not-toplevel`: `<P>` is not
+       the top level of its repository).
    - **Exit 0** (`"state": "acquired"`): `generation` is this firing's
      `<N>`. Write it literally into every later command; shell variables
      do not survive between Bash calls. `<N>` is also this firing's ledger
@@ -63,9 +76,10 @@ This skill executes exactly one iteration of the backlog executor.
      acquire stopped its children before taking over. Note "reclaimed
      generation <generation> (<how>)" and what it `stopped` in `## Last run`.
      A `same-process` reclaim is always noted.
-   - **`stopped` is set:** children of an earlier, released generation were
-     still running (an owner release stops nothing), and acquire stopped
-     them first. Note each `file` in `## Last run`.
+   - **`stopped` is set:** children of an earlier generation, other than a
+     reclaimed one, were still on record (for example after an owner
+     release, which stops nothing), and acquire stopped them first. Note
+     each `file` in `## Last run`.
    - **Dispatch records.** Bracket every Agent and Workflow dispatch of
      this firing (the triage workflow, the panel workflow or each of its
      Agent-form seats, each delegate, a §7 retry) with a record of `<N>`.
@@ -87,9 +101,22 @@ This skill executes exactly one iteration of the backlog executor.
    - **Lost lock.** A not-holder answer from a lock-checked command means
      the owner or another firing took `<N>` over: `dispatch open` or
      `dispatch close` exit 3, an `exec` state of `not-holder` or
-     `holder-gone`, `loop-codex.mjs start` exit 4, or `release` exit 3.
-     Stop at once. Write nothing more to `<S>` or `<W>`, append no ledger
-     entry, and report it. The next firing recovers what this one left.
+     `holder-gone` (also as the `outcome` of a `lingering` run),
+     `loop-codex.mjs start` exit 4, or `release` exit 3 with
+     `"state": "not-holder"`. A `"reason": "closing"` on it means another
+     firing has begun to stop `<N>`'s children. Stop at once. Write nothing
+     more to `<S>` or `<W>`, append no ledger entry, and report it. The
+     next firing recovers what this one left. Two answers are not a lost
+     lock: a release refused with `"state": "dispatch-open"` (also exit 3,
+     §8), and exit 2 (`"state": "error"`), even with a `holder-unknown`
+     detail (the runner's own start token could not be read just now, so
+     the hold is unproven, not gone; see Lock errors).
+   - **Lock errors.** On exit 2 from `dispatch open` or `dispatch close`,
+     dispatch nothing more. Write the `detail` as an incident in
+     `## Last run`, set `paused: true`, return the item to `## Backlog`
+     with its `status:` unchanged, record outcome `skipped`, note "lock
+     error", and go on to §8. An `exec` error and a `loop-codex.mjs start`
+     exit 2 follow their own steps (§6, §5, `references/worktree.md`).
 4. **Read state.**
    - `LOOP.md` (config). A missing `triage:` key means `shadow`, and a
      missing `codex_timeout_min:` means 45.
@@ -110,7 +137,8 @@ This skill executes exactly one iteration of the backlog executor.
    Otherwise, take its `actions` in order:
    - `requeue-now`: `## Now` holds an item, so a prior firing was
      interrupted. Move that item back to the top of `## Backlog`, keeping
-     its recorded `status:` and `class:`. Fold a "recovered stale Now" note
+     its recorded `status:` and `class:`, and leave `(empty)` as the only
+     line of `## Now`. Fold a "recovered stale Now" note
      into this firing's `## Last run` and into its single ledger entry. One
      firing, one entry.
    - `reset-worktree`: `<W>` holds staged or tracked changes that an
@@ -168,7 +196,7 @@ This skill executes exactly one iteration of the backlog executor.
 3. **Backlog dry.** Write "backlog dry" to `## Last run`, record outcome
    `skipped`, and stop the runner.
 
-Move the pick to `## Now`.
+Move the pick to `## Now`, in place of its `(empty)` line.
 
 ## 4 · Classify
 
@@ -348,7 +376,8 @@ returned item keeps the `status:` that its branch set:
 
 The only reset is an L1 `report-only` item: it returns with `status: —`,
 keeping its class, so L2 re-picks it. That reset never applies to a panel
-item that ran at L1. `## Now` must be empty when the firing ends.
+item that ran at L1. When the firing ends, `## Now` holds exactly
+`(empty)` (§8).
 
 ## 6 · Verify & commit (after a write-capable dispatch)
 
@@ -402,12 +431,28 @@ index for the next firing.
      or change to `<W>`. Its output passes
      through, and the last stderr line is
      `loop-lock exec: {"state": …, "exit": …}`. Judge by that `state`, not
-     by the exit code alone (a command may exit 124 or 125 itself):
-     - `exited` with `exit` 0: the command passed.
+     by the exit code alone (a command may exit 123, 124 or 125 itself):
+     - `exited` with `exit` 0: the command passed. The line may carry
+       `"lingering": true`: processes the command left in its process
+       group were killed. `exited` with any other `exit` failed.
      - `not-holder` or `holder-gone`: the firing lost its lock (§1 step 3).
-     - `timeout` (the run passed 540000 ms), anything else, or no such
-       line: it failed.
-   - Any verify failure is an attempt failure (§7).
+     - `lingering` (exit 123): a process of this firing outlived its
+       command. Its process group survived the cleanup or its liveness
+       could not be read (`left`), or a process still runs in `<W>`
+       (`alive`, never signalled), or the check for one could not run.
+       It is never a pass, whatever the command exited (`outcome` holds
+       that). If `outcome.state` is `not-holder` or `holder-gone`, the
+       firing lost its lock (§1 step 3). Otherwise it is an infra
+       incident, never retried: run no other `exec` or dispatch and touch
+       nothing in `<W>`. Write an incident to `## Last run` naming `left`
+       and every process in `alive`, with this unpause check: "set
+       `paused: false` once none of these processes runs". Set
+       `paused: true`, return the item with `status: waiting-infra`, and
+       record outcome `skipped`, note "exec lingering".
+     - `timeout` (the run passed 540000 ms), `error`, anything else, or no
+       such line: it failed.
+   - Any verify failure is an attempt failure (§7). A `lingering` run is
+     not one: it is the infra incident above.
 4. **Commit.**
    - **All pass, files changed:**
      1. Stage only the in-scope ground-truth paths: `git -C <W> add --
@@ -454,25 +499,36 @@ attempts. Record outcome `failed`, `verify: "fail"`.
 **Always,** in this order:
 
 1. Update `## Last run`: timestamp, level, what happened, and the next
-   planned action.
+   planned action. Reset `## Now` to exactly `(empty)`: the recovery
+   planner (§1 step 5) reads any other text there as an interrupted item.
 2. Append exactly one ledger entry, even for failed or halted firings. Its
-   `iteration` is `<N>`. A firing that ended at the lock or lost it (§1
-   step 3) writes nothing; those are the only exceptions.
+   `iteration` is `<N>`. A firing that ended at the lock or lost the lock
+   (§1 step 3) writes nothing; those are the only exceptions.
 3. **Release the firing lock,** as the firing's last command:
 
    ```
    node <T>/scripts/loop-lock.mjs release <P> --generation <N>
    ```
 
-   - It stops any child of `<N>` still on record and lists it in
-     `lingering`. Every child should be gone by now, so a non-empty
-     `lingering` is a bug: name it in the summary. The next acquire stops
-     a lingering child again before it takes the lock.
+   - It stops any child of `<N>` still on record. It lists the
+     children it stopped in `stopped`, and those it could not stop in
+     `lingering` (the next acquire stops those again before it takes the
+     lock). This firing's `codex` record belongs in `stopped`: the release
+     quiesces `<W>` once more and removes it. Every other child should be
+     gone by now, so any other `stopped` entry, or any `lingering` one, is
+     a bug. Name it in the summary. It goes into no spine file, because
+     the lock is no longer this firing's; the next firing notes in
+     `## Last run` what its acquire stops.
    - Exit 3 with `"state": "dispatch-open"`: a dispatch record of `<N>` is
      still open, and nothing was released. Wait for that dispatch's result
      (completion rule below), close it with the printed `id`, then run the
      release again.
    - Exit 3 with `"state": "not-holder"`: the lock was lost (§1 step 3).
+   - Exit 2 (`"state": "error"`, for example a `holder-unknown` detail):
+     nothing was released. Run the release once more. If it fails again,
+     name its `detail` in the summary and stop the runner: the lock stays
+     held until this process ends, a later firing in it reclaims the lock,
+     or the owner releases it.
    - After the release, only the runner handling below remains: no other
      command, and no write to `<S>` or `<W>`.
 
@@ -491,7 +547,9 @@ attempts. Record outcome `failed`, `verify: "fail"`.
 **Runners:**
 
 - **`/loop` dynamic mode.**
-  - Work remains, the budget allows, and this firing had no infra incident →
+  - Work remains, the budget allows, and this firing had no infra
+    incident; or the firing ended at the lock on transient contention (§1
+    step 3) →
     `ScheduleWakeup({delaySeconds: 60–120, reason: "<one line>", prompt:
     <the same /loop input, verbatim>, noop: <true only if nothing
     changed>})`.
