@@ -1,6 +1,8 @@
 // tests/fixtures/codex/scripts/lib/broker-lifecycle.mjs
 // Test double for the companion's broker lifecycle API. The scenario's `broker` is
-// {pid, endpoint} or absent; every call is appended to FAKE_CODEX_LOG.
+// {pid, endpoint} or absent; every call is appended to FAKE_CODEX_LOG. Like the real
+// clearBrokerSession, which deletes broker.json, clearBrokerSession removes `broker` from
+// the scenario, so a later call no longer finds the session.
 import fs from 'node:fs'
 
 const scenario = () => JSON.parse(fs.readFileSync(process.env.FAKE_CODEX_STATE, 'utf8'))
@@ -22,4 +24,6 @@ export function teardownBrokerSession({ pid = null, killProcess = null }) {
 
 export function clearBrokerSession(cwd) {
   log(['lib:clearBrokerSession', cwd])
+  const { broker, ...rest } = scenario()
+  if (broker !== undefined) fs.writeFileSync(process.env.FAKE_CODEX_STATE, JSON.stringify(rest))
 }

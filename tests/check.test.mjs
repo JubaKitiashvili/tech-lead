@@ -165,3 +165,207 @@ test('fails when a doc tells the model to pass CronCreate durable', t => {
   assert.equal(r.status, 1)
   assert.match(r.stdout, /FAIL runners: no doc tells the model to pass CronCreate a durable flag\n[\s\S]*README\.md/)
 })
+
+// Stage 0c-1 prose wiring (scripts/checks/loop.mjs): one mutation per check.
+const LOOP_SKILL = 'skills/loop/SKILL.md'
+const failBlock = (stdout, name) => stdout.split(`FAIL ${name}`)[1]?.split('\nFAIL ')[0] ?? null
+
+test('fails when loop section 1 reads LOOP.md before it acquires the firing lock', t => {
+  const name = 'loop: SKILL.md section 1 acquires the firing lock before it reads LOOP.md'
+  const early = copyRepo(t)
+  mutate(early, LOOP_SKILL, '2. **Missing spine.** If `<S>` is missing', '2. **Missing spine.** Read `LOOP.md` first. If `<S>` is missing')
+  let r = runCheck(early)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /LOOP\.md is read before loop-lock\.mjs acquire/)
+  const none = copyRepo(t)
+  mutate(none, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs acquire <P>', 'node <T>/scripts/loop-lock.mjs status <P>')
+  r = runCheck(none)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /names no loop-lock\.mjs acquire/)
+})
+
+test('fails when loop section 8 runs a command after the release or appends the ledger after it', t => {
+  const name = 'loop: SKILL.md section 8 releases the firing lock as the last command, after the ledger append'
+  const after = copyRepo(t)
+  mutate(after, LOOP_SKILL, '- **Manual.** Report the summary', '- **Manual.** Run `node <T>/scripts/loop-codex.mjs quiesce --cwd <W>`, then report the summary')
+  let r = runCheck(after)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /last command is not the release: node <T>\/scripts\/loop-codex\.mjs quiesce/)
+  const late = copyRepo(t)
+  mutate(late, LOOP_SKILL, '2. Append exactly one ledger entry, even for', '2. Write one entry, even for')
+  mutate(late, LOOP_SKILL, '- **Manual.** Report the summary', '- **Manual.** Append exactly one ledger entry, then report the summary')
+  r = runCheck(late)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /the ledger append comes after the release/)
+})
+
+test('fails when loop section 6 runs verify commands outside loop-lock.mjs exec', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label verify --cwd <W> --timeout-ms 540000 --verify <K>', 'cd <W> && <verify command K>')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, 'loop: SKILL.md section 6 runs every verify command through loop-lock.mjs exec --verify') ?? '',
+    /no loop-lock\.mjs exec .*--label verify .*--verify <K>/)
+})
+
+test('fails when worktree.md installs dependencies outside loop-lock.mjs exec', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'skills/loop/references/worktree.md', 'node <T>/scripts/loop-lock.mjs exec <P> --generation <N> --label deps --cwd <W> --timeout-ms 540000 -- npm ci', 'cd <W> && npm ci')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: worktree.md installs dependencies through loop-lock.mjs exec') ?? ''
+  assert.match(block, /no loop-lock\.mjs exec .*--label deps/)
+  assert.match(block, /runs the install directly: cd <W> && npm ci/)
+})
+
+// A Bash call that reaches its own 600000 ms limit is moved to the background, not killed,
+// so exec must end the run (and kill its group) first.
+test('fails when the verify or the dependency exec has no --timeout-ms, or one at or past the Bash limit', t => {
+  const verify = 'loop: SKILL.md section 6 runs every verify command through loop-lock.mjs exec --verify'
+  const deps = 'loop: worktree.md installs dependencies through loop-lock.mjs exec'
+  for (const [file, name, from, to] of [
+    [LOOP_SKILL, verify, ' --timeout-ms 540000 --verify <K>', ' --verify <K>'],
+    [LOOP_SKILL, verify, ' --timeout-ms 540000 --verify <K>', ' --timeout-ms 600000 --verify <K>'],
+    ['skills/loop/references/worktree.md', deps, ' --timeout-ms 540000 -- npm ci', ' -- npm ci'],
+    ['skills/loop/references/worktree.md', deps, ' --timeout-ms 540000 -- npm ci', ' --timeout-ms 999999 -- npm ci'],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, file, from, to)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, to)
+    assert.match(failBlock(r.stdout, name) ?? '', /--timeout-ms/, to)
+  }
+})
+
+test('fails and names the line when a doc starts Codex without --project and --generation', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, ' --cap-min <codex_timeout_min> --project <P> --generation <N>', ' --cap-min <codex_timeout_min>')
+  append(dir, 'README.md', '\nRun `node <plugin>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <f> --cap-min 45 --generation <N>`.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: every loop-codex.mjs start in the docs carries --project and --generation') ?? ''
+  assert.match(block, /skills\/loop\/SKILL\.md:\d+: loop-codex\.mjs start without --project, --generation/)
+  assert.match(block, /README\.md:\d+: loop-codex\.mjs start without --project/)
+  assert.doesNotMatch(block, /README\.md:\d+: loop-codex\.mjs start without --project, --generation/)
+})
+
+test('fails and names the file when git stash appears anywhere in skills/', t => {
+  const dir = copyRepo(t)
+  append(dir, 'skills/loop/references/worktree.md', '\nKeep the edits with `git -C <W> stash push` first.\n')
+  append(dir, 'skills/quick/SKILL.md', '\nThen run git stash.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: no git stash anywhere in skills/') ?? ''
+  assert.match(block, /skills\/loop\/references\/worktree\.md:\d+/)
+  assert.match(block, /skills\/quick\/SKILL\.md:\d+/)
+})
+
+test('fails when loop SKILL.md drops the dispatch close around Agent and Workflow dispatches', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'node <T>/scripts/loop-lock.mjs dispatch close <P> --generation <N> --id <id>', 'nothing')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, 'loop: SKILL.md brackets Agent and Workflow dispatches with dispatch open and dispatch close') ?? '',
+    /names no loop-lock\.mjs dispatch close/)
+})
+
+// F13: the prose keeps up with what the lock helpers print. One mutation (or more) per check.
+const LOOP_TEMPLATES = 'skills/loop/references/loop-templates.md'
+const LOOP_WORKTREE = 'skills/loop/references/worktree.md'
+
+test('fails when loop section 1 stops the runner on transient contention, or leaves a held reason unhandled', t => {
+  const name = 'loop: SKILL.md section 1 handles every held reason acquire prints, and keeps the runner only for transient contention'
+  const moved = copyRepo(t)
+  mutate(moved, LOOP_SKILL, '`holder-live`, `race` or `holder-unknown`', '`holder-live` or `holder-unknown`')
+  mutate(moved, LOOP_SKILL, '`corrupt`, `dispatch-open`, `child-live`', '`race`, `corrupt`, `dispatch-open`, `child-live`')
+  let r = runCheck(moved)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /held reason `race` must keep the runner; section 1 step 3 has it under stop/)
+  const dropped = copyRepo(t)
+  mutate(dropped, LOOP_SKILL, '`child-live`, `sweep-unknown`, or exit 2', '`child-live`, or exit 2')
+  r = runCheck(dropped)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /held reason `sweep-unknown` must stop the runner; section 1 step 3 has it nowhere/)
+  // A held reason the lock gains is not handled until the prose names it.
+  const added = copyRepo(t)
+  mutate(added, 'scripts/loop-lock.mjs', "  return held('race', max)\n}", "  return held('wedged', max)\n}")
+  r = runCheck(added)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /held reason `wedged` must stop the runner; section 1 step 3 has it nowhere/)
+})
+
+test('fails when the Lost-lock rule counts every release exit 3 as lost, or drops the holder-unknown error', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, '`release` exit 3 with\n     `"state": "not-holder"`', '`release` exit 3')
+  mutate(dir, LOOP_SKILL, 'even with a `holder-unknown`', 'even with an unknown holder')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: the Lost-lock rule counts a release exit 3 as lost only with "state": "not-holder", and a holder-unknown error as no loss') ?? ''
+  assert.match(block, /does not name `release` exit 3 with `"state": "not-holder"`/)
+  assert.match(block, /counts a `release` exit 3 as lost without/)
+  assert.match(block, /never says that an exit 2 `holder-unknown` error is not a lost lock/)
+})
+
+test('fails and names the place when the ledger rule drops one of its two exceptions', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_TEMPLATES, 'and one that loses the lock', 'and one more')
+  mutate(dir, 'README.md', '- **A lost lock.** A firing that loses the lock', '- **A lost lock.** A firing whose generation is taken over')
+  mutate(dir, 'README.md', 'Ending at the lock and losing the lock', 'These two')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: the ledger rule names both of its exceptions, ending at the lock and losing it') ?? ''
+  assert.match(block, /loop-templates\.md LEDGER\.jsonl rule \(before the schema\) does not name the firing that loses the lock/)
+  assert.match(block, /README\.md The firing lock does not name the firing that loses the lock/)
+  assert.doesNotMatch(block, /SKILL\.md/)
+})
+
+test('fails when loop section 8 says the release lists the children it stopped in lingering', t => {
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'children it stopped in `stopped`', 'children it stopped in `lingering`')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, 'loop: SKILL.md section 8 says what each list of a holder release holds') ?? '',
+    /does not say the release lists the children it stopped in `stopped`/)
+})
+
+test('fails when an exec rule passes an exited run with a non-zero exit, or drops the lingering state', t => {
+  const name = 'loop: the verify and install exec rules fail an exited run with a non-zero exit and never pass a lingering run'
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_WORKTREE, '`state` `exited` with any other `exit`, ', '')
+  mutate(dir, LOOP_SKILL, '- `lingering` (exit 123):', '- `stuck`:')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, name) ?? ''
+  assert.match(block, /worktree\.md step 4 never says that `exited` with a non-zero `exit` is a failure/)
+  assert.match(block, /SKILL\.md section 6 step 3 never handles the `lingering` state \(exit 123\)/)
+  assert.doesNotMatch(block, /worktree\.md step 4 never handles/)
+})
+
+test('fails when a firing may leave ## Now holding anything but the placeholder loop-recover.mjs reads as empty', t => {
+  const name = 'loop: a firing leaves ## Now holding exactly the placeholder loop-recover.mjs reads as empty'
+  const dir = copyRepo(t)
+  mutate(dir, LOOP_SKILL, 'Reset `## Now` to exactly `(empty)`', 'Clear `## Now`')
+  let r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(failBlock(r.stdout, name) ?? '', /section 8 never resets `## Now` to exactly `\(empty\)`/)
+  // The placeholder is the planner's: a planner that reads another one fails the template too.
+  const planner = copyRepo(t)
+  mutate(planner, 'scripts/loop-recover.mjs', "const PLACEHOLDER = '(empty)'", "const PLACEHOLDER = '(none)'")
+  r = runCheck(planner)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, name) ?? ''
+  assert.match(block, /STATE\.md template's ## Now holds "\(empty\)", not \(none\)/)
+  assert.match(block, /never resets `## Now` to exactly `\(none\)`/)
+})
+
+test('fails when README troubleshooting drops a held reason or the not-toplevel refusal', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'README.md', '`not-toplevel`', 'not-toplevel')
+  mutate(dir, 'README.md', '`sweep-unknown`', 'sweep-unknown')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  const block = failBlock(r.stdout, 'loop: README troubleshooting names every held reason acquire prints, and the not-toplevel refusal') ?? ''
+  assert.match(block, /never names `sweep-unknown`/)
+  assert.match(block, /never names `not-toplevel`/)
+  assert.doesNotMatch(block, /never names `race`/)
+})
