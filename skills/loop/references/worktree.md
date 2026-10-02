@@ -5,17 +5,43 @@ fast-worker path and the L3 Codex path). A §7 retry reuses the prepared
 worktree and its `U` unchanged. It never re-runs these steps.
 
 `<P>` is the absolute project path, `<S>` = `<P>/.tech-lead`,
-and `<W>` = `<S>/worktree`. Every command names its directory explicitly:
-use `git -C` with an absolute path, never a bare `git` or a relative path.
+`<W>` = `<S>/worktree`, and `<T>` is the plugin root (loop §1). Every
+command names its directory explicitly: use `git -C` with an absolute path,
+never a bare `git` or a relative path.
 
 ## Steps
 
-1. **Today's branch** is `<branch_prefix>/<YYYY-MM-DD>` (UTC date).
-   - **Start-point:** use the branch currently checked out in `<P>` when no
-     unmerged loop commits exist.
-   - Otherwise chain from the newest dated loop branch, and note the
-     divergence in `## Last run`.
+1. **Today's branch** is `<branch_prefix>/<YYYY-MM-DD>` (UTC date). Its
+   start-point comes from `LOOP.md`'s `base:`:
+
+   ```
+   node <T>/scripts/loop-start.mjs <P> <branch_prefix> <base>
+   ```
+
+   Leave `<base>` out when `LOOP.md` has no `base:` key; the script then uses
+   the remote's default branch (`origin/HEAD`).
+   - It prints `startPoint` as a full ref: the newest dated loop branch
+     that still holds work the base lacks, or else the base itself. A loop
+     branch whose work the base already holds (after a squash merge, say)
+     counts as merged. The branch checked out in `<P>` plays no part.
+   - When `chainedFrom` is set, note "chained from <chainedFrom>" in
+     `## Last run`.
+   - Exit 2 means there is no usable base. Write the printed `error` as an
+     incident in `## Last run`, set `paused: true` in `LOOP.md`, return the
+     item to `## Backlog` with its `status:` unchanged, record outcome
+     `skipped`, note "no base", and stop the runner.
 2. **Clean the tracked tree.** This only applies when `<W>` exists.
+   - **Quiesce first.** A Codex turn started by an interrupted firing may
+     still be writing into `<W>`:
+
+     ```
+     node <T>/scripts/loop-codex.mjs quiesce --cwd <W>
+     ```
+
+     On `"quiet": false`, touch nothing in `<W>`. Write an incident with its
+     `detail` and the unpause check from loop §5 step 5, set `paused: true`,
+     return the item to `## Backlog` with its `status:` unchanged, record
+     outcome `skipped`, note "codex not quiet", and stop the runner.
    - Check: `git -C <W> diff --quiet && git -C <W> diff --cached --quiet`.
    - If the check fails, an earlier firing was interrupted. Reset:
      `git -C <W> restore --staged .` then `git -C <W> checkout -- .`.

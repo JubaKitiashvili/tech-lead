@@ -140,3 +140,28 @@ test('research SKILL.md fields are checked against the keys research.js returns'
   assert.equal(r.status, 1)
   assert.match(r.stdout, /FAIL fields: research SKILL\.md §3 names only fields research\.js returns[\s\S]*verified_ideas/)
 })
+
+test('fails when a doc names a plugin script that does not exist', t => {
+  const dir = copyRepo(t)
+  append(dir, 'skills/loop/SKILL.md', '\nRun `node <T>/scripts/loop-nope.mjs line <file>`.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL scripts: every scripts\/\*\.mjs path the docs name exists/)
+  assert.match(r.stdout, /skills\/loop\/SKILL\.md: scripts\/loop-nope\.mjs/)
+})
+
+test('fails when README and the template disagree on the LOOP.md defaults', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'README.md', 'max_iterations_per_day: 8', 'max_iterations_per_day: 12')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL dup: README LOOP\.md defaults == loop-templates\.md LOOP\.md template/)
+})
+
+test('fails when a doc tells the model to pass CronCreate durable', t => {
+  const dir = copyRepo(t)
+  append(dir, 'README.md', '\nSchedule it with `CronCreate`, `durable: true`.\n')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL runners: no doc tells the model to pass CronCreate a durable flag\n[\s\S]*README\.md/)
+})
