@@ -57,8 +57,10 @@
 //       with the last stderr line `loop-clone git: {"state":"refused","detail":...}`. git never
 //       runs inside a nested repository (status and diff get --ignore-submodules=dirty; the
 //       options that override it or inspect nested repositories, their --no- forms included,
-//       and describe --dirty/--broken, are refused), runs no filter program (drivers emptied, attributes read from HEAD), and
-//       reads a private copy of the index, so <W>/.git/index is never written.
+//       and describe --dirty/--broken, are refused), runs no filter program (drivers emptied,
+//       attributes read from HEAD) and no merge driver (drivers emptied, --remerge-diff and
+//       --diff-merges=remerge refused, log.diffMerges pinned), and reads a private copy of the
+//       index, so <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
 // commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
@@ -110,10 +112,14 @@ export const PASSTHROUGH = Object.freeze([
   'grep', 'shortlog', 'describe',
 ])
 // Long options the passthrough refuses, by name and by any abbreviation git would expand: those
-// that write a file or run a program, and those that would override the pinned submodule handling
-// or make git look inside a nested repository (R26).
+// that write a file or run a program (--remerge-diff merges a merge's parents again, which runs
+// any merge driver an attribute selects), and those that would override the pinned submodule
+// handling or make git look inside a nested repository (R26).
 const FORBIDDEN_LONG = ['output', 'ext-diff', 'textconv', 'filters', 'open-files-in-pager', 'upload-pack', 'receive-pack', 'exec',
-  'ignore-submodules', 'recurse-submodules', 'submodule']
+  'remerge-diff', 'ignore-submodules', 'recurse-submodules', 'submodule']
+// The --diff-merges=<format> values the passthrough allows: every format but remerge (r), which
+// is --remerge-diff. m and on take log.diffMerges, which PASS_CONFIG pins.
+const DIFF_MERGES_OK = new Set(['off', 'none', '1', 'first-parent', 'separate', 'c', 'combined', 'cc', 'dense-combined', 'm', 'on'])
 // Refused for one subcommand: describe --dirty refreshes and writes the index and looks inside
 // every gitlink; --broken runs git diff-index as a child.
 const FORBIDDEN_BY_SUB = Object.freeze({ describe: ['dirty', 'broken'] })
@@ -121,9 +127,11 @@ const FORBIDDEN_BY_SUB = Object.freeze({ describe: ['dirty', 'broken'] })
 // goes right after the subcommand (a gitlink's commit change is still shown, R26).
 const PIN_SUBMODULES = new Set(['status', 'diff'])
 // Config of every passthrough run, whatever the owner's says: no submodule summary in status (it
-// runs `git submodule summary`), no diff of a gitlink's content, and no split index (a git that
-// rewrites the private index copy would otherwise write a shared index into <W>/.git).
-const PASS_CONFIG = Object.freeze(['status.submoduleSummary=false', 'diff.submodule=short', 'core.splitIndex=false'])
+// runs `git submodule summary`), no diff of a gitlink's content, no split index (a git that
+// rewrites the private index copy would otherwise write a shared index into <W>/.git), and -m
+// shows a merge as separate diffs (log.diffMerges=remerge would make it a remerge diff).
+const PASS_CONFIG = Object.freeze(['status.submoduleSummary=false', 'diff.submodule=short', 'core.splitIndex=false',
+  'log.diffMerges=separate'])
 // Real options that are also prefixes of a forbidden one (an exact name never abbreviates).
 const LONG_EXACT_OK = new Set(['text', 'filter'])
 // The forbidden names whose negation (--no-<name>, or an abbreviation of it) the passthrough
@@ -1554,6 +1562,11 @@ function passRefusal(arg, sub) {
   if (arg.startsWith('--')) {
     const name = arg.slice(2).split('=')[0]
     if (!name) return null
+    if (name === 'diff-merges') {
+      const eq = arg.indexOf('=')
+      if (eq < 0) return '--diff-merges takes its format as --diff-merges=<format> here'
+      if (!DIFF_MERGES_OK.has(arg.slice(eq + 1))) return `--diff-merges=${arg.slice(eq + 1)} is not allowed (a remerge diff runs merge drivers)`
+    }
     const neg = name.startsWith('no-') ? name.slice(3) : null
     for (const f of [...FORBIDDEN_LONG, ...(FORBIDDEN_BY_SUB[sub] ?? [])]) {
       if (name.startsWith(f)) return `--${name} is not allowed`
@@ -1595,6 +1608,26 @@ function indexCopy(W, dir) {
   return dest
 }
 
+// -c overrides that empty every configured merge driver to `false` (as loop-start's containment
+// check does), so whatever reaches the merge machinery runs no program the owner's config names
+// (a driver like ./merge.sh is a file of <W> the delegate controls); the remerge options that
+// reach it are refused besides.
+function mergeNeutral(W) {
+  const r = workGitRun(W, ['config', '-z', '--name-only', '--get-regexp', '^merge[.].*[.]driver$'], { buffer: true })
+  if (r.code) throw notRun(r)
+  if (r.status === 1) return []
+  if (r.status !== 0) throw new Error(`git config --get-regexp merge failed: ${String(r.stderr).trim()}`)
+  const out = []
+  for (const key of r.stdout.toString('utf8').split('\0').filter(Boolean)) {
+    const n = key.slice('merge.'.length, -'.driver'.length)
+    if (/[=\n\0]/.test(n) || !n.isWellFormed() || n.includes(String.fromCharCode(0xfffd))) {
+      throw infra(`unsafe-config: merge driver ${JSON.stringify(n)} cannot be neutralized for the passthrough`)
+    }
+    out.push(`merge.${n}.driver=false`)
+  }
+  return out
+}
+
 // The passthrough's own temporary directory: its files (the index copy, a lock git left), then
 // the directory; nothing recursive.
 function removePassDir(dir) {
@@ -1608,8 +1641,8 @@ function removePassDir(dir) {
 
 // The caller's git command in <W>, read-only and inert (R26): checkClone first; git never runs
 // inside a nested repository (--ignore-submodules=dirty pinned for status and diff, PASS_CONFIG,
-// the options that would undo either refused); no filter program runs (every configured driver
-// emptied, attributes read from HEAD, as collect reads the clone; refused git-too-old when git
+// the options that would undo either refused); no merge driver runs (remerge refused, every
+// configured driver emptied); no filter program runs (every configured driver emptied, attributes read from HEAD, as collect reads the clone; refused git-too-old when git
 // ignores GIT_ATTR_SOURCE, R24); and the command reads a private copy of the index, so nothing it
 // does (git diff refreshes and rewrites the index even with optional locks off) writes
 // <W>/.git/index or holds its lock.
@@ -1644,7 +1677,7 @@ function gitPassthrough(argv, env, trace = {}) {
   try {
     assertAttrSource(W)
     at = revParse(W, 'HEAD^{commit}')
-    config = [...PASS_CONFIG, ...filterNeutral(W)]
+    config = [...PASS_CONFIG, ...filterNeutral(W), ...mergeNeutral(W)]
   } catch (e) {
     if (e.code === 'CLONE_INVALID' || e.code === 'REFUSED') return refuse(e.message)
     return fail(e.message)
