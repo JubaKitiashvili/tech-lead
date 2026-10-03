@@ -134,6 +134,23 @@ test('inherited GIT_CONFIG_PARAMETERS does not reach git', t => {
   })
 })
 
+// GIT_CONFIG points `git config` alone at one file (closing review F10): the neutralization's
+// `config --get-regexp` must read the files every other command reads, and write the repository's.
+test('an inherited GIT_CONFIG does not redirect git config reads or writes', t => {
+  const r = repo(t)
+  git(r, ['config', 'tl.probe', 'repo'])
+  const empty = path.join(tmp(t, 'tl-gitsafe-cfg-'), 'empty')
+  fs.writeFileSync(empty, '')
+  withEnv({ GIT_CONFIG: empty }, () => {
+    assert.equal(git(r, ['config', '--default', 'none', '--get', 'tl.probe']), 'none', 'control: plain git config reads the GIT_CONFIG file alone')
+    assert.equal(safeGit(r, ['config', '--default', 'none', '--get', 'tl.probe']), 'repo')
+    assert.equal(workGit(r, ['config', '--default', 'none', '--get', 'tl.probe']), 'repo')
+    safeGit(r, ['config', 'tl.written', 'yes'])
+  })
+  assert.equal(fs.readFileSync(empty, 'utf8'), '', 'nothing was written to the GIT_CONFIG file')
+  assert.equal(git(r, ['config', '--get', 'tl.written']), 'yes')
+})
+
 test('config injected through GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n> does not reach git', t => {
   const r = repo(t)
   const injected = {

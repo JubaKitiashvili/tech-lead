@@ -3,7 +3,10 @@
 // refs, no inherited GIT_* variable that redirects git to another repository, index, object
 // store, transport, external diff, pathspec mode, exec path or identity date, no config
 // passed in through the environment the way -c passes it (GIT_CONFIG_PARAMETERS, or
-// GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>), and no trace variable
+// GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>), no GIT_CONFIG (it
+// points `git config` alone at one file, so the filter and merge-driver neutralization's
+// `config --get-regexp` would miss the drivers every other command reads, and `git config`
+// writes would land there: closing review F10), and no trace variable
 // (GIT_TRACE*, GIT_TRACE2* included), whose output on stderr a caller would read as git's own
 // message (checkClone reads a for-each-ref warning as a problem, and some error messages are
 // built from the first stderr line). The three trace2 targets are pinned off (GIT_TRACE2,
@@ -45,7 +48,7 @@ import path from 'node:path'
 const DROPPED = [
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
   'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_CONFIG_PARAMETERS',
-  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_COUNT', 'GIT_CONFIG',
   'GIT_EXTERNAL_DIFF', 'GIT_DIFF_OPTS', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND', 'GIT_ASKPASS',
   'GIT_SHALLOW_FILE', 'GIT_GRAFT_FILE', 'GIT_REPLACE_REF_BASE', 'GIT_QUARANTINE_PATH', 'GIT_ATTR_SOURCE',
   'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS', 'GIT_LITERAL_PATHSPECS',
