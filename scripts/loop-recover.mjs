@@ -68,6 +68,7 @@ import {
   cloneVerdict, committedSha, isResolved, listRecords, maxRecordGeneration, ownerRecord, recordFile, vettedTip,
 } from './lib/run-record.mjs'
 import { BASE_REF, bundleCurrent } from './lib/delivery.mjs'
+import { worktreeChanged } from './lib/changes.mjs'
 
 // nowLine and PLACEHOLDER moved to scripts/lib/loop-state.mjs (stage 0c-2); re-exported.
 // scripts/checks/loop.mjs reads the placeholder from loop-state.mjs.
@@ -342,6 +343,9 @@ export function cloneFacts(W) {
   const r = workGitRun(W, ['status', '--porcelain=v1', '-z', '-uall', '--ignore-submodules=dirty'], opts)
   if (r.code || r.status !== 0) throw gitError(r, 'status')
   const s = parseStatus(r.stdout)
+  // R29a: a file git calls modified whose raw bytes equal its blob (a CRLF blob committed before
+  // `* text eol=lf`) is no leftover; prepare's save would find nothing in it.
+  if (s.tracked && !worktreeChanged(W, opts)) s.tracked = false
   clone.dirty = dirtyOf(s)
   facts.dirty = s.tracked || s.count > 0
   facts.indexDirty = s.staged

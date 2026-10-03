@@ -24,6 +24,10 @@
 //                 file from the index and never from the work tree; the excludes file and
 //                 info/exclude go in as two --exclude-from files, in git's precedence order. A
 //                 <d>/<nonce> present in the work tree is refused (tampered).
+//   worktreeChanged(W, opts) -> boolean: read-only (for the recovery planner); whether git's
+//                 diff-files lists a work-tree change against the index, less the raw-equal files
+//                 of R29a below. opts go to git as given (the caller's attribute source and
+//                 filter overrides); nothing is written to the index or the object store.
 //
 // Two listings (ruling R2). collect (saves, the reset precondition) lists untracked files under
 // the given rules; touched (check, commit, deps-dirty) uses git's standard listing, and reports
@@ -645,6 +649,13 @@ function dropRawEqual(wt, recs) {
   const oids = hashFiles(wt, cand.map(r => r.path), { write: false })
   const same = new Set(cand.filter((r, n) => oids[n] === r.oldOid).map(r => key(r.path)))
   return same.size ? recs.filter(r => !same.has(key(r.path))) : recs
+}
+
+// Read-only: diff-files (index against work tree) less the raw-equal files, for a caller that
+// must not write the clone (the recovery planner). Nothing inside a nested repository is looked at.
+export function worktreeChanged(W, opts = {}) {
+  const out = workGit(W, ['diff-files', '-z', '--raw', '--no-renames', '--ignore-submodules=dirty'], { ...opts, buffer: true })
+  return dropRawEqual({ W }, parseRaw(out)).length > 0
 }
 
 // ---------------------------------------------------------------- raw comparison (R29)
