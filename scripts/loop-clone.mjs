@@ -56,8 +56,8 @@
 //       read-only passthrough, no lock: git's own output and exit status; a refusal is exit 2
 //       with the last stderr line `loop-clone git: {"state":"refused","detail":...}`. git never
 //       runs inside a nested repository (status and diff get --ignore-submodules=dirty; the
-//       options that override it or inspect nested repositories, and describe --dirty/--broken,
-//       are refused), runs no filter program (drivers emptied, attributes read from HEAD), and
+//       options that override it or inspect nested repositories, their --no- forms included,
+//       and describe --dirty/--broken, are refused), runs no filter program (drivers emptied, attributes read from HEAD), and
 //       reads a private copy of the index, so <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
@@ -126,6 +126,13 @@ const PIN_SUBMODULES = new Set(['status', 'diff'])
 const PASS_CONFIG = Object.freeze(['status.submoduleSummary=false', 'diff.submodule=short', 'core.splitIndex=false'])
 // Real options that are also prefixes of a forbidden one (an exact name never abbreviates).
 const LONG_EXACT_OK = new Set(['text', 'filter'])
+// The forbidden names whose negation (--no-<name>, or an abbreviation of it) the passthrough
+// still allows: each only turns off what workGit pins off already. Every other negation of a
+// forbidden name is refused, since git takes the last spelling of an option: status
+// --no-ignore-submodules clears the pinned --ignore-submodules=dirty and looks inside every
+// populated gitlink again (R26). The pin itself stays right after the subcommand; at the end it
+// could be swallowed as the value of a caller's option that takes one (diff -S, --stat-width).
+const NEG_OK = new Set(['ext-diff', 'textconv'])
 
 const isPlain = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 // The errors of a lost (or unknowable) firing lock: they always propagate as they are (R31).
@@ -1547,9 +1554,13 @@ function passRefusal(arg, sub) {
   if (arg.startsWith('--')) {
     const name = arg.slice(2).split('=')[0]
     if (!name) return null
+    const neg = name.startsWith('no-') ? name.slice(3) : null
     for (const f of [...FORBIDDEN_LONG, ...(FORBIDDEN_BY_SUB[sub] ?? [])]) {
       if (name.startsWith(f)) return `--${name} is not allowed`
       if (f.startsWith(name) && !LONG_EXACT_OK.has(name)) return `--${name} abbreviates --${f}, which is not allowed`
+      if (neg !== null && !NEG_OK.has(f) && (neg.startsWith(f) || (f.startsWith(neg) && !LONG_EXACT_OK.has(neg)))) {
+        return `--${name} negates --${f}, which is not allowed`
+      }
     }
     return null
   }

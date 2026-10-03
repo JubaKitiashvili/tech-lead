@@ -21,7 +21,7 @@ status, diff, log, show, rev-parse, ls-files, rev-list, merge-base, cat-file,
 for-each-ref, blame, grep, shortlog and describe; it never looks inside a
 nested repository, runs no filter program and never writes the clone's
 index, so it refuses `--ignore-submodules`, `--recurse-submodules`,
-`--submodule` and `describe --dirty`/`--broken`. Every helper
+`--submodule` (and their `--no-` forms) and `describe --dirty`/`--broken`. Every helper
 call below is one foreground Bash call with `timeout: 600000` and prints one
 JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
 3); every other refusal follows [Refusals](#refusals).

@@ -44,11 +44,16 @@ async function nestedFixture(t) {
   const sub = path.join(fx.W, 'sub')
   fs.rmSync(sub, { recursive: true, force: true })
   git(fx.root, ['clone', '-q', '--', X, sub])
+  // The passthrough's GIT_ATTR_SOURCE (<W>'s HEAD) reaches a nested git too, which then reads no
+  // .gitattributes from its work tree and fails on a commit it lacks; a delegate defeats that by
+  // fetching the commit and selecting the filter from info/attributes, which git still reads.
+  git(sub, ['fetch', '-q', '--', fx.W, 'HEAD'])
   const marker = path.join(fx.root, 'marker')
   const bin = fs.mkdtempSync(path.join(fx.root, 'evil-'))
   git(sub, ['config', 'filter.evil.clean', markerScript(bin, 'clean', marker)])
   git(sub, ['config', 'core.fsmonitor', markerScript(bin, 'fsmonitor', marker)])
   write(sub, '.gitattributes', '* filter=evil\n')
+  write(sub, path.join('.git', 'info', 'attributes'), '* filter=evil\n')
   write(sub, 'inner.txt', 'INNER\n')
   return { fx, sub, marker }
 }
@@ -61,6 +66,11 @@ test('passthrough status and diff never run git inside a populated gitlink: no n
   // The control: git's own status of <W> enters the nested repository and runs its programs.
   git(fx.W, ['status', '--porcelain'])
   assert.notEqual(markers(marker), '', 'the fixture arms the nested repository')
+  fs.rmSync(marker)
+  // ... and under the passthrough's attribute source too.
+  fs.writeFileSync(path.join(sub, 'inner.txt'), 'InneR\n')
+  git(fx.W, ['status', '--porcelain'], { env: { ...fx.env, GIT_ATTR_SOURCE: git(fx.W, ['rev-parse', 'HEAD']) } })
+  assert.match(markers(marker), /clean/, 'the nested filter runs under GIT_ATTR_SOURCE')
   fs.rmSync(marker)
   fs.writeFileSync(path.join(sub, 'inner.txt'), 'inneR\n') // stat-dirty again, same size
   for (const argv of [['status', '--porcelain'], ['status'], ['diff'], ['diff', 'HEAD'], ['diff', '--stat']]) {
@@ -132,4 +142,28 @@ test('passthrough never writes <W>/.git/index: status, diff and describe leave i
     assert.deepEqual(look(), before, `${argv.join(' ')} wrote the index`)
   }
   assert.equal(fs.existsSync(`${index}.lock`), false)
+})
+
+test('passthrough refuses the negated spellings that would undo the pinned submodule handling: --no-ignore-submodules and its abbreviations (R26)', T, async t => {
+  const { fx, sub, marker } = await nestedFixture(t)
+  for (const argv of [
+    ['status', '--no-ignore-submodules'], ['status', '--porcelain', '--no-ignore-sub'], ['status', '--no-ig'],
+    ['diff', '--no-ignore-submodules'], ['diff', 'HEAD', '--no-ignore-sub'], ['status', '--no-ignore-submodules=none'],
+    ['status', '--no-'], ['describe', '--always', '--no-e'],
+  ]) {
+    fs.writeFileSync(path.join(sub, 'inner.txt'), argv.length % 2 ? 'inneR\n' : 'INNER\n') // stat-dirty, same size
+    const r = pass(fx, ...argv)
+    assert.equal(r.status, 2, `${JSON.stringify(argv)} -> ${r.status} ${r.stderr}`)
+    assert.equal(refusedLine(r).state, 'refused', JSON.stringify(argv))
+    assert.equal(markers(marker), '', `${JSON.stringify(argv)} ran a program the nested repository names`)
+  }
+  // Negations that only turn something off still pass.
+  for (const argv of [
+    ['diff', '--no-ext-diff'], ['diff', '--no-textconv', 'HEAD'], ['blame', '--no-textconv', 'a.txt'], ['diff', '--no-color'],
+    ['diff', '--no-renames', 'HEAD'], ['rev-list', '--no-filter', 'HEAD'], ['ls-files', '--exclude-standard', '-o'],
+  ]) {
+    const r = pass(fx, ...argv)
+    assert.equal(r.status, 0, `${JSON.stringify(argv)}: ${r.stderr}`)
+  }
+  assert.equal(markers(marker), '')
 })
