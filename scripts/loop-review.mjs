@@ -27,8 +27,10 @@
 //         already holds also has its whole pack read in a private repository that borrows
 //         <P>'s objects and has its object format (verify-failed), since git's fetch reads no
 //         pack then; then a
-//         non-forced fetch with fsckObjects of refs/heads/<b> into refs/remotes/tech-lead/<b>,
-//         with automatic maintenance off (non-fast-forward, fetch-failed). For a branch that
+//         non-forced fetch with fsckObjects and --show-forced-updates (git's ancestry check
+//         runs whatever fetch.showForcedUpdates says) of refs/heads/<b> into
+//         refs/remotes/tech-lead/<b>, with automatic maintenance off (non-fast-forward,
+//         fetch-failed). For a branch that
 //         has a retired ref the fetch goes to the scratch ref refs/tech-lead/review-tmp/<b>
 //         first: a tip comparable with a retired tip stays out of the remote-tracking ref
 //         (retired), and a remote-tracking ref naming rejected work (comparable with a retired
@@ -418,7 +420,9 @@ function checkAndFetch(R, res, refuse, copy, { branch, ref, shas, trustUnrecorde
     const bad = packProblem(R, copy, dir)
     if (bad !== null) return refuse('verify-failed', `the bundle's pack: ${named(bad)}`)
   }
-  const fetchInto = dest => safeGit(R, ['fetch', ...noAuto(), '--no-tags', '--no-write-fetch-head', '--no-recurse-submodules', copy, `${want}:${dest}`], {
+  // --show-forced-updates: under fetch.showForcedUpdates=false git moves a ref to a
+  // non-descendant as a fast-forward, without its ancestry check (closing review F8).
+  const fetchInto = dest => safeGit(R, ['fetch', ...noAuto(), '--no-tags', '--no-write-fetch-head', '--no-recurse-submodules', '--show-forced-updates', copy, `${want}:${dest}`], {
     config: [...FSCK, ...NO_MAINTENANCE],
   })
   const nonFastForward = () => refuse('non-fast-forward', `${ref} is at ${short(previous)}, which ${short(tip)} does not descend from; it was left where it was`)
