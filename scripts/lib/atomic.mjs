@@ -299,7 +299,7 @@ function lstatOrNull(p) {
   try {
     return fs.lstatSync(p)
   } catch (e) {
-    if (e.code === 'ENOENT') return null
+    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null
     throw e
   }
 }

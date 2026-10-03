@@ -22,8 +22,10 @@
 // wider WORK_OVERRIDES (submodule.recurse=false among them, so no git command recurses into a
 // nested repository, R26). cloneRepo makes that clone.
 //
-// workGit's quick structural check (Cg1#1): before it spawns anything, <W>/.git must be a real
-// directory, and each of its storage paths that git writes (objects, objects/pack, objects/info,
+// workGit's quick structural check (Cg1#1): before it spawns anything, <W> itself must be a real
+// directory of its parent (never a symlink; atomic.storageDir, which throws `clone-invalid: <W>
+// is a symlink, ...` with code CLONE_INVALID), so a <W> replaced by a symlink to an owner
+// repository is never read; then <W>/.git must be a real directory, and each of its storage paths that git writes (objects, objects/pack, objects/info,
 // refs, refs/heads, refs/tags and logs as directories; HEAD, index, packed-refs and config as
 // regular files) must be what it should be when present, never a symlink; no entry directly in
 // objects may be a symlink. A failure throws `clone-invalid: <W>/.git/<path> is <kind>` (code
@@ -44,6 +46,7 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { storageDir } from './atomic.mjs'
 
 const DROPPED = [
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
@@ -211,10 +214,12 @@ function quickCheck(W, gitDir) {
   for (const e of entries) if (e.isSymbolicLink()) throw storageInvalid(W, `objects/${e.name}`, 'a symlink')
 }
 
-// The checked spawn plan for <W>: refuses unless <W>/.git is a real directory (not a gitfile,
-// not a symlink, present) and its storage paths pass the quick structural check.
+// The checked spawn plan for <W>: refuses unless <W> is a real directory (or missing, which the
+// .git check refuses), <W>/.git is a real directory (not a gitfile, not a symlink, present) and
+// its storage paths pass the quick structural check.
 function workPlan(W, args, opts) {
   const dir = path.resolve(W)
+  storageDir(path.dirname(dir), dir)
   const gitDir = path.join(dir, '.git')
   let st
   try { st = fs.lstatSync(gitDir) } catch (e) { throw cloneInvalid(W, e.code) }

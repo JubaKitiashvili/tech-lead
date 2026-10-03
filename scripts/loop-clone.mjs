@@ -1093,7 +1093,8 @@ function lockfiles(W) {
 function depsCmd(a, env) {
   if (a.mark && a.clear) throw usage('--mark and --clear exclude each other')
   const { paths, rec, W } = openAttempt(a, env)
-  if (!gitDirOk(W)) throw refused('clone-invalid', `${W}/.git is not a directory`, { problems: ['.git is not a real directory'] })
+  // <W> itself first (a symlink there throws CLONE_INVALID): through one, .git is another repository's.
+  if (!storageDir(paths.V, W) || !gitDirOk(W)) throw refused('clone-invalid', `${W}/.git is not a directory`, { problems: ['.git is not a real directory'] })
   const marker = path.join(W, '.git', MARKER)
   const lf = lockfiles(W)
   const current = `${rec.branch} sha256:${lf.digest}`
