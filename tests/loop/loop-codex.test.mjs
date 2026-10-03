@@ -8,7 +8,8 @@ import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import { compareVersions, locateCompanion, parseTrailer, processAlive } from '../../scripts/loop-codex.mjs'
 import { acquire } from '../../scripts/loop-lock.mjs'
-import { commandLine, groupAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { commandLine, groupAlive, isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { killGroupIfOurs } from './interrupt-fixture.mjs'
 
 const SCRIPT = path.join(ROOT, 'scripts', 'loop-codex.mjs')
 const LOCK = path.join(ROOT, 'scripts', 'loop-lock.mjs')
@@ -25,13 +26,29 @@ const tmp = t => {
   t.after(() => fs.rmSync(d, { recursive: true, force: true }))
   return d
 }
-// A real process standing in for a broker or a worker. It is started through a shell that
-// exits at once, so the test runner is not its parent and a killed one never lingers as a zombie.
-const sleeper = t => {
-  const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+// The cleanup never signals an id another process took (review round, contracts-tests#7).
+// reapPid kills pid when the test ends only while its start token is still the one read here:
+// a test may kill it first, and the kernel may have handed the pid to another process since.
+const reapPid = (t, pid) => {
+  const start = startToken(pid).token ?? null
+  t.after(() => {
+    if (isAlive({ pid, start }) !== true) return
+    try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+  })
   return pid
 }
+// reapGroup kills the process group pgid when the test ends only while killGroupIfOurs finds its
+// leader's token the one read here, or the leader's pid free. Each group it is given is led by
+// a process whose parent is init, which reaps a dead leader at once, so a zombie at the pid is
+// another process's.
+const reapGroup = (t, pgid) => {
+  const start = startToken(pgid).token ?? null
+  t.after(() => { killGroupIfOurs(pgid, start, { zombieOurs: false }) })
+  return pgid
+}
+// A real process standing in for a broker or a worker. It is started through a shell that
+// exits at once, so the test runner is not its parent and a killed one never lingers as a zombie.
+const sleeper = t => reapPid(t, Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim()))
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 // A node process leading a process group of its own, as the companion starts its broker and
 // its workers (detached), returned once its command line shows argv. A short-lived launcher
@@ -39,7 +56,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const LAUNCH_NODE = "const c = require('node:child_process').spawn(process.argv[1], process.argv.slice(2), { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
 const launched = async (t, argv) => {
   const pid = Number(execFileSync(process.execPath, ['-e', LAUNCH_NODE, process.execPath, ...argv], { encoding: 'utf8' }).trim())
-  t.after(() => { for (const p of [-pid, pid]) try { process.kill(p, 'SIGKILL') } catch { /* gone */ } })
+  reapGroup(t, pid)
+  reapPid(t, pid)
   for (let i = 0; i < 100; i++) {
     const c = commandLine(pid)
     if (c.state === 'live' && c.words.includes(argv[argv.length - 1])) return pid
@@ -51,15 +69,12 @@ const launched = async (t, argv) => {
 // gives them: the broker serving endpoint, and the worker of job id.
 const broker = (t, endpoint, ...extra) => launched(t, [BROKER, 'serve', '--endpoint', endpoint, ...extra])
 const worker = (t, id, ...extra) => launched(t, [FAKE, 'task-worker', '--cwd', '/w', '--job-id', id, ...extra])
-// The pid a fixture's --member or --stubborn-member wrote to file (lib/group-member.mjs).
+// The pid a fixture's --member or --stubborn-member wrote to file (lib/group-member.mjs). The
+// member runs until it is killed, so its start token is read when the pid is first seen.
 const memberPid = async (t, file) => {
   for (let i = 0; i < 100; i++) {
     const s = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim() : ''
-    if (/^\d+$/.test(s)) {
-      const pid = Number(s)
-      t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
-      return pid
-    }
+    if (/^\d+$/.test(s)) return reapPid(t, Number(s))
     await sleep(30)
   }
   assert.fail(`no member pid in ${file}`)
@@ -73,19 +88,49 @@ const killed = async pid => {
 const pgidOf = pid => Number(execFileSync('/bin/ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim())
 
 // A fake companion's scenario file and call log, plus a cache root for quiesce's own record.
-// groups collects the process groups of runs started in the background. One hook ends, in
-// order, those runs (so their companion launches nothing more), the workers the fake
-// launched (it logs ['launched', pid]), and then removes the files.
+// groups collects the runs started in the background ({pid, start, exited}). One hook ends, in
+// order, those runs' process groups (so their companion launches nothing more), the workers
+// the fake launched (it logs ['launched', pid]), and then removes the files. Neither kill
+// reaches an id another process took (contracts-tests#7):
+//   - a run's group: while Node has not reaped the run, its pid (so its group id) is still
+//     this process's child's; once reaped, only while killGroupIfOurs finds the leader's
+//     recorded token or its pid free;
+//   - a worker's group: the test never sees the fake start a worker, so the hook proves it by
+//     what it runs, as quiesce does: the fake's task-worker for the scenario's job id, with
+//     the --cwd of the task call that launched it. The start token is read before that check
+//     and compared again by killGroupIfOurs, so the command line read is the killed leader's.
+//     A free pid leaves only the worker's own group members; init reaps a dead worker, so a
+//     zombie at its pid is another process's.
 const stateFiles = (t, scenario) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-codex-'))
   const files = { state: path.join(dir, 'state.json'), log: path.join(dir, 'calls.log'), cache: path.join(dir, 'cache'), groups: [] }
   fs.writeFileSync(files.state, JSON.stringify(scenario))
   t.after(() => {
-    for (const g of files.groups) try { process.kill(-g, 'SIGKILL') } catch { /* gone */ }
-    for (const c of callsOf(files)) if (c[0] === 'launched') try { process.kill(-c[1], 'SIGKILL') } catch { /* gone */ }
+    for (const run of files.groups) {
+      if (!run.exited) {
+        try { process.kill(-run.pid, 'SIGKILL') } catch { /* gone */ }
+      } else killGroupIfOurs(run.pid, run.start, { zombieOurs: false })
+    }
+    for (const c of callsOf(files)) {
+      if (c[0] !== 'launched') continue
+      const leader = startToken(c[1])
+      if (leader.state === 'live' && !launchedWorker(files, c[1])) continue
+      killGroupIfOurs(c[1], leader.token ?? null, { zombieOurs: false })
+    }
     fs.rmSync(dir, { recursive: true, force: true })
   })
   return files
+}
+// Whether pid runs the fake's task-worker for the job id of files' scenario, with the --cwd of
+// the task call in files' log. A state file that cannot be read proves nothing.
+const launchedWorker = (files, pid) => {
+  const c = commandLine(pid)
+  const task = callsOf(files).find(x => x[0] === 'task')
+  if (c.state !== 'live' || !task) return false
+  let jobId
+  try { ({ jobId } = JSON.parse(fs.readFileSync(files.state, 'utf8'))) } catch { return false }
+  const arg = (words, flag) => (words.includes(flag) ? words[words.indexOf(flag) + 1] : undefined)
+  return c.words.includes('task-worker') && arg(c.words, '--cwd') === arg(task, '--cwd') && arg(c.words, '--job-id') === jobId
 }
 // The environment of a run against files: the fake companion (or scenario.companion), with
 // scenario.env added.
@@ -243,11 +288,7 @@ test('quiesce signals no pid the companion\'s state names once that pid is gone 
   // After a crash or a reboot broker.json and a job still marked running outlive their
   // processes, and their pids may lead unrelated process groups.
   const LAUNCH = "const c = require('node:child_process').spawn('/bin/sh', ['-c', 'sleep 120'], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
-  const unrelated = () => {
-    const pgid = Number(execFileSync(process.execPath, ['-e', LAUNCH], { encoding: 'utf8' }).trim())
-    t.after(() => { try { process.kill(-pgid, 'SIGKILL') } catch { /* gone */ } })
-    return pgid
-  }
+  const unrelated = () => reapGroup(t, Number(execFileSync(process.execPath, ['-e', LAUNCH], { encoding: 'utf8' }).trim()))
   const other = unrelated(), otherJob = unrelated(), elsewhere = await worker(t, 'j9')
   const dead = sleeper(t)
   process.kill(dead, 'SIGKILL')
@@ -415,7 +456,11 @@ const START = (p, g = '1') => ['start', '--cwd', p.W, '--prompt-file', '/b.md', 
 // output, and the time it ended.
 const background = (files, args, env = envFor(files)) => {
   const c = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
-  files.groups.push(c.pid)
+  // The run leads its own group; its token is read while it is surely this process's child,
+  // and exited is set once Node has reaped it.
+  const run = { pid: c.pid, start: startToken(c.pid).token ?? null, exited: false }
+  c.on('exit', () => { run.exited = true })
+  files.groups.push(run)
   let stdout = '', stderr = ''
   c.stdout.on('data', d => { stdout += d })
   c.stderr.on('data', d => { stderr += d })
@@ -553,4 +598,99 @@ test('a reclaim waits for a Codex start that is still launching its job, which f
   assert.ok(launchedWorker, 'the start never launched its job')
   assert.ok(gone(launchedWorker[1]), `the job's worker ${launchedWorker[1]} outlived the reclaim`)
   assert.deepEqual(records(p.lockDir), [])
+})
+
+// The test harness's cleanup (review round, contracts-tests#7): a hook that runs when a test
+// ends signals a recorded pid or process group only while the id still names the process the
+// test made, since under several concurrent suites the pid counter can wrap before the hook.
+// impostorPs points TECH_LEAD_PS, for the rest of test t, at a ps that reads every live
+// process as one started in 1970: each id recorded earlier then names another process.
+const impostorPs = t => {
+  const file = path.join(tmp(t), 'ps')
+  fs.writeFileSync(file, '#!/bin/sh\necho "S Thu Jan 1 00:00:00 1970"\n', { mode: 0o755 })
+  const before = process.env.TECH_LEAD_PS
+  process.env.TECH_LEAD_PS = file
+  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+}
+const darwinOnly = { skip: process.platform !== 'darwin' && 'the start token reads ps on darwin only' }
+const goneSoon = async pid => {
+  for (let i = 0; i < 100 && !gone(pid); i++) await sleep(30)
+  return gone(pid)
+}
+// A stand-in for a process the companion started, its pid written to a file as the fixtures
+// write a member's.
+const pidInFile = (t, pid) => {
+  const file = path.join(tmp(t), 'member.pid')
+  fs.writeFileSync(file, String(pid))
+  return file
+}
+
+for (const [name, make] of [
+  ['sleeper', async st => sleeper(st)],
+  ['memberPid', async (st, t) => memberPid(st, pidInFile(st, sleeper(t)))],
+]) {
+  test(`contracts-tests#7: the ${name} cleanup kills its own process, and leaves alone a pid that names another process by then`, darwinOnly, async t => {
+    let pid, start
+    await t.test('the pid reads as another process when the test ends', async st => {
+      pid = await make(st, t)
+      start = startToken(pid).token
+      impostorPs(st)
+    })
+    t.after(() => { if (isAlive({ pid, start }) === true) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+    assert.equal(isAlive({ pid, start }), true, `the cleanup killed pid ${pid}, which it could not prove its own`)
+    await killed(pid)
+    let own
+    await t.test('the pid still names its process when the test ends', async st => { own = await make(st, t) })
+    assert.ok(await goneSoon(own), `the cleanup left its own process ${own} running`)
+  })
+}
+
+test('contracts-tests#7: the launched cleanup kills its own group, and leaves alone a group id whose leader is another process by then', darwinOnly, async t => {
+  const IDLE = ['-e', 'setInterval(() => {}, 2 ** 30)']
+  let pid, start
+  await t.test('the leader reads as another process when the test ends', async st => {
+    pid = await launched(st, [...IDLE, 'spared'])
+    start = startToken(pid).token
+    impostorPs(st)
+  })
+  t.after(() => { killGroupIfOurs(pid, start, { zombieOurs: false }) })
+  assert.equal(isAlive({ pid, start }), true, `the cleanup killed ${pid}, which it could not prove its own`)
+  assert.equal(groupAlive(pid), true)
+  await killed(pid)
+  let own
+  await t.test('the leader is still the one recorded when the test ends', async st => { own = await launched(st, [...IDLE, 'own']) })
+  assert.ok(await goneSoon(own), `the cleanup left its own leader ${own} running`)
+  assert.equal(groupAlive(own), false)
+})
+
+test('contracts-tests#7: the stateFiles cleanup kills a launched worker it can prove its own, and leaves alone a logged pid that runs something else by then', async t => {
+  const W = fs.realpathSync(tmp(t))
+  // Where a logged worker was, the group of another program stands by the time the test ends.
+  const LAUNCH = "const c = require('node:child_process').spawn('/bin/sh', ['-c', 'sleep 120'], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
+  const other = Number(execFileSync(process.execPath, ['-e', LAUNCH], { encoding: 'utf8' }).trim())
+  const otherStart = startToken(other).token
+  t.after(() => { killGroupIfOurs(other, otherStart, { zombieOurs: false }) })
+  const w = await launched(t, [FAKE, 'task-worker', '--cwd', W, '--job-id', 'task-1'])
+  await t.test('the call log names the other group and the worker as launched', st => {
+    const files = stateFiles(st, { jobId: 'task-1' })
+    const task = ['task', '--background', '--json', '--write', '--cwd', W, '--prompt-file', '/b.md']
+    fs.writeFileSync(files.log, [task, ['launched', other], ['launched', w]].map(c => `${JSON.stringify(c)}\n`).join(''))
+  })
+  assert.equal(startToken(other).token, otherStart, `the cleanup killed group ${other}, whose leader runs another program`)
+  assert.equal(groupAlive(other), true)
+  assert.ok(await goneSoon(w), `the cleanup left the launched worker ${w} running`)
+  assert.equal(groupAlive(w), false)
+})
+
+test('contracts-tests#7: the stateFiles cleanup still kills what a background run left in its group after it exited', async t => {
+  let member
+  await t.test('a background run that leaves a member of its group behind', async st => {
+    const files = stateFiles(st, {})
+    const r = await background(files, ['-e', "const c = require('node:child_process').spawn('/bin/sleep', ['120'], { stdio: 'ignore' }); c.unref(); console.log(c.pid)"])
+    member = Number(r.stdout.trim())
+    const start = startToken(member).token
+    t.after(() => { if (isAlive({ pid: member, start }) === true) try { process.kill(member, 'SIGKILL') } catch { /* gone */ } })
+    assert.equal(typeof start, 'string', r.stderr)
+  })
+  assert.ok(await goneSoon(member), `the cleanup left ${member}, a member of an exited run's group, running`)
 })
