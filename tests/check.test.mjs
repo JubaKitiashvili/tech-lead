@@ -598,6 +598,12 @@ test('fails when the Save and reset procedure resets before it saves, or writes 
   r = runCheck(noEdit)
   assert.equal(r.status, 1)
   assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/)
+  // The Edit of STATE.md is still there, but it no longer stores the returned sha (Codex g4 #4).
+  const noSha = copyRepo(t)
+  mutate(noSha, LOOP_SKILL, 'One Edit of `STATE.md` writes the full `sha` at the', 'One Edit of `STATE.md` moves the item without storing the bundle hash, at the')
+  r = runCheck(noSha)
+  assert.equal(r.status, 1, r.stdout)
+  assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/)
 })
 
 test('fails when the panel snapshot may refresh <P>/.git/index', t => {

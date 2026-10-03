@@ -15,11 +15,10 @@
 // (clone.md replaces worktree.md), every loop-clone.mjs command and every reflex-bundle.mjs
 // save, reset and apply is fenced by --generation <N>, section 1 step 5 runs the planner with
 // the generation, section 8 closes the run records between the ledger append and the release,
-// Save and reset saves, writes the sha into STATE.md, then resets, nothing in skills/loop/
-// discards work in place (only a command a prohibition governs is exempt), the
-// owner-only loop-review.mjs is named in no skill, the panel
-// snapshot never refreshes <P>/.git/index, and a not-holder answer from the clone helpers is
-// a lost lock.
+// Save and reset saves, writes the full returned sha into STATE.md with one Edit, then resets,
+// nothing in skills/loop/ discards work in place (only a command a prohibition governs is
+// exempt), the owner-only loop-review.mjs is named in no skill, the panel snapshot never
+// refreshes <P>/.git/index, and a not-holder answer from the clone helpers is a lost lock.
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -457,7 +456,11 @@ export async function checkLoop(ctx, r) {
     const has = (s, re) => commands(s).some(c => re.test(c.cmd))
     const save = steps.findIndex(s => has(s, SAVE))
     const reset = steps.findIndex(s => has(s, RESET))
-    const edit = steps.findIndex((s, i) => i > save && !has(s, SAVE) && !has(s, RESET) && /\bEdit\b/.test(s) && s.includes('`STATE.md`'))
+    // The Edit step must store the save's returned sha, in full: an Edit of `STATE.md` that
+    // only moves the item passes no sha on (Codex g4 #4). Line breaks are read as spaces.
+    const STORES_SHA = /\b(?:writes|stores|records) the full `sha`/
+    const edit = steps.findIndex((s, i) => i > save && !has(s, SAVE) && !has(s, RESET) && /\bEdit\b/.test(s) && s.includes('`STATE.md`')
+      && STORES_SHA.test(s.replace(/\s+/g, ' ')))
     const bad = []
     if (save < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs save <P> --generation <N> --why <why>`')
     if (reset < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs reset <P> --generation <N> --sha <sha>`')
