@@ -5,7 +5,8 @@
 //
 // checkClone(W) -> {problems}: [] for a clone the loop may use; otherwise one ASCII-led line
 // per problem found, in a fixed order (.git itself; the forbidden special files; the storage
-// paths; .git/info; the config; the refs; HEAD). A .git that is not a real directory is the
+// paths; .git/info; the config; the refs; HEAD). A clone root <W> that is not a real directory
+// of its parent (a symlink: atomic.storageDir) or a .git that is not a real directory is the
 // only problem reported, since nothing else can be read safely; a storage problem (or a config
 // that is not a regular file) stops the checks that need git (config, refs, HEAD), since workGit
 // refuses such a clone.
@@ -26,6 +27,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { workGit, workGitRun } from './git-safe.mjs'
+import { storageDir } from './atomic.mjs'
 import { canonicalJson, sha256Hex } from './canonical.mjs'
 
 // Paths under .git that make git read another repository, object store, history or config.
@@ -171,9 +173,17 @@ function cloneInvalid(W, why) {
   return err
 }
 
-// The absolute <W>/.git when it is a real directory, else null and the kind found.
+// The absolute <W>/.git when it is a real directory, else null, the kind found and the problem
+// line. <W> itself is checked first: through a symlink there .git would be another repository's.
 function gitDirOf(W) {
-  const gitDir = path.join(path.resolve(W), '.git')
+  const root = path.resolve(W)
+  try {
+    storageDir(path.dirname(root), root)
+  } catch (e) {
+    if (e.code !== 'CLONE_INVALID') throw e
+    return { gitDir: null, kind: `the clone root is ${e.kind}`, problem: `the clone root is not a real directory (${e.kind})` }
+  }
+  const gitDir = path.join(root, '.git')
   let st
   try { st = fs.lstatSync(gitDir) } catch (e) { return { gitDir: null, kind: e.code === 'ENOENT' ? 'missing' : `unreadable: ${e.code}` } }
   return st.isDirectory() ? { gitDir, kind: 'directory' } : { gitDir: null, kind: kindOf(st) }
@@ -201,8 +211,8 @@ function configEntries(W, gitDir) {
 // checkClone(W) -> {problems: string[]}; [] when <W> is a clone the loop may use.
 export function checkClone(W) {
   const problems = []
-  const { gitDir, kind } = gitDirOf(W)
-  if (!gitDir) return { problems: [`.git is not a real directory (${kind === 'file' ? 'a file' : kind === 'symlink' ? 'a symlink' : kind})`] }
+  const { gitDir, kind, problem } = gitDirOf(W)
+  if (!gitDir) return { problems: [problem ?? `.git is not a real directory (${kind === 'file' ? 'a file' : kind === 'symlink' ? 'a symlink' : kind})`] }
 
   for (const name of SPECIAL_FILES) {
     if (lstatOrNull(path.join(gitDir, name))) problems.push(`.git/${name} exists`)
