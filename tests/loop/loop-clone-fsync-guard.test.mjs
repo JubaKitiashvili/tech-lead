@@ -19,20 +19,26 @@ import {
 import { sidecarPath, writeBundle } from '../../scripts/lib/delivery.mjs'
 import { deleteRecord } from '../../scripts/lib/run-record.mjs'
 import { assertHeld } from '../../scripts/loop-lock.mjs'
+import { startToken } from '../../scripts/lib/loop-proc.mjs'
 
 const HOOK = path.join(ROOT, 'tests', 'fixtures', 'fsync-hook.cjs')
 const REFLEX = path.join(ROOT, 'scripts', 'reflex-bundle.mjs')
 const BRANCH = `${PREFIX}/${D2}`
 
 // The environment that kills the holder right after the nth fsync of a matching entry of dir;
-// out is the file the hook names the entry in when it fires.
+// out is the file the hook names the entry in when it fires. The holder's start token goes
+// with its pid, read here while the holder is surely the sleeper the fixture started, so the
+// hook never kills a process that only reused the pid (Codex f2 #3).
 function hooked(fx, { dir, match = '^\\.tmp-', nth = 1 }) {
   const out = path.join(fx.root, `fsync-hook-${process.hrtime.bigint()}`)
+  const start = startToken(fx.holder)
+  assert.equal(start.state, 'live', `the holder ${fx.holder} is not running: ${JSON.stringify(start)}`)
   const env = {
     ...fx.env, NODE_OPTIONS: `--require ${HOOK}`, FSYNC_HOOK_DIR: dir, FSYNC_HOOK_MATCH: match,
-    FSYNC_HOOK_NTH: String(nth), FSYNC_HOOK_KILL: String(fx.holder), FSYNC_HOOK_OUT: out,
+    FSYNC_HOOK_NTH: String(nth), FSYNC_HOOK_KILL: String(fx.holder), FSYNC_HOOK_KILL_START: start.token, FSYNC_HOOK_OUT: out,
   }
-  const fired = () => (fs.existsSync(out) ? fs.readFileSync(out, 'utf8').split('\n').filter(Boolean) : [])
+  // The entries the hook fired on and killed the holder (a no-kill line is no kill).
+  const fired = () => (fs.existsSync(out) ? fs.readFileSync(out, 'utf8').split('\n').filter(l => l && !l.includes(' no-kill: ')) : [])
   return { env, fired }
 }
 
