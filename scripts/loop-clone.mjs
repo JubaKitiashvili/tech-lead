@@ -38,8 +38,9 @@
 //       then the delivery bundle. Exit 0 {state:'committed', sha, branch, bundle, bundleError} |
 //       {state:'unchanged'}; exit 3 no-attempt, work-changed, out-of-scope {paths}, index-only
 //       {paths}, tampered, clone-invalid, commit-failed (a read-tree of the commit or its
-//       compare-and-swap failed, the rollback read-tree too: the intent is cleared and the
-//       attempt stays open).
+//       compare-and-swap failed: the intent is cleared and the attempt stays open); exit 2 when
+//       the compare-and-swap failed and its rollback read-tree too: the intent is kept, so the
+//       next firing's recovery knows C (the index holds its tree) and saves the work.
 //   bundle <P> --generation <N> --branch <b>
 //       {state:'bundled', bundle} | {state:'current'}; exit 3 unvetted, clone-invalid.
 //   close <P> --generation <N>
@@ -1324,24 +1325,14 @@ function commitCmd(a, env) {
   const cas = workGitRun(W, ['update-ref', rec.head_ref, C, H0])
   if (cas.code || cas.status !== 0) {
     guard()
-    // When the rollback read-tree fails too, the index still holds C's tree, which is the work
-    // tree's content: the intent is cleared all the same, so the attempt stays open in this firing
-    // and the next firing's recovery reads a prepared record with a dirty index (leftovers,
-    // saved and reset).
-    let rollback = ''
-    try {
-      workGit(W, ['read-tree', H0])
-    } catch (e) {
-      if (e.code === 'CLONE_INVALID') {
-        guard()
-        updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }), { guard })
-        throw e
-      }
-      rollback = `; ${String(e.message).trim()}`
-    }
+    // A failure here leaves the intent: the index holds C, and the next firing's recovery reads
+    // that (rule 6, C among the commits the index may match) as leftovers against H0. Clearing it
+    // would forget C while the index still holds its tree, so a later edit of a path C changed
+    // would read index-only and stall every prepare. The error exits 2: the firing pauses once.
+    workGit(W, ['read-tree', H0])
     guard()
     updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }), { guard })
-    throw refused('commit-failed', `update-ref ${rec.head_ref}: ${cas.error || String(cas.stderr).trim()}${rollback}`)
+    throw refused('commit-failed', `update-ref ${rec.head_ref}: ${cas.error || String(cas.stderr).trim()}`)
   }
   fault('commit:after-update-ref')
   guard()
