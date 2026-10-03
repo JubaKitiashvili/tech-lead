@@ -25,6 +25,18 @@
 //                                 not a regular file) throws 'integrity: ...' with code
 //                                 INTEGRITY. tmpPath is removed in every case (a bad guard
 //                                 included).
+//   storageDir(V, dir, {create = false}) -> dir | null: every component of dir below V (dir
+//                                 itself included, V and its ancestors not) is a real directory,
+//                                 never a symlink (lstat), and realpath(dir) is realpath(V) joined
+//                                 with the same names. With create, a missing component is made
+//                                 (mode 0700); without, a missing one gives null. A symlink, a
+//                                 file, or a dir outside V throws 'clone-invalid: <path> is
+//                                 <kind>, not a directory in <V>' (code CLONE_INVALID; every CLI
+//                                 reports that as exit 3 {state:'clone-invalid'}). Callers check
+//                                 a storage directory of <V> (patches, run, out/<prefix>) and the
+//                                 clone root <W> with it before they sweep, allocate a temp,
+//                                 create a record or publish there, so a delegate that replaced
+//                                 one with a symlink into <P> cannot redirect a helper's writes.
 //   sweepTemps(dir) -> string[]   removes the .tmp-<pid>-* entries of dir whose pid is gone
 //                                 (startToken), and returns the paths it removed. A file
 //                                 (or symlink) is unlinked; a directory has its regular files
@@ -252,6 +264,43 @@ export function commitExclusive(tmpPath, file, opts = {}) {
     return { created }
   } finally {
     fs.rmSync(tmpPath, { force: true })
+  }
+}
+
+const kindOf = st => (st.isSymbolicLink() ? 'a symlink' : st.isFile() ? 'a regular file' : 'a special file')
+
+export function storageDir(V, dir, { create = false } = {}) {
+  const root = path.resolve(V)
+  const target = path.resolve(dir)
+  const rel = path.relative(root, target)
+  const invalid = (p, kind) => Object.assign(new Error(`clone-invalid: ${p} is ${kind}, not a directory in ${root}`), { code: 'CLONE_INVALID', kind })
+  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) throw invalid(target, 'outside')
+  let p = root
+  for (const name of rel === '' ? [] : rel.split(path.sep)) {
+    p = path.join(p, name)
+    let st = lstatOrNull(p)
+    if (!st && create) {
+      try {
+        fs.mkdirSync(p, { mode: 0o700 })
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e
+      }
+      st = lstatOrNull(p)
+    }
+    if (!st) return null
+    if (!st.isDirectory()) throw invalid(p, kindOf(st))
+  }
+  // Each component was a real directory when read; the real path catches a swap since.
+  if (fs.realpathSync.native(target) !== path.join(fs.realpathSync.native(root), rel)) throw invalid(target, 'elsewhere on disk')
+  return target
+}
+
+function lstatOrNull(p) {
+  try {
+    return fs.lstatSync(p)
+  } catch (e) {
+    if (e.code === 'ENOENT') return null
+    throw e
   }
 }
 

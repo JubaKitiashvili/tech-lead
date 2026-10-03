@@ -61,7 +61,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertAttrSource, cloneRepo, safeGit, workGit, workGitRun } from './lib/git-safe.mjs'
-import { readJson, sweepTemps, tempFile, writeReplace } from './lib/atomic.mjs'
+import { readJson, storageDir, sweepTemps, tempFile, writeReplace } from './lib/atomic.mjs'
 import { canonicalJson, sha256Hex } from './lib/canonical.mjs'
 import { chainStart, containedIn, resolveBase, retiredRefs, validPrefix } from './loop-start.mjs'
 import { baseRules, collect, currentRules, indexOnly, openWorkTree, recordRules, touched } from './lib/changes.mjs'
@@ -556,11 +556,20 @@ function rotate(paths, W, { prefix, date, generation, env, extra = new Set() }) 
 
 // ---------------------------------------------------------------- prepare (13.3)
 
+// Every storage directory is checked (atomic.storageDir) before it is swept: a symlink at
+// <V>/patches, <V>/run, <V>/out or below throws CLONE_INVALID, so nothing in <P> is removed.
+// <W>/.git gets the same sweep (a deps --mark killed before its rename leaves its temp there)
+// when <W> is a real directory of <V> and .git a real directory in it.
 function sweepAll(V) {
   const removed = []
-  for (const sub of ['patches', 'run']) removed.push(...sweepTemps(path.join(V, sub)))
+  const sweep = dir => {
+    if (storageDir(V, dir)) removed.push(...sweepTemps(dir))
+  }
+  for (const sub of ['patches', 'run']) sweep(path.join(V, sub))
+  const W = storageDir(V, path.join(V, 'clone'))
+  if (W && lstatOrNull(path.join(W, '.git'))?.isDirectory()) removed.push(...sweepTemps(path.join(W, '.git')))
   const walk = dir => {
-    removed.push(...sweepTemps(dir))
+    sweep(dir)
     let entries
     try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const e of entries) if (e.isDirectory()) walk(path.join(dir, e.name))
@@ -1473,6 +1482,7 @@ async function closeCmd(a, env) {
   if (facts && closing.length) {
     const rules = anchorRules(paths, N, closing)
     const held = () => assertHeld(paths, N, env)
+    storageDir(paths.V, path.dirname(anchorFile(paths)))
     held()
     writeReplace(anchorFile(paths), { v: 2, generation: N, refs: snapshot, rules }, { guard: held })
   }
