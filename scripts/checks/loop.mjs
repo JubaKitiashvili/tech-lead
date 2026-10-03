@@ -456,11 +456,12 @@ export async function checkLoop(ctx, r) {
     const has = (s, re) => commands(s).some(c => re.test(c.cmd))
     const save = steps.findIndex(s => has(s, SAVE))
     const reset = steps.findIndex(s => has(s, RESET))
-    // The Edit step must store the save's returned sha, in full: an Edit of `STATE.md` that
-    // only moves the item passes no sha on (Codex g4 #4). Line breaks are read as spaces.
-    const STORES_SHA = /\b(?:writes|stores|records) the full `sha`/
-    const edit = steps.findIndex((s, i) => i > save && !has(s, SAVE) && !has(s, RESET) && /\bEdit\b/.test(s) && s.includes('`STATE.md`')
-      && STORES_SHA.test(s.replace(/\s+/g, ' ')))
+    // The Edit step must store the save's returned sha, in full, and the Edit of `STATE.md`
+    // itself must be what stores it, affirmatively: an Edit that only moves the item (Codex g4
+    // #4), a sha written somewhere else beside it, or an Edit that "never writes" it (Codex f2
+    // #5) passes no sha on. Line breaks are read as spaces.
+    const STORES_SHA = /\bEdit of `STATE\.md` (?:writes|stores|records) the full `sha`/
+    const edit = steps.findIndex((s, i) => i > save && !has(s, SAVE) && !has(s, RESET) && STORES_SHA.test(s.replace(/\s+/g, ' ')))
     const bad = []
     if (save < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs save <P> --generation <N> --why <why>`')
     if (reset < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs reset <P> --generation <N> --sha <sha>`')

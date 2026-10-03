@@ -604,6 +604,18 @@ test('fails when the Save and reset procedure resets before it saves, or writes 
   r = runCheck(noSha)
   assert.equal(r.status, 1, r.stdout)
   assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/)
+  // The full sha is written, but somewhere else than STATE.md, or the Edit says it never writes
+  // it: the Edit's own clause must store it (Codex f2 #5).
+  for (const [label, to] of [
+    ['destination', 'The helper writes the full `sha` into its run record. One Edit of `STATE.md` moves the item at the'],
+    ['negation', 'One Edit of `STATE.md` never writes the full `sha` at the'],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, LOOP_SKILL, 'One Edit of `STATE.md` writes the full `sha` at the', to)
+    r = runCheck(dir)
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`)
+    assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/, label)
+  }
 })
 
 test('fails when the panel snapshot may refresh <P>/.git/index', t => {
