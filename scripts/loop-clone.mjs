@@ -52,12 +52,17 @@
 //       kept:[{generation, dirty, reason}], bundleError?}; exit 3 corrupt.
 //   git <P> -- <subcommand> [args...]
 //       read-only passthrough, no lock: git's own output and exit status; a refusal is exit 2
-//       with the last stderr line `loop-clone git: {"state":"refused","detail":...}`.
+//       with the last stderr line `loop-clone git: {"state":"refused","detail":...}`. git never
+//       runs inside a nested repository (status and diff get --ignore-submodules=dirty; the
+//       options that override it or inspect nested repositories, and describe --dirty/--broken,
+//       are refused), runs no filter program (drivers emptied, attributes read from HEAD), and
+//       reads a private copy of the index, so <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
 // commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertAttrSource, cloneRepo, safeGit, workGit, workGitRun } from './lib/git-safe.mjs'
@@ -102,8 +107,21 @@ export const PASSTHROUGH = Object.freeze([
   'status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'rev-list', 'merge-base', 'cat-file', 'for-each-ref', 'blame',
   'grep', 'shortlog', 'describe',
 ])
-// Long options the passthrough refuses, by name and by any abbreviation git would expand.
-const FORBIDDEN_LONG = ['output', 'ext-diff', 'textconv', 'filters', 'open-files-in-pager', 'upload-pack', 'receive-pack', 'exec']
+// Long options the passthrough refuses, by name and by any abbreviation git would expand: those
+// that write a file or run a program, and those that would override the pinned submodule handling
+// or make git look inside a nested repository (R26).
+const FORBIDDEN_LONG = ['output', 'ext-diff', 'textconv', 'filters', 'open-files-in-pager', 'upload-pack', 'receive-pack', 'exec',
+  'ignore-submodules', 'recurse-submodules', 'submodule']
+// Refused for one subcommand: describe --dirty refreshes and writes the index and looks inside
+// every gitlink; --broken runs git diff-index as a child.
+const FORBIDDEN_BY_SUB = Object.freeze({ describe: ['dirty', 'broken'] })
+// The subcommands that read a gitlink's work tree unless told not to: --ignore-submodules=dirty
+// goes right after the subcommand (a gitlink's commit change is still shown, R26).
+const PIN_SUBMODULES = new Set(['status', 'diff'])
+// Config of every passthrough run, whatever the owner's says: no submodule summary in status (it
+// runs `git submodule summary`), no diff of a gitlink's content, and no split index (a git that
+// rewrites the private index copy would otherwise write a shared index into <W>/.git).
+const PASS_CONFIG = Object.freeze(['status.submoduleSummary=false', 'diff.submodule=short', 'core.splitIndex=false'])
 // Real options that are also prefixes of a forbidden one (an exact name never abbreviates).
 const LONG_EXACT_OK = new Set(['text', 'filter'])
 
@@ -1499,11 +1517,11 @@ async function closeCmd(a, env) {
 
 // ---------------------------------------------------------------- git passthrough
 
-function passRefusal(arg) {
+function passRefusal(arg, sub) {
   if (arg.startsWith('--')) {
     const name = arg.slice(2).split('=')[0]
     if (!name) return null
-    for (const f of FORBIDDEN_LONG) {
+    for (const f of [...FORBIDDEN_LONG, ...(FORBIDDEN_BY_SUB[sub] ?? [])]) {
       if (name.startsWith(f)) return `--${name} is not allowed`
       if (f.startsWith(name) && !LONG_EXACT_OK.has(name)) return `--${name} abbreviates --${f}, which is not allowed`
     }
@@ -1513,9 +1531,58 @@ function passRefusal(arg) {
   return null
 }
 
+// A private copy of <W>/.git/index in dir (none when the index is missing: git reads that as an
+// empty index), read through no symlink; null when the index is not a regular file. The copy keeps
+// the index's mtime, rounded down: git judges an entry racily clean against the index file's
+// mtime, and a newer copy would trust the stat data of a file edited right after the index was
+// written.
+function indexCopy(W, dir) {
+  const dest = path.join(dir, 'index')
+  let fd
+  try {
+    fd = fs.openSync(path.join(W, '.git', 'index'), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+  } catch (e) {
+    if (e.code === 'ENOENT') return dest
+    if (e.code === 'ELOOP') return null
+    throw e
+  }
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile()) return null
+    fs.writeFileSync(dest, fs.readFileSync(fd), { mode: 0o600 })
+    const mtime = (Math.floor(st.mtimeMs) - 1) / 1000
+    fs.utimesSync(dest, mtime, mtime)
+  } finally {
+    fs.closeSync(fd)
+  }
+  return dest
+}
+
+// The passthrough's own temporary directory: its files (the index copy, a lock git left), then
+// the directory; nothing recursive.
+function removePassDir(dir) {
+  let names = []
+  try { names = fs.readdirSync(dir) } catch { return }
+  for (const n of names) {
+    try { fs.unlinkSync(path.join(dir, n)) } catch { /* gone, or a directory git never makes here */ }
+  }
+  try { fs.rmdirSync(dir) } catch { /* left in the OS temp directory */ }
+}
+
+// The caller's git command in <W>, read-only and inert (R26): checkClone first; git never runs
+// inside a nested repository (--ignore-submodules=dirty pinned for status and diff, PASS_CONFIG,
+// the options that would undo either refused); no filter program runs (every configured driver
+// emptied, attributes read from HEAD, as collect reads the clone; refused git-too-old when git
+// ignores GIT_ATTR_SOURCE, R24); and the command reads a private copy of the index, so nothing it
+// does (git diff refreshes and rewrites the index even with optional locks off) writes
+// <W>/.git/index or holds its lock.
 function gitPassthrough(argv, env, trace = {}) {
   const refuse = detail => {
     process.stderr.write(`loop-clone git: ${JSON.stringify({ state: 'refused', detail })}\n`)
+    return 2
+  }
+  const fail = detail => {
+    process.stderr.write(`loop-clone git: ${JSON.stringify({ state: 'error', detail })}\n`)
     return 2
   }
   const [P, sep, sub, ...rest] = argv
@@ -1523,7 +1590,7 @@ function gitPassthrough(argv, env, trace = {}) {
   if (!sub || !PASSTHROUGH.includes(sub)) return refuse(`${JSON.stringify(sub ?? '')} is not a read-only subcommand the passthrough allows (${PASSTHROUGH.join(', ')})`)
   for (const arg of rest) {
     if (arg === '--' || arg === '--end-of-options') break
-    const why = passRefusal(arg)
+    const why = passRefusal(arg, sub)
     if (why) return refuse(why)
   }
   let paths
@@ -1532,18 +1599,34 @@ function gitPassthrough(argv, env, trace = {}) {
   } catch (e) {
     return refuse(e.message)
   }
-  const { problems } = checkClone(paths.W)
+  const W = paths.W
+  const { problems } = checkClone(W)
   if (problems.length) return refuse(`clone-invalid: ${problems.join('; ')}`)
-  // diff, log and show get --no-ext-diff --no-textconv from workGit itself.
-  const args = sub === 'blame' ? [sub, '--no-textconv', ...rest] : [sub, ...rest]
-  const r = workGitRun(paths.W, args, { outFd: 1, env: trace })
-  if (r.stderr) process.stderr.write(r.stderr)
-  if (r.code === 'CLONE_INVALID') return refuse(r.error)
-  if (r.code) {
-    process.stderr.write(`loop-clone git: ${JSON.stringify({ state: 'error', detail: r.error })}\n`)
-    return 2
+  let at
+  let config
+  try {
+    assertAttrSource(W)
+    at = revParse(W, 'HEAD^{commit}')
+    config = [...PASS_CONFIG, ...filterNeutral(W)]
+  } catch (e) {
+    if (e.code === 'CLONE_INVALID' || e.code === 'REFUSED') return refuse(e.message)
+    return fail(e.message)
   }
-  return r.status ?? 128
+  if (!at) return refuse(`${W} has no HEAD commit to read attributes from`)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-pass-'))
+  try {
+    const indexFile = indexCopy(W, dir)
+    if (!indexFile) return refuse(`clone-invalid: ${W}/.git/index is not a regular file`)
+    // diff, log and show get --no-ext-diff --no-textconv from workGit itself.
+    const args = [sub, ...(sub === 'blame' ? ['--no-textconv'] : PIN_SUBMODULES.has(sub) ? ['--ignore-submodules=dirty'] : []), ...rest]
+    const r = workGitRun(W, args, { outFd: 1, config, indexFile, env: { ...trace, GIT_ATTR_SOURCE: at } })
+    if (r.stderr) process.stderr.write(r.stderr)
+    if (r.code === 'CLONE_INVALID') return refuse(r.error)
+    if (r.code) return fail(r.error)
+    return r.status ?? 128
+  } finally {
+    removePassDir(dir)
+  }
 }
 
 // ---------------------------------------------------------------- CLI
