@@ -236,11 +236,11 @@ test('git passthrough: read-only subcommands run with the per-subcommand flags; 
   const head = pass('rev-parse', 'HEAD')
   assert.equal(head.status, 0, head.stderr)
   assert.equal(head.stdout.trim(), tipOf(fx.W))
-  assert.match(traced(pass('diff', 'HEAD'), 'diff'), / diff --no-ext-diff --no-textconv HEAD/)
+  assert.match(traced(pass('diff', 'HEAD'), 'diff'), / diff --no-ext-diff --no-textconv --ignore-submodules=dirty HEAD/)
   assert.match(traced(pass('log', '-1', '--oneline'), 'log'), / log --no-ext-diff --no-textconv -1 --oneline/)
   assert.match(traced(pass('show', '--stat', 'HEAD'), 'show'), / show --no-ext-diff --no-textconv --stat HEAD/)
   assert.match(traced(pass('blame', 'a.txt'), 'blame'), / blame --no-textconv a\.txt/)
-  assert.match(traced(pass('status', '--short'), 'status'), / status --short$/)
+  assert.match(traced(pass('status', '--short'), 'status'), / status --ignore-submodules=dirty --short$/)
   assert.doesNotMatch(traced(pass('status', '--short'), 'status'), /no-textconv/)
   // git's own exit status passes through.
   assert.equal(pass('rev-parse', '--verify', '-q', 'refs/heads/nope').status, 1)

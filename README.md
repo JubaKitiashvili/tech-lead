@@ -804,7 +804,8 @@ The first run on a project bootstraps the spine interactively:
 - **The old `.tech-lead/worktree` is left alone.** 0.5.0 never writes,
   resets or removes it; a later release retires it. Uncommitted edits that
   an interrupted 0.4.x firing left there are not carried over: check
-  `git -C <project>/.tech-lead/worktree status`, and keep what you need.
+  `git -C <project>/.tech-lead/worktree status --ignore-submodules=dirty`
+  (which never runs git inside a nested repository), and keep what you need.
 - **Dependencies are installed once more,** in the clone. The old
   `.tech-lead/worktree-deps.ok` is no longer read.
 - **Headless runs need one more permission:** file edits in the clone (see
