@@ -1090,14 +1090,23 @@ function depsCmd(a, env) {
   const current = `${rec.branch} sha256:${lf.digest}`
   if (a.mark) {
     assertHeld(paths, a.generation, env)
+    // The temp goes on every failure path (a kill leaves it to prepare's sweep of <W>/.git), and
+    // the lock is checked again after its fsync, right before the rename that publishes it (R31).
     const tmp = tempFile(path.join(W, '.git'))
+    let renamed = false
     try {
-      fs.writeFileSync(tmp.fd, `${current}\n`)
-      fs.fsyncSync(tmp.fd)
+      try {
+        fs.writeFileSync(tmp.fd, `${current}\n`)
+        fs.fsyncSync(tmp.fd)
+      } finally {
+        fs.closeSync(tmp.fd)
+      }
+      assertHeld(paths, a.generation, env)
+      fs.renameSync(tmp.path, marker)
+      renamed = true
     } finally {
-      fs.closeSync(tmp.fd)
+      if (!renamed) fs.rmSync(tmp.path, { force: true })
     }
-    fs.renameSync(tmp.path, marker)
     return { marked: true, marker: current }
   }
   if (a.clear) {
@@ -1463,8 +1472,9 @@ async function closeCmd(a, env) {
   const closed = []
   if (facts && closing.length) {
     const rules = anchorRules(paths, N, closing)
-    assertHeld(paths, N, env)
-    writeReplace(anchorFile(paths), { v: 2, generation: N, refs: snapshot, rules })
+    const held = () => assertHeld(paths, N, env)
+    held()
+    writeReplace(anchorFile(paths), { v: 2, generation: N, refs: snapshot, rules }, { guard: held })
   }
   for (const rec of closing) {
     assertHeld(paths, N, env)
