@@ -52,7 +52,8 @@
 //       committed record holding only untracked files); a record whose `adopted` tips no ledger
 //       row names (as a commit or a bundle tip) and the base does not contain is kept with reason
 //       adopted (R32), and it alone keeps no newer record: {state:'closed', closed,
-//       kept:[{generation, dirty, reason}], bundleError?}; exit 3 corrupt.
+//       kept:[{generation, dirty, reason}], bundleError?}; exit 3 corrupt. Each deletion checks
+//       the lock again right before its unlink (R31: a lock lost first deletes nothing more).
 //   git <P> -- <subcommand> [args...]
 //       read-only passthrough, no lock: git's own output and exit status; a refusal is exit 2
 //       with the last stderr line `loop-clone git: {"state":"refused","detail":...}`. git never
@@ -1543,7 +1544,7 @@ async function closeCmd(a, env) {
   }
   for (const rec of closing) {
     assertHeld(paths, N, env)
-    deleteRecord(paths, rec.generation)
+    deleteRecord(paths, rec.generation, { guard: () => assertHeld(paths, N, env) })
     closed.push(rec.generation)
     fault('close:after-delete-one')
   }

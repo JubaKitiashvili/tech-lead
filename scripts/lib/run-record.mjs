@@ -46,7 +46,8 @@
 //       reset_sha or recovery.reset_sha keeps the current one, and an update that would still
 //       leave a current anchor sha (a save, a reset_sha, a recovery bundle or reset) nowhere in
 //       the record throws bad-record. A missing record throws 'no-record: <file>' (NO_RECORD).
-//   deleteRecord(paths, N) -> boolean (false when it was missing).
+//   deleteRecord(paths, N, {guard}) -> boolean (false when it was missing). guard (R31) runs after
+//       the <V>/run check, right before the unlink; when it throws, nothing is deleted.
 //   maxRecordGeneration(paths) -> the largest N among the names '<N>.json' in <V>/run, 0 when
 //       there is none or no directory; content is never read.
 //   isResolved(rec) -> phase clean, or recovery.step done (stored fields only).
@@ -388,9 +389,12 @@ function fsyncDir(dir) {
   }
 }
 
-export function deleteRecord(paths, N) {
+export function deleteRecord(paths, N, opts = {}) {
   const file = recordFile(paths, N)
   if (!storageDir(paths.V, path.dirname(file))) return false
+  // Sharpened R31: the caller's lock check runs again here, after storageDir's filesystem reads,
+  // so a holder lost since the caller's own check deletes nothing.
+  opts?.guard?.()
   try {
     fs.unlinkSync(file)
   } catch (e) {
