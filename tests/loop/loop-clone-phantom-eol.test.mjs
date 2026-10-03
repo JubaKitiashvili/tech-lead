@@ -3,12 +3,15 @@
 // `* text eol=lf`): git's conversion-aware diff calls the file modified right after a clean
 // checkout, though its raw bytes are the base blob. R29a extends to git's own diff, so neither
 // check --after deps (deps-dirty), the touched set, the commit nor the clean check after recovery
-// counts it; a real edit to that file still goes in. Real repositories, a held lock.
+// counts it, nor does the recovery planner's look at the clone; a real edit to that file still goes
+// in. Real repositories, a held lock.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { T, check, commitCli, firing, git, patches, prepare, project, tipOf, write } from './loop-clone-fixture.mjs'
+import { spawnSync } from 'node:child_process'
+import { ROOT } from '../helpers.mjs'
+import { T, appendLedger, check, closeCli, commitCli, firing, git, patches, prepare, project, tipOf, write } from './loop-clone-fixture.mjs'
 
 const CRLF = 'one\r\ntwo\r\n'
 const OLD = new Date('2001-01-01T00:00:00Z')
@@ -78,4 +81,26 @@ test('a firing after an interrupted one recovers clean over a phantom file, and 
   // A third firing with nothing left behind: prepare is ready again.
   await firing(fx)
   assert.equal(prepare(fx, { date: '2026-10-03' }).state, 'ready')
+})
+
+test('the recovery planner reads a clean clone over a phantom file: no leftovers note on the next firing', T, async t => {
+  const fx = phantomProject(t)
+  await firing(fx)
+  prepare(fx)
+  check(fx, 'deps')
+  assert.equal(commitCli(fx, check(fx, 'dispatch').digest).state, 'unchanged')
+  appendLedger(fx, { iteration: fx.N, commits: [], bundles: [] })
+  closeCli(fx)
+  await firing(fx)
+  const planNow = () => {
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'loop-recover.mjs'), fx.P, '--generation', String(fx.N)], { encoding: 'utf8', env: fx.env })
+    assert.equal(r.status, 0, r.stdout + r.stderr)
+    return JSON.parse(r.stdout.trim())
+  }
+  const plan = planNow()
+  assert.equal(plan.clone.dirty.tracked, false, JSON.stringify(plan.clone))
+  assert.equal(plan.actions.includes('note-leftovers'), false, JSON.stringify(plan.actions))
+  // A real edit to the phantom file is still a leftover.
+  write(fx.W, 'win.txt', 'one\r\nTWO\r\n')
+  assert.equal(planNow().clone.dirty.tracked, true)
 })
