@@ -8,18 +8,28 @@
 // handled (the runner stays only for transient contention), a release exit 3 is a lost lock
 // only with not-holder, the ledger rule names both of its exceptions, the release's two
 // lists mean what the code puts in them, an exec run counts as passed only when it exited 0
-// (never when lingering), `## Now` ends as loop-recover.mjs's placeholder, and README's
-// troubleshooting names every held reason.
+// (never when lingering: the rule's own sentence must call a non-zero exit a failure, and the
+// lingering rule must call the run no pass), `## Now` ends as loop-state.mjs's placeholder, and
+// README's troubleshooting names every held reason.
+// Stage 0c-2 (the clone, brief section 21): the main session runs no git in <W> itself
+// (clone.md replaces worktree.md), every loop-clone.mjs command and every reflex-bundle.mjs
+// save, reset and apply is fenced by --generation <N>, section 1 step 5 runs the planner with
+// the generation, section 8 closes the run records between the ledger append and the release,
+// Save and reset saves, writes the sha into STATE.md, then resets, nothing in skills/loop/
+// discards work in place (only a command a prohibition governs is exempt), the
+// owner-only loop-review.mjs is named in no skill, the panel
+// snapshot never refreshes <P>/.git/index, and a not-holder answer from the clone helpers is
+// a lost lock.
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 import { docFiles } from './repo.mjs'
 
 const SKILL = 'skills/loop/SKILL.md'
-const WORKTREE = 'skills/loop/references/worktree.md'
+const CLONE = 'skills/loop/references/clone.md'
 const TEMPLATES = 'skills/loop/references/loop-templates.md'
 const LOCK_SRC = 'scripts/loop-lock.mjs'
-const RECOVER_SRC = 'scripts/loop-recover.mjs'
+const STATE_SRC = 'scripts/lib/loop-state.mjs'
 const PATHS_SRC = 'scripts/lib/loop-paths.mjs'
 const LOCK = 'node <T>/scripts/loop-lock.mjs'
 // Acquire's held reasons that mean transient contention: the firing ends without writing,
@@ -99,6 +109,58 @@ function commands(text) {
 // `git stash`, also with global options, placeholders or paths before the subcommand.
 const GIT_STASH = /\bgit(?:\s+(?:-\S+|<[^>\s]+>|\/\S*|\S+=\S*))*\s+stash\b/
 
+// Commands that discard work in place (brief 21): only Save and reset (reflex-bundle.mjs)
+// removes edits in <W>, after it saved them. `git clean` also with options before it.
+const DISCARD = [
+  ['checkout -- ', /checkout -- /],
+  ['restore --worktree', /\brestore --worktree\b/],
+  ['restore -W', /\brestore -W\b/],
+  ['git clean', /\bgit(?:\s+(?:-\S+|<[^>\s]+>|\/\S*|\S+=\S*))*\s+clean\b/],
+  ['reset --hard', /\breset --hard\b/],
+]
+// A command is forbidden, not prescribed, only when a prohibition governs it (code#3,
+// prose#4). The sentence that holds it opens by forbidding (a bullet marker and bold may come
+// first), and between the nearest forbidding word before it and the command there is nothing
+// but at most one verb (run, use, ...) and other commands joined by commas, `or`, `and` or
+// `nor`: "Never run `git clean`", "Never run `a`, `b` or `git clean`", "- **No destructive
+// commands:** no `git reset --hard`", "No recovery is needed; do not run `git clean`". A
+// negation elsewhere ("If a reset did not finish, run `git clean -fdx`", "When there are no
+// conflicts, ...") exempts nothing, and neither does an opening prohibition of something else
+// followed by an affirmative clause ("Do not retry verification; run `git clean -fd`", "No
+// recovery is needed and `git clean -fd` is fine"). Backticked spans are read as single
+// commands, so a word inside one ("--no-verify") is never a forbidding word.
+const OPENS_FORBIDDING = /^\s*(?:[-*]\s+)?(?:\*\*)?\s*(?:never|no|nor|do not|don't)\b/i
+const FORBIDDING_WORD = /\b(?:never|no|nor|not|don't)\b/gi
+const GOVERNED = /^\s*(?:\*+\s*)?(?:(?:run|use|call|type|execute|issue|invoke|try)\s+)?(?:`#`\s*(?:,\s*(?:(?:or|and|nor)\s+)?|(?:or|and|nor)\s+))*$/i
+function forbidsAt(line, at) {
+  // Every complete span becomes `#`; an unclosed one is the start of the command's own span.
+  const masked = line.slice(0, at).replace(/`[^`]*`/g, '`#`').replace(/`[^`]*$/, '')
+  const sentence = masked.split(/[.!?](?=\s)/).pop()
+  if (!OPENS_FORBIDDING.test(sentence)) return false
+  const last = [...sentence.matchAll(FORBIDDING_WORD)].pop()
+  return GOVERNED.test(sentence.slice(last.index + last[0].length))
+}
+// The sentence of a flat text that holds index `at` (sentences end at a '.', '!' or '?' before
+// a space).
+function sentenceAt(text, at) {
+  const before = text.slice(0, at).split(/(?<=[.!?])\s/)
+  const after = text.slice(at).search(/[.!?](?=\s|$)/)
+  return before[before.length - 1] + text.slice(at, after < 0 ? text.length : at + after + 1)
+}
+// What an exec rule calls a run: a failure, or a pass (Cg4#7: the phrase alone proves nothing).
+const FAIL_WORD = /\bfail(?:s|ed|ure)?\b/i
+const PASS_WORD = /\bpass(?:es|ed)?\b|\bsuccess(?:ful)?\b|\bsucceed(?:s|ed)?\b/i
+// The lingering rule must say the run is no pass, and must never call it one.
+const NEVER_PASS = /\bnever (?:a pass|passes|passed)\b|\b(?:is|counts as) (?:the|a) failure\b/i
+const SAYS_PASS = /\b(?:it|the run|the install|the command) (?:is a pass|passes|passed|succeeds|succeeded)\b/i
+// The helpers fenced by the firing lock's generation: every loop-clone.mjs subcommand but the
+// read-only `git` passthrough, and reflex-bundle.mjs save, reset and apply (verify reads only).
+const FENCED = [
+  ['loop-clone.mjs', /(scripts\/)?loop-clone\.mjs ([a-z][a-z-]*)([^`\n]*)/g, sub => sub !== 'git'],
+  ['reflex-bundle.mjs', /(scripts\/)?reflex-bundle\.mjs ([a-z][a-z-]*)([^`\n]*)/g, sub => ['save', 'reset', 'apply'].includes(sub)],
+]
+const CLOSE = 'node <T>/scripts/loop-clone.mjs close <P> --generation <N>'
+
 function filesUnder(root, dir) {
   return fs.readdirSync(path.join(root, dir), { recursive: true })
     .map(f => `${dir}/${f}`)
@@ -136,16 +198,16 @@ export async function checkLoop(ctx, r) {
     assert.ok(timeoutOk(m[1]), `${SKILL} section 6: the verify exec needs --timeout-ms of at most ${MAX_EXEC_MS} (the Bash limit backgrounds a longer run), not ${m[1] ?? 'none'}`)
   })
 
-  await r.check('loop: worktree.md installs dependencies through loop-lock.mjs exec', () => {
-    const deps = step(rd(WORKTREE), 4, 'Dependencies', WORKTREE)
+  await r.check('loop: clone.md installs dependencies through loop-lock.mjs exec', () => {
+    const deps = step(rd(CLONE), 4, 'Dependencies', CLONE)
     const exec = new RegExp(`^${LOCK} exec <P> --generation <N> --label deps --cwd <W>(?: --timeout-ms (\\d+))? -- \\S`)
     const cmds = commands(deps)
     const bad = []
     const m = cmds.map(c => exec.exec(c.cmd)).find(Boolean)
-    if (!m) bad.push(`${WORKTREE} step 4 has no loop-lock.mjs exec <P> --generation <N> --label deps --cwd <W> --timeout-ms <T> -- <install>`)
-    else if (!timeoutOk(m[1])) bad.push(`${WORKTREE} step 4: the install exec needs --timeout-ms of at most ${MAX_EXEC_MS} (the Bash limit backgrounds a longer run), not ${m[1] ?? 'none'}`)
-    for (const c of cmds) if (!c.cmd.startsWith(`${LOCK} exec `)) bad.push(`${WORKTREE} step 4 runs the install directly: ${c.cmd}`)
-    for (const m of deps.matchAll(/`(cd <W>[^`]*)`/g)) bad.push(`${WORKTREE} step 4 runs the install directly: ${m[1]}`)
+    if (!m) bad.push(`${CLONE} step 4 has no loop-lock.mjs exec <P> --generation <N> --label deps --cwd <W> --timeout-ms <T> -- <install>`)
+    else if (!timeoutOk(m[1])) bad.push(`${CLONE} step 4: the install exec needs --timeout-ms of at most ${MAX_EXEC_MS} (the Bash limit backgrounds a longer run), not ${m[1] ?? 'none'}`)
+    for (const c of cmds) if (!c.cmd.startsWith(`${LOCK} exec `)) bad.push(`${CLONE} step 4 runs the install directly: ${c.cmd}`)
+    for (const m of deps.matchAll(/`(cd <W>[^`]*)`/g)) bad.push(`${CLONE} step 4 runs the install directly: ${m[1]}`)
     assert.deepEqual(bad, [])
   })
 
@@ -262,18 +324,30 @@ export async function checkLoop(ctx, r) {
     const bad = []
     for (const [where, text] of [
       [`${SKILL} section 6 step 3`, step(section(rd(SKILL), 6, SKILL).text, 3, 'Verify', SKILL)],
-      [`${WORKTREE} step 4`, step(rd(WORKTREE), 4, 'Dependencies', WORKTREE)],
+      [`${CLONE} step 4`, step(rd(CLONE), 4, 'Dependencies', CLONE)],
     ]) {
       const t = flat(text)
-      if (!/`exited` with (?:any other|a non-zero) `exit`/.test(t)) bad.push(`${where} never says that \`exited\` with a non-zero \`exit\` is a failure`)
-      if (!t.includes(`\`lingering\` (exit ${code[1]})`)) bad.push(`${where} never handles the \`lingering\` state (exit ${code[1]})`)
+      const NONZERO = /`exited` with (?:any other|a non-zero) `exit`/g
+      const hits = [...t.matchAll(NONZERO)]
+      if (!hits.length) bad.push(`${where} never says that \`exited\` with a non-zero \`exit\` is a failure`)
+      for (const m of hits) {
+        // The sentence that names the non-zero exit must call it a failure, and no pass.
+        const s = sentenceAt(t, m.index)
+        if (!FAIL_WORD.test(s) || PASS_WORD.test(s)) bad.push(`${where} calls \`exited\` with a non-zero \`exit\` a pass, or no failure: "${s.trim()}"`)
+      }
+      const LINGERING = `\`lingering\` (exit ${code[1]})`
+      const rule = bullets(text).map(flat).find(b => b.startsWith(`- ${LINGERING}`))
+      if (!t.includes(LINGERING)) bad.push(`${where} never handles the \`lingering\` state (exit ${code[1]})`)
+      else if (!rule) bad.push(`${where} has no bullet that opens with ${LINGERING}`)
+      else if (!NEVER_PASS.test(rule) || SAYS_PASS.test(rule)) bad.push(`${where} lets a \`lingering\` run pass: its rule never says it is no pass ("never a pass", "is the failure")`)
     }
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: a firing leaves ## Now holding exactly the placeholder loop-recover.mjs reads as empty', () => {
-    const m = /const PLACEHOLDER = '([^']+)'/.exec(rd(RECOVER_SRC))
-    assert.ok(m, `${RECOVER_SRC}: no PLACEHOLDER constant`)
+  await r.check('loop: a firing leaves ## Now holding exactly the placeholder loop-state.mjs reads as empty', () => {
+    // loop-state.mjs owns the placeholder; the recovery planner reads STATE.md through it.
+    const m = /export const PLACEHOLDER = '([^']+)'/.exec(rd(STATE_SRC))
+    assert.ok(m, `${STATE_SRC}: no PLACEHOLDER constant`)
     const ph = m[1], bad = []
     const tpl = /^## Now\n(.*)$/m.exec(rd(TEMPLATES))
     if (!tpl || tpl[1] !== ph) bad.push(`${TEMPLATES}: the STATE.md template's ## Now holds ${JSON.stringify(tpl ? tpl[1] : null)}, not ${ph}`)
@@ -288,5 +362,159 @@ export async function checkLoop(ctx, r) {
     const names = ticked(part(rd('README.md'), '## Troubleshooting', 'README.md'))
     const missing = [...heldReasons(rd(LOCK_SRC)), 'not-toplevel'].filter(x => !names.includes(x))
     assert.deepEqual(missing.map(x => `README.md Troubleshooting never names \`${x}\``), [])
+  })
+  await r.check('loop: SKILL.md and clone.md never run git -C <W>, add a worktree, or put <W> at <S>/worktree', () => {
+    // <W> is the clone loop-clone.mjs owns (stage 0c-2): the main session runs git there only
+    // through the helpers, and the 0c-1 worktree layout is gone from the loop's prose.
+    const bad = []
+    for (const f of [SKILL, CLONE]) {
+      const text = rd(f)
+      for (const [label, re] of [
+        ['git -C <W>', /\bgit\s+-C\s+<W>/g],
+        ['worktree add', /\bworktree\s+add\b/g],
+        ['`<W>` = `<S>/worktree`', /`<W>`\s*=\s*`<S>\/worktree`/g],
+      ]) for (const m of text.matchAll(re)) bad.push(`${f}:${lineOf(text, m.index)}: ${label}`)
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: every loop-clone.mjs command in skills/ (but git) and every reflex-bundle.mjs save, reset and apply carries --generation <N>', () => {
+    // An invocation is a helper path (scripts/loop-clone.mjs prepare) or the name followed by
+    // <P> or a flag; the bare name in a sentence is not one.
+    const bad = []
+    for (const f of filesUnder(root, 'skills')) {
+      rd(f).split('\n').forEach((line, i) => {
+        for (const [name, re, fenced] of FENCED) {
+          for (const m of line.matchAll(re)) {
+            if (!m[1] && !/^\s+(?:<P>|--)/.test(m[3])) continue
+            if (!fenced(m[2])) continue
+            if (!/(?:^|\s)--generation <N>(?:\s|$)/.test(m[3])) bad.push(`${f}:${i + 1}: ${name} ${m[2]} without --generation <N>`)
+          }
+        }
+      })
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: SKILL.md section 8 closes the run records after the ledger append and before the release', () => {
+    // close reads the ledger to decide which run records it may delete, and it is fenced by
+    // the generation, so it runs once the entry is appended and while the lock is held.
+    const { text } = section(rd(SKILL), 8, SKILL)
+    const cmds = commands(text)
+    const closes = cmds.filter(c => c.cmd === CLOSE)
+    const release = cmds.find(c => c.cmd === `${LOCK} release <P> --generation <N>`)
+    const ledger = text.indexOf('2. Append exactly one ledger entry')
+    const bad = closes.length ? [] : [`${SKILL} section 8 names no \`${CLOSE}\``]
+    for (const c of closes) {
+      if (ledger < 0 || c.at < ledger) bad.push(`${SKILL} section 8 closes the run records before the ledger append ("2. Append exactly one ledger entry")`)
+      if (!release || c.at > release.at) bad.push(`${SKILL} section 8 closes the run records after the release`)
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: SKILL.md section 1 step 5 runs the recovery planner with --generation <N>', () => {
+    const plan = step(section(rd(SKILL), 1, SKILL).text, 5, 'Plan the recovery', SKILL)
+    const planner = /^node <T>\/scripts\/loop-recover\.mjs <P> --generation <N>(?:\s|$)/
+    assert.ok(commands(plan).some(c => planner.test(c.cmd)), `${SKILL} section 1 step 5 names no \`node <T>/scripts/loop-recover.mjs <P> --generation <N>\``)
+  })
+
+  await r.check('loop: skills/ never names loop-review.mjs', () => {
+    // The owner's review (fetch, retire) runs in the owner's terminal only (brief 15): a
+    // firing must never be told to vouch for its own work.
+    const bad = []
+    for (const f of filesUnder(root, 'skills')) {
+      rd(f).split('\n').forEach((line, i) => {
+        if (/loop-review\.mjs/.test(line)) bad.push(`${f}:${i + 1}: ${line.trim()}`)
+      })
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: skills/loop/ never discards work in place (checkout --, restore --worktree, restore -W, git clean, reset --hard) except on a line that forbids it', () => {
+    const bad = []
+    for (const f of filesUnder(root, 'skills/loop')) {
+      rd(f).split('\n').forEach((line, i) => {
+        for (const [label, re] of DISCARD) {
+          const g = new RegExp(re.source, 'g')
+          if ([...line.matchAll(g)].some(m => !forbidsAt(line, m.index))) bad.push(`${f}:${i + 1}: ${label}`)
+        }
+      })
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: the Save and reset procedure saves, writes the sha into STATE.md, then resets', () => {
+    // Ruling R5: the bundle sha reaches STATE.md before anything in <W> is reset, so a flag
+    // outcome is never left pointing at work that is gone.
+    const s7 = section(rd(SKILL), 7, SKILL).text
+    const m = /^\*\*Save and reset\b[^*\n]*\*\*/m.exec(s7)
+    assert.ok(m, `${SKILL} section 7 has no "**Save and reset**" procedure`)
+    const rest = s7.slice(m.index + m[0].length)
+    const end = rest.search(/^\*\*/m)
+    const steps = (end < 0 ? rest : rest.slice(0, end)).split(/^(?=\d+\. )/m).slice(1)
+    const SAVE = /^node <T>\/scripts\/reflex-bundle\.mjs save <P> --generation <N> --why /
+    const RESET = /^node <T>\/scripts\/reflex-bundle\.mjs reset <P> --generation <N> --sha /
+    const has = (s, re) => commands(s).some(c => re.test(c.cmd))
+    const save = steps.findIndex(s => has(s, SAVE))
+    const reset = steps.findIndex(s => has(s, RESET))
+    const edit = steps.findIndex((s, i) => i > save && !has(s, SAVE) && !has(s, RESET) && /\bEdit\b/.test(s) && s.includes('`STATE.md`'))
+    const bad = []
+    if (save < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs save <P> --generation <N> --why <why>`')
+    if (reset < 0) bad.push('the Save and reset procedure has no step that runs `node <T>/scripts/reflex-bundle.mjs reset <P> --generation <N> --sha <sha>`')
+    if (save >= 0 && reset >= 0) {
+      if (reset <= save) bad.push(`the Save and reset procedure resets before it saves (step ${reset + 1} resets, step ${save + 1} saves)`)
+      else if (!(edit > save && edit < reset)) bad.push('no step between the save and the reset writes the sha into `STATE.md` with one Edit')
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: the panel snapshot never refreshes <P>/.git/index (diff.autoRefreshIndex=false)', () => {
+    // A plain `git diff` refreshes the index's stat data and rewrites <P>/.git/index; the loop
+    // never writes <P>'s tree or .git outside <S>.
+    const skill = rd(SKILL)
+    const { text, at } = section(skill, 5, SKILL)
+    const bad = []
+    let seen = 0
+    for (const c of commands(text)) {
+      for (const g of c.cmd.matchAll(/\bgit((?:\s+-c\s+\S+)*)\s+diff\b/g)) {
+        seen++
+        if (!/(?:^|\s)-c\s+diff\.autoRefreshIndex=false(?:\s|$)/.test(g[1])) {
+          bad.push(`${SKILL}:${lineOf(skill, at + c.at)}: the panel snapshot runs git diff without -c diff.autoRefreshIndex=false`)
+        }
+      }
+    }
+    if (!seen) bad.push(`${SKILL} section 5 has no panel snapshot (git -c diff.autoRefreshIndex=false diff HEAD ...)`)
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: the Lost-lock rule counts a loop-clone.mjs or reflex-bundle.mjs exit 3 "not-holder" as lost', () => {
+    const lost = bullets(step(rd(SKILL), 3, 'Acquire the firing lock', SKILL)).filter(b => b.startsWith('- **Lost lock.**'))
+    assert.equal(lost.length, 1, `${SKILL} section 1 step 3 has no "- **Lost lock.**" bullet`)
+    const t = flat(lost[0]), bad = []
+    for (const h of ['loop-clone.mjs', 'reflex-bundle.mjs']) {
+      if (!rd(`scripts/${h}`).includes("state: 'not-holder'")) bad.push(`scripts/${h} no longer answers not-holder`)
+      if (!new RegExp(`\`${esc(h)}\`(?: or \`[\\w.-]+\`)* exit 3 with \`"state": "not-holder"\``).test(t)) {
+        bad.push(`the Lost-lock rule never names \`${h}\` exit 3 with \`"state": "not-holder"\``)
+      }
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: clone.md says a not-holder from commit, bundle or close can leave a published bundle without its sidecar, which the next clone preparation regenerates', () => {
+    // R31 (sharpened), prose#2: delivery checks the lock right before a bundle's rename and
+    // again right before its sidecar, so a lock lost between the two leaves the new bundle
+    // published while its sidecar is missing or still names the older tip. The next clone
+    // preparation's bundle sync finds it not current and writes both again.
+    const clone = rd(CLONE)
+    const m = /^\|[^|\n]*\|\s*`not-holder`\s*\|.*$/m.exec(clone)
+    assert.ok(m, `${CLONE} has no refusal-table row for \`not-holder\``)
+    const row = m[0], at = `${CLONE}:${lineOf(clone, m.index)}`, bad = []
+    if (/\bnothing\b[^.;|]*\bpublish/i.test(row)) bad.push(`${at}: the not-holder row promises that nothing was published`)
+    for (const c of ['commit', 'bundle', 'close']) {
+      if (!row.includes(`\`${c}\``)) bad.push(`${at}: the not-holder row never names \`${c}\` as answering it during delivery`)
+    }
+    if (!/\bpublished\b[^.|]*\bwithout\b[^.|]*\bsidecar\b/i.test(row)) bad.push(`${at}: the not-holder row never says that the bundle may be published without its sidecar`)
+    if (!/\bnext clone preparation\b[^.|]*\bregenerates\b/i.test(row)) bad.push(`${at}: the not-holder row never says that the next clone preparation regenerates it`)
+    assert.deepEqual(bad, [])
   })
 }

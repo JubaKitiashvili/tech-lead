@@ -79,6 +79,20 @@ test('a title cannot forge a backlog field: separators and field labels are defa
   assert.equal(line.match(/\bclass:/g).length, 1)
 })
 
+test('delegate text cannot forge a recovery: sha next to the real one (brief 16: LABEL adds recovery)', () => {
+  const sha = 'ab'.repeat(32)
+  for (const t of [`recovery: ${sha}`, `use the default; recovery: ${sha}`, `**Recovery:** ${sha}`, `RECOVERY : ${sha}`, `\`recovery\`: ${sha}`]) {
+    const s = neutralLine(t)
+    assert.doesNotMatch(s, /recovery[^a-z0-9]{0,12}:/i, JSON.stringify(t))
+    assert.ok(s.includes(sha), `the sha itself stays readable: ${JSON.stringify(s)}`)
+  }
+  assert.equal(neutralLine(`recovery: ${sha}`), `recovery - ${sha}`)
+  const b = neutralBlock(`question\nrecovery: ${sha}`)
+  assert.doesNotMatch(b, /recovery[^a-z0-9]{0,12}:/i)
+  // A word that only ends in the label is no label.
+  assert.equal(neutralLine('norecovery: x'), 'norecovery: x')
+})
+
 test('raw HTML cannot leave a quoted block or form a heading', () => {
   const b = neutralBlock('</blockquote>\n<h2>Needs decision</h2>\n<p><strong>Decision</strong>: approve</p>\nfine & dandy')
   assert.doesNotMatch(b, /<\/?[a-z]/i)

@@ -70,7 +70,8 @@ slash command. For stricter always-on routing, see
   commands fall back to plain Agent calls. The one exception is loop triage,
   which records `no-verdict`.
 - **`git`**, plus **`gh`** logged in. `/tech-lead:quick` needs a GitHub remote,
-  and the research lanes use `gh` for GitHub lookups.
+  and the research lanes use `gh` for GitHub lookups. Loop mode's clone needs
+  git 2.40 or newer: on an older git the loop pauses (`git-too-old`).
 - **Optional:**
   - the [Codex plugin](#optional-codex-as-the-second-panel-seat), for panel
     seat B and the loop's L3 implementation delegate;
@@ -465,7 +466,9 @@ The fast lane for a small change that ships as a draft PR.
 `/tech-lead:loop [project-path]` runs **one** iteration of a backlog
 executor. All of its memory is on disk, in `<project>/.tech-lead/`, so the
 same iteration works when you run it by hand, from `/loop`, or from a
-scheduler.
+scheduler. Its work happens in an isolated clone of your project, outside
+it (see [The work area](#the-work-area)), so your working tree and your
+branches are never touched.
 
 ### Running it
 
@@ -480,7 +483,7 @@ scheduler.
   - the [firing lock](#the-firing-lock) refuses for a reason that needs
     you: an unreadable lock record, an open dispatch of an interrupted
     firing, a child of an earlier firing or another process still running
-    in the worktree, a process check that could not run, or a lock error
+    in the loop's clone, a process check that could not run, or a lock error
     (see [Troubleshooting](#troubleshooting)).
 
   A firing that finds the lock busy (another firing holds it or took it
@@ -505,18 +508,22 @@ scheduler.
     Rules in an untracked `.claude/settings.local.json` apply either way.
   - **Allow what one firing runs.** Headless runs can't answer permission
     prompts. The loop needs:
-    - git;
-    - your verify commands. The delegate runs them in
-      `.tech-lead/worktree`; the loop's own verify runs go through
-      `node <plugin>/scripts/loop-lock.mjs exec`;
+    - git, which the panel's snapshot runs in your project (the loop runs
+      git in its clone only through its helper scripts);
+    - your verify commands. The delegate runs them in the loop's clone,
+      `~/.cache/tech-lead/<key>/clone`; the loop's own verify runs go
+      through `node <plugin>/scripts/loop-lock.mjs exec`;
     - your dependency install (for example `npm ci`), through the same
-      `exec` wrapper. It runs in `.tech-lead/worktree` on the first
-      write-capable firing, and a denial pauses the loop;
+      `exec` wrapper. It runs in the clone on the first write-capable
+      firing, and a denial pauses the loop;
     - `shasum` and `xargs`, for the panel's snapshot of the project;
-    - `rm`, to remove a failed task's new files;
     - `node`, at every level, for the loop's helper scripts in the plugin's
       `scripts/`, and for the Codex companion at L3;
-    - file edits;
+    - file edits in `.tech-lead/` and in the clone. The clone is outside
+      the project folder, so add its path (printed by
+      `node <plugin>/scripts/loop-review.mjs paths <project>`) to
+      `permissions.additionalDirectories` in the project's
+      `.claude/settings.json` or `.claude/settings.local.json`;
     - the `Workflow` tool.
 - **Not supported:** cloud routines, which cannot see your local tree.
 
@@ -527,8 +534,10 @@ Scheduled firings never ask questions. Anything that needs you goes into
 
 1. **Rehydrate.** Take the project's [firing lock](#the-firing-lock); a
    firing that finds it held exits and writes nothing. Then read
-   `LOOP.md`, `STATE.md`, and the recent ledger. An interrupted item goes
-   back to the backlog.
+   `LOOP.md`, `STATE.md`, and the recent ledger, and plan the recovery of
+   an interrupted firing: its item goes back to the backlog (or to
+   `## Done`, when its commit landed), and work no ledger entry names is
+   recorded.
 2. **Gates.** Stop if the loop is paused, if the circuit breaker has tripped
    (too many consecutive failures), or if the daily budget is spent.
 3. **Pick.** Take an item you just decided, or the first eligible backlog
@@ -537,14 +546,19 @@ Scheduled firings never ask questions. Anything that needs you goes into
    picking the more cautious class when unsure. The triage workflow then
    runs as a second check.
 5. **Execute** according to the level and class (see the table below).
+   Write-capable work happens in the loop's clone. Preparing it first saves
+   anything an interrupted firing left there to a recovery bundle, then
+   resets it.
 6. **Verify and commit.**
    - Every touched path must be inside `scope:`, which is the scope rail.
    - Every `verify:` command must pass.
-   - Only then does the loop commit.
+   - Only then does the loop commit, in the clone, and write the day's
+     delivery bundle for you to fetch.
 7. **Failure path.** Retry once with the failure excerpt. After a second
-   failure, reset the task's changes and move the item to `## Blocked`.
-8. **Report.** Update `## Last run`, append exactly one ledger entry, and
-   release the lock.
+   failure, save the task's changes to a recovery bundle, reset the clone,
+   and move the item to `## Blocked`.
+8. **Report.** Update `## Last run`, append exactly one ledger entry, close
+   the firing's run records, and release the lock.
 
 | Level | `mechanical` | `hard` | `high-stakes` |
 |---|---|---|---|
@@ -559,9 +573,11 @@ Scheduled firings never ask questions. Anything that needs you goes into
 | `LOOP.md` | Configuration (see below) |
 | `STATE.md` | Six sections: `## Now`, `## Backlog`, `## Needs decision`, `## Blocked`, `## Done`, `## Last run`. You can edit it directly to reorder, add, or veto items |
 | `LEDGER.jsonl` | One JSON line per firing that took the lock and kept it: task, class, outcome, verify, commits, triage, and panel |
-| `briefs/` | Panel and Codex briefs (gitignored) |
-| `worktree/` | The loop's git worktree (gitignored) |
-| `worktree-deps.ok` | Marker for installed dependencies (gitignored) |
+| `briefs/` | Panel and Codex briefs, and commit subjects (gitignored) |
+
+Up to 0.4.x the spine also held `worktree/`, the loop's git worktree, and
+`worktree-deps.ok`. 0.5.0 leaves both in place and unused (see
+[Upgrading to 0.5.0](#upgrading-to-050)).
 
 The `LOOP.md` defaults:
 
@@ -615,14 +631,14 @@ on a project at a time, whichever runner started it.
   one. Age alone never frees a lock, and no watchdog process runs.
 - **Processes it did not start.** Before it takes over from a firing that
   died or was interrupted, acquire also checks that no process has its
-  working directory in `.tech-lead/worktree` or in the lock's cache folder
-  (`~/.cache/tech-lead/<key>`): a delegate's leftover command, a dev
-  server, or a shell you opened there. Any it finds block the lock until
-  they are gone; it never kills them. In the
-  same way, a verify run or a dependency install that leaves a process
+  working directory in the lock's cache folder (`~/.cache/tech-lead/<key>`,
+  which holds the loop's clone) or in an old `.tech-lead/worktree`: a
+  delegate's leftover command, a dev server, or a shell you opened there.
+  Any it finds block the lock until they are gone; it never kills them. In
+  the same way, a verify run or a dependency install that leaves a process
   behind (its process group survives, or a process still runs in the
-  worktree) ends `lingering`, and the loop pauses instead of counting it
-  as a pass.
+  clone) ends `lingering`, and the loop pauses instead of counting it as a
+  pass.
 - **Status.** `node <plugin>/scripts/loop-lock.mjs status <project>`
   prints the last generation, its holder and whether it is alive, and every
   child record. It changes nothing.
@@ -637,6 +653,77 @@ on a project at a time, whichever runner started it.
   refuses and writes nothing. The next firing then stops every child the
   released generation left running (its process groups and Codex jobs)
   before it starts, and waits while any of them cannot be stopped.
+
+### The work area
+
+The loop works outside your project, in `~/.cache/tech-lead/<key>/`, where
+`<key>` is the project folder's name plus a hash of its real path (the
+lock's folder). Delegates and verify commands write inside `clone/`; every
+other file there is created and removed by the loop's helper scripts, apart
+from the set-aside folders that Troubleshooting has you make.
+`node <plugin>/scripts/loop-review.mjs paths <project>` prints the folder,
+the clone and the bundle folder.
+
+| Path | What it is |
+|---|---|
+| `identity.json` | The project this folder belongs to |
+| `lock/` | The [firing lock](#the-firing-lock) |
+| `clone/` | The loop's clone: a full clone of your project (`git clone --no-local`) where delegates and verify commands work, and the only place the loop branch lives. Its `.git/tech-lead-deps.ok` marks installed dependencies |
+| `out/<prefix>/<date>.bundle` | The delivery bundle of a day's loop branch, rewritten after each commit, with `<date>.bundle.json` (its tip and hash). A bundle that is replaced by unrelated history is kept as `<date>.bundle.prev-<stamp>` |
+| `run/<N>.json` | The run record of firing `<N>`: what it prepared, committed and saved, so the next firing can recover an interrupted one. Deleted once it is settled and in the ledger |
+| `run/refs.json` | The clone's refs as the last firing that deleted run records saw them, with the ignore rules the newest of those records recorded, so the next firing notices a ref changed in between, and lists files left in the clone under those rules, even when no run record is left. Rewritten by each such firing |
+| `patches/<sha>.patch` | A recovery bundle: an attempt's work that the loop saved before it reset the clone, with `rules-<sha>.json` (the ignore rules the save used). Nothing prunes them |
+| `clone.broken-<stamp>/`, `run.broken-<stamp>/`, `out.broken-<stamp>/` | A clone, run records or delivery bundles you set aside (see [Troubleshooting](#troubleshooting)); delete them once you have kept what you need |
+
+A recovery bundle is a binary `git diff` against the base commit that its
+first line names. `git apply` skips that header line, so you can replay a
+bundle onto a checkout of its base: `git apply --binary <file>`.
+
+### Reviewing loop work
+
+The loop commits only inside its clone, and never touches your branches.
+After each commit it writes the day's branch to a delivery bundle. Review it
+from your own terminal: the review commands refuse to run without one, so no
+firing can vouch for its own work.
+
+```sh
+node <plugin>/scripts/loop-review.mjs fetch <project>                    # all bundles, or --branch <prefix>/<date>
+git -C <project> log <base>..tech-lead/<prefix>/<date>                   # what the loop did
+git -C <project> diff <base>...tech-lead/<prefix>/<date>
+git -C <project> merge tech-lead/<prefix>/<date>                         # keep it (or cherry-pick)
+node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # reject it
+```
+
+- **`fetch`** checks each bundle first: exactly one branch, a tip that the
+  ledger records or that your repository already has, every prerequisite a
+  commit you already have, `git bundle verify`, and every object
+  fsck-checked (the whole bundle is read even when your repository already
+  holds its tip). Then it fetches the branch into
+  `refs/remotes/tech-lead/<prefix>/<date>`, never forced. Each bundle's
+  result is `fetched`, `current` (the ref already names its tip), `retired`
+  (its tip is one you retired, so nothing is fetched), or `refused` with
+  its reason, which makes the command exit 3. `--trust-unrecorded` accepts
+  a tip that the ledger does not name, once you have checked it yourself.
+- **`retire`** shows the branch's tip, asks you to type the branch name,
+  and records it as `refs/tech-lead/retired/<prefix>/<date>` in your
+  repository. The loop never builds on a retired tip again: the next firing
+  starts that day's branch afresh. The rejected work stays in the retired
+  ref and in its bundle file (a rewritten bundle keeps the old one as
+  `.prev-<stamp>`).
+  - After a retire, the next `fetch` replaces
+    `tech-lead/<prefix>/<date>` with the restarted branch (its result names
+    the old tip in `replaced`). Until then that ref still names the
+    rejected work: do not merge it.
+  - Retiring the same branch again, at its new tip, keeps the earlier
+    rejection as `refs/tech-lead/retired/<prefix>/<date>@<sha12>` (the
+    result's `kept`): a rejection is never dropped.
+  - A retirement stops counting once your base contains its tip (you merged
+    the work after all): later work on that branch is fetched again.
+- **Never run git inside the clone yourself**, and never pull from it
+  directly: the bundle is the way out.
+- **The work area lives under `~/.cache`.** Clearing that folder deletes
+  the clone, its run records, the recovery bundles, and every delivery
+  bundle you have not fetched yet.
 
 ### Safety
 
@@ -653,13 +740,24 @@ on a project at a time, whichever runner started it.
   - Infrastructure incidents park the item or pause the loop; they never
     retry in a loop.
 - **Where commits land.**
-  - Work is committed on `<branch_prefix>/<YYYY-MM-DD>` (UTC) inside
-    `.tech-lead/worktree`. Your working tree is not touched.
+  - Work is committed on `<branch_prefix>/<YYYY-MM-DD>` (UTC) inside the
+    loop's clone, `~/.cache/tech-lead/<key>/clone`. Your working tree,
+    your branches and your `.git` are not touched.
+  - After each commit the loop writes the day's branch to a delivery
+    bundle in `~/.cache/tech-lead/<key>/out/`, which you fetch (see
+    [Reviewing loop work](#reviewing-loop-work)).
   - Each day's branch starts from `base:` in `LOOP.md`, or from the newest
-    loop branch not yet merged into it, never from the branch you have
-    checked out.
-  - Loop commits carry no Co-Authored-By line. They are never pushed or
-    merged; reviewing and merging the loop branch is up to you.
+    loop branch not yet merged into it (and not retired by you), never from
+    the branch you have checked out.
+  - Loop commits use your git identity, carry a `Tech-Lead-Generation:`
+    trailer and no Co-Authored-By line. Your project's git hooks do not run
+    on them, so put the checks a hook enforces into `verify:`. They are
+    never pushed or merged; reviewing and merging the loop branch is up to
+    you.
+  - **Work is saved before it is reset.** When an attempt fails twice, a
+    delegate stops on a judgment call, or a firing is interrupted, the loop
+    saves the attempt's changes to a recovery bundle before it resets the
+    clone, and names the bundle's sha in `STATE.md`.
   - **Exception:** the one-time bootstrap commits the spine (`LOOP.md`,
     `STATE.md`, `LEDGER.jsonl`) and `.gitignore` on your current branch.
     After that the loop keeps updating those files and never commits them,
@@ -678,6 +776,8 @@ on a project at a time, whichever runner started it.
   after you have reviewed at least 20 logged rows.
 - **Never.**
   - Push, open PRs, or merge.
+  - Write your working tree or `.git` outside `.tech-lead/` (the one-time
+    bootstrap aside: its `.gitignore` lines and commit).
   - Run `rm -rf`, `git reset --hard`, or anything with `--force`.
   - Touch files outside `scope:`.
   - Execute a high-stakes decision, or answer a delegate's judgment call
@@ -689,6 +789,32 @@ The first run on a project bootstraps the spine interactively:
 - it detects your verify commands;
 - it builds the initial backlog with you;
 - it refuses to run on a dirty index.
+
+### Upgrading to 0.5.0
+
+0.5.0 moves the loop's work out of your project, into an isolated clone.
+
+- **Loop commits leave your repository.** Up to 0.4.x the loop committed in
+  `.tech-lead/worktree`, which shares your repository's branches. From
+  0.5.0 it commits in the clone, and you fetch its work (see
+  [Reviewing loop work](#reviewing-loop-work)).
+- **The first write-capable firing creates the clone,** and adopts the
+  dated loop branches your repository already has (and any you fetched into
+  `tech-lead/…`), so a day's branch keeps chaining.
+- **The old `.tech-lead/worktree` is left alone.** 0.5.0 never writes,
+  resets or removes it; a later release retires it. Uncommitted edits that
+  an interrupted 0.4.x firing left there are not carried over: check
+  `git -C <project>/.tech-lead/worktree status`, and keep what you need.
+- **Dependencies are installed once more,** in the clone. The old
+  `.tech-lead/worktree-deps.ok` is no longer read.
+- **Headless runs need one more permission:** file edits in the clone (see
+  [Running it](#running-it)).
+- **Your project's git hooks no longer run on loop commits.** Put their
+  checks into `verify:`.
+- **Git 2.40 or newer.** The clone reads git attributes only from the base
+  (`GIT_ATTR_SOURCE`), so a delegate's `.gitattributes` cannot hide a change
+  from a save. An older git pauses the loop with "clone infra"
+  (`git-too-old`) instead of saving without that protection.
 
 ## Troubleshooting
 
@@ -704,11 +830,24 @@ The first run on a project bootstraps the spine interactively:
 | The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
 | A firing ends at once and writes nothing, not even a ledger entry, and the loop goes on | The project's [firing lock](#the-firing-lock) is busy: another firing holds it (`holder-live`) or took it first (`race`), or a holder's liveness could not be read just now (`holder-unknown`) | Nothing: a live holder finishes on its own, and a later firing takes the lock. If it keeps happening, run `node <plugin>/scripts/loop-lock.mjs status <project>`: a holder that stays alive without running a firing (an interrupted turn in a session that stays open) needs the owner release |
 | A firing ends at once, writes nothing, and the runner stops | The lock needs you: an unreadable lock record (`corrupt`), a dispatch of an interrupted firing in this session still on record (`dispatch-open`), or a lock error (the printed `detail`, for example no holder process) | Run `node <plugin>/scripts/loop-lock.mjs status <project>`. If the firing that holds the lock is not running, use the owner release |
-| The runner stops with `child-live` | A child of an earlier firing could not be stopped (`alive`), or a process has its working directory inside `.tech-lead/worktree` or the lock's cache folder (`procs`): a delegate's leftover command, a dev server, or a shell you opened there. The lock waits until they are gone, and never kills a process it cannot prove is its own | End the listed processes yourself, or move your shells out of the worktree, then run the loop again |
-| The runner stops with `sweep-unknown` | The check for processes in the worktree could not run: `ps` or `lsof` (macOS) or `/proc` (Linux) failed or was denied | Make sure the runner can run `ps` and `lsof` (or read `/proc`), then run the loop again |
+| The runner stops with `child-live` | A child of an earlier firing could not be stopped (`alive`), or a process has its working directory inside the lock's cache folder (which holds the loop's clone) or an old `.tech-lead/worktree` (`procs`): a delegate's leftover command, a dev server, or a shell you opened there. The lock waits until they are gone, and never kills a process it cannot prove is its own | End the listed processes yourself, or move your shells out of the clone, then run the loop again |
+| The runner stops with `sweep-unknown` | The check for processes in the loop's clone and the lock's cache folder could not run: `ps` or `lsof` (macOS) or `/proc` (Linux) failed or was denied | Make sure the runner can run `ps` and `lsof` (or read `/proc`), then run the loop again |
 | The lock fails with `not-toplevel` | `.tech-lead/` sits in a subdirectory of a git repository, and the loop runs only at a repository's top level | Move the spine (`.tech-lead/`) to the repository's top level, and run the loop with that path |
-| The loop paused with "exec lingering", or "worktree deps" with a lingering incident | A verify run or the dependency install left a process running: its process group survived, or a process still has its working directory in `.tech-lead/worktree` (named in `## Last run`) | End those processes, then set `paused: false` |
-| The loop paused with "codex not quiet" | A Codex process may still be writing into `.tech-lead/worktree` (after a timeout, a failure, or an interrupted firing) | Run `node <plugin>/scripts/loop-codex.mjs quiesce --cwd <project>/.tech-lead/worktree` (the plugin folder this skill runs from); once it prints `"quiet": true`, set `paused: false`. `/codex:status` cannot see the worktree's jobs |
+| The loop paused with "exec lingering", or "clone deps" with a lingering incident | A verify run or the dependency install left a process running: its process group survived, or a process still has its working directory in the loop's clone (named in `## Last run`) | End those processes, then set `paused: false` |
+| The loop paused with "codex not quiet" | A Codex process may still be writing into the loop's clone (after a timeout, a failure, or an interrupted firing) | Run `node <plugin>/scripts/loop-codex.mjs quiesce --cwd <clone>`, with the clone path from the incident (or from `node <plugin>/scripts/loop-review.mjs paths <project>`) and the plugin folder this skill runs from; once it prints `"quiet": true`, set `paused: false`. `/codex:status` cannot see the clone's jobs |
+| The loop paused with "clone busy" | A process has its working directory in the loop's clone (named in `## Last run`). The loop never kills it | End it, or move your shell out of the clone, then set `paused: false` |
+| The loop paused with "clone invalid" or "clone tampered", or the recovery planner reports `clone-invalid` or `unknown-tip` | The clone is damaged, or something outside the loop changed it (a config key, a ref, a detached HEAD, a git storage path such as `.git/objects` replaced by a symbolic link, or HEAD moved off the base of an attempt the loop saved; named in `## Last run`) | Set the clone aside. Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`), fetch what the loop delivered (`node <plugin>/scripts/loop-review.mjs fetch <project>`), move the clone away with `mv <work area>/clone <work area>/clone.broken-<stamp>`, and set `paused: false`. The next firing makes a fresh clone; the old one keeps any uncommitted work |
+| The loop paused with "clone save-failed", "save failed" or "clone unsavable" | Work in the clone could not be saved to a recovery bundle, so nothing was reset: a special or unreadable file, a nested repository, a submodule (gitlink) changed or removed, a bundle over 512 MiB (`too-large`; the biggest file is in `largest`), or HEAD no longer at the attempt's base (`head-moved`). The paths are in `## Last run` | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`), and move the named paths out of the clone with plain `mv` (keep them if you need them). For a path whose reason is `gitlink` (a submodule), move out whatever stands there, then put back an empty folder with `mkdir <work area>/clone/<path>`. For `too-large`, move out the `largest` path, or set the clone aside (the "clone invalid" row). For `head-moved`, move nothing: the next firing rewinds a commit made on top of the base, and the recovery planner reports `unknown-tip` for any other HEAD (then set the clone aside). Then set `paused: false` |
+| The loop paused with "clone index-only" | The clone's index holds staged content found nowhere else (not in its files, the base, or any loop commit). The loop never discards it | Look at it with `node <plugin>/scripts/loop-clone.mjs git <project> -- diff --cached` (read-only) and keep what you need (`… -- show :<path>`). Then set the clone aside (the "clone invalid" row): moving files does not empty the index |
+| The loop paused with "recovery planner" or "run record corrupt" (`tampered`, `corrupt`, `record-from-the-future` or `bundle-check`) | A run record in the work area does not read, names a generation newer than the firing, or points at a recovery bundle that is missing or changed; or a delivery bundle or its sidecar could not be read (`bundle-check: <branch>: …`, for example a permission or disk error). Named in the incident; the item the firing held is back at the top of `## Backlog` | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`) and fetch what the loop delivered (`node <plugin>/scripts/loop-review.mjs fetch <project>`). For `corrupt` or `record-from-the-future`, move the named run record into `<work area>/run.broken-<stamp>/`. For `tampered`, the incident names the recovery bundle: find the run record that names its sha with `grep -l <sha> <work area>/run/*.json` and move that record the same way. If it was the newest record, the next firing may pause with "clone tampered", which the "clone invalid" row's set-aside fixes (you may also set the clone aside right away). Never move `run/refs.json`: it is the check that notices a ref changed in the clone. For `bundle-check`, make the named file under `<work area>/out/` readable again, or move the bundle and its `.json` sidecar into `<work area>/out.broken-<stamp>/` (the next firing writes the bundle again). Then set `paused: false`. In `STATE.md`, replace any `recovery:` sha that names a bundle you moved or lost with `none` |
+| The loop paused with "clone deps-dirty" | The dependency install changed files git does not ignore, for example a rewritten lockfile (named in `## Last run`) | Make the install leave tracked files alone (`npm ci`, not `npm install`), or ignore what it writes, then set `paused: false`. The next firing saves those files to a recovery bundle and resets them |
+| The loop paused with "work changed" | The clone's files changed between the loop's last check and its commit. The loop saved the work to a recovery bundle (its sha is on the item) and reset the clone | Find what wrote into the clone, then set `paused: false` |
+| The loop paused with "clone infra" and the incident names `git-too-old` | The loop needs a git that honours `GIT_ATTR_SOURCE` (git 2.40 or newer) to read attributes only from the base, so a delegate's `.gitattributes` cannot hide a change; this git does not | Upgrade git (check `git --version` on the runner's `PATH`), then set `paused: false` |
+| The loop paused with "clone infra" naming files the switch to the day's branch would overwrite | The new day's branch tracks a path where the clone holds a file its ignore rules ignore (for example output the base now commits). The loop never overwrites it | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`), move the named files out of the clone with plain `mv` (keep them if you need them), then set `paused: false` |
+| The loop paused with "clone unsafe-config", or "clone infra" or "save failed" naming `unsafe-config` | A filter or merge driver in your git config has a name the loop cannot switch off on its command line (it holds `=`, a line break, or bytes that are not UTF-8), so a git run in the clone could start that driver's program | Rename that `filter.<name>` or `merge.<name>` section of your git config, then set `paused: false` |
+| The loop paused with "clone excludes-file" (`excludes-file-in-work-area`) | Your `core.excludesFile` lies inside the project or the loop's work area, where a delegate could edit the rules that keep a file out of a save | Move the file elsewhere (for example `~/.config/git/ignore`), point `core.excludesFile` at it, then set `paused: false` |
+| Each firing's `## Last run` notes a clean-clone bundle of the same tool cache (for example `.pytest_cache`), and `close` keeps a record as `hidden` | A verify command creates a folder that ignores itself (its own `*` `.gitignore`), and your base `.gitignore` does not list it. The loop cannot tell that from a delegate hiding a file, so it saves and removes the folder each time | Add the folder to the `.gitignore` of your base branch |
+| The loop paused with "clone infra", "clone error" or "no base" | A git failure, a shallow repository, no git identity in your repository, a first clone that took longer than 540 s, or a base the loop cannot find (named in `## Last run`) | Fix the named cause (for example `git config user.name` and `user.email`, `git fetch --unshallow`, or `base:` in `LOOP.md`), then set `paused: false` |
 
 ## Releasing a new version
 
@@ -753,7 +892,7 @@ skills/
   quick/               /tech-lead:quick, the draft-PR lane
   panel/               /tech-lead:panel
   research/            /tech-lead:research
-  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, worktree contract)
+  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, clone contract)
 workflows/
   panel.js     tech-lead:panel-seats     (named apart from the /tech-lead:panel skill)
   fanout.js    tech-lead:fanout
@@ -768,7 +907,9 @@ templates/
 scripts/
   check.mjs              repository checks (node scripts/check.mjs)
   lib/, checks/          loader, stub Workflow runtime, the loop's shared helpers, and the check modules
-  loop-*.mjs             helpers the loop runs (text neutralizer, start-point, Codex job, firing lock, recovery planner)
+  loop-*.mjs             helpers the loop runs (text neutralizer, start point, Codex job, firing lock, recovery planner, clone)
+  reflex-bundle.mjs      recovery bundles: save the clone's work, then reset it
+  loop-review.mjs        your review of loop work: fetch and retire (your terminal only; no skill runs it)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 docs/superpowers/        design specs and implementation plans
 ```
