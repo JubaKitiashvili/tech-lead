@@ -71,6 +71,12 @@ otherwise: the firing resets it before it ends (loop §8), and the recovery
 planner (loop §1 step 5) reads any other text there as an interrupted
 item.
 
+**`## Last run`** is rewritten by every firing (loop §8). Besides what
+happened, it notes each recovery bundle the firing saved
+(`saved <why> bundle <sha12> (<n> files, <k> out of scope, <h> hidden)`),
+recovered work (a finished commit, a requeued item, a rewritten delivery
+bundle), rewound delegate commits, hidden paths and bundle errors.
+
 **Backlog item fields:**
 
 - `class:` ∈ `mechanical | hard | high-stakes | unclassified`. §4 appends a
@@ -79,6 +85,9 @@ item.
   - `waiting-infra` parks an item after an infra incident, such as Codex being
     unavailable. A human clears it.
 - `blocked-by:` names another item, or is `—`.
+- `recovery:` (optional) the full sha of the recovery bundle that holds the
+  item's last saved attempt, after a `codex` or `pause` save (loop §7, Save
+  and reset). A later save replaces it.
 
 **`## Done` item format:** `- [x] <title> · <sha> · <YYYY-MM-DD>`. Use `—` in
 the sha slot when `commits: []`. The list is ordered newest-first: prepend
@@ -86,7 +95,15 @@ each completion above the previous one, so the "trim to 20 most recent" step
 drops from the bottom.
 
 **`## Blocked` item format:**
-`- [ ] <title> · attempts: <n> · <one-line reason>`.
+
+```markdown
+- [ ] <title> · attempts: <n> · <one-line reason>
+  - recovery: <64hex>
+```
+
+The `recovery:` sub-bullet names the recovery bundle that holds the second
+attempt's work (loop §7, Save and reset); it is `none` when that save found
+nothing to keep.
 
 **`## Needs decision` entry format:**
 
@@ -106,8 +123,15 @@ line, with these fields:
 ### <task title>
 **Flagged by:** <fast-worker | codex> — the delegate stopped on a judgment call
 **Questions:** <each question> — suggested default: <delegate's default>
+**Recovery:** <64hex> · base <oid> · item-digest none · scope <digest>
 **Decision:** (fill in to release the task back to the backlog)
 ```
+
+The `**Recovery:**` line binds the entry to the recovery bundle that holds
+the delegate's work (loop §7, Save and reset): the save's `sha`, its `base`
+commit and its `scope.digest`. When the save found nothing (`empty`), the
+sha's place holds `none`, and the `base` and `scope.digest` are the ones the
+empty answer carries. The item digest stays `none` until items carry ids.
 
 Every field a seat or a delegate wrote (the seat lines, the questions and the
 suggested defaults) is passed through `loop-text.mjs line` before it is
@@ -118,9 +142,11 @@ A warning line is added to the entry when the project tree changed during a
 panel (loop §5):
 `**WARNING:** project content changed during the panel — check before unpausing.`
 
-Panel and Codex briefs live in `.tech-lead/briefs/<slug>.md`. The
-dependency marker is `.tech-lead/worktree-deps.ok`. Both are gitignored at
-bootstrap, and the loop never commits them.
+Panel and Codex briefs live in `.tech-lead/briefs/<slug>.md`, and commit
+subjects in `.tech-lead/briefs/<slug>.subject`. The briefs folder is
+gitignored at bootstrap, and the loop never commits it. The dependency
+marker is `.git/tech-lead-deps.ok` inside the loop's clone, and only
+`loop-clone.mjs` writes it (`clone.md` step 5).
 
 ## LEDGER.jsonl entry schema
 
@@ -141,13 +167,30 @@ generation over while it ran). Those are the only exceptions:
             "derived": "<class|null>", "signals": {…}, "checker_reason": "<string|null>",
             "agreement": "<agree|escalated|checker-lower|no-verdict>", "final": "<class>"},
  "panel": {"seat_a": "<opus|sonnet|null>", "seat_b": "<codex|empty>", "agreement": "<agree|disagree|single-seat|no-seats>"},
+ "bundles": [{"branch": "<prefix>/<YYYY-MM-DD>", "tip": "<sha>", "file": "<path in the work area>", "sha256": "<hex>", "why": "<commit|regenerated>"}],
+ "saves": [{"sha": "<64 hex>", "why": "<clean-clone|delegate-flagged|codex|attempt-failed|pause>", "files": <int>, "out_of_scope": <int>}],
+ "recovered": {"generations": [<int>], "action": "<finish-commit|requeue-now|null>", "commits": ["<sha>"], "bundles": ["<64 hex>"], "task": "<the interrupted Now line or null>"},
  "workflow_run_id": "<runId or null>"}
 ```
 
 **Field rules:**
 
-- `reason`, `models`, `triage`, `panel` and `workflow_run_id` are null or
-  absent when they do not apply. Older entries without them remain valid.
+- `reason`, `models`, `triage`, `panel`, `bundles`, `saves`, `recovered`
+  and `workflow_run_id` are null or absent when they do not apply. Older
+  entries without them remain valid.
+- `commits` holds only this firing's own commits. A commit an interrupted
+  firing made goes into `recovered.commits`.
+- `bundles` lists the delivery bundles this firing wrote: its commit's
+  (`why: "commit"`), and each one rewritten by clone preparation or by the
+  planner's `write-bundle` action (`"regenerated"`). `file` is relative to
+  the work area (`~/.cache/tech-lead/<key>/`).
+- `saves` lists every recovery bundle this firing saved, clone
+  preparation's `clean-clone` saves included; `files` and `out_of_scope`
+  are counts.
+- `recovered` carries what the recovery planner (loop §1 step 5) found that
+  no ledger entry named: the interrupted `generations`, the `## Now`
+  `action` taken, their `commits` and recovery `bundles`, and the
+  interrupted `task` line.
 - `iteration` is the firing's lock generation `<N>` (loop §1 step 3). It
   strictly increases, and gaps are allowed: a firing that was interrupted
   before its append, or that lost its lock, leaves one. Acquire takes one
@@ -170,10 +213,13 @@ generation over while it ran). Those are the only exceptions:
   outcome is `done`, `failed`, `blocked`, `flagged`, `report-only` or
   `needs-decision`. `halted` and `skipped` do not count.
 - **Infra incidents** never retry in a loop. A missing Codex parks the item
-  (`waiting-infra`). A dependency-install failure, a missing base, a
-  worktree that `loop-codex.mjs quiesce` cannot show quiet, an `exec` run
-  that left a process behind (`lingering`), or a lock error from
-  `dispatch open` or `dispatch close` sets `paused: true`.
+  (`waiting-infra`). A dependency-install failure, a missing base, a clone
+  that `loop-codex.mjs quiesce` cannot show quiet, an invalid or tampered
+  clone, a save to a recovery bundle that failed, a git too old for the
+  clone (`git-too-old`), a switch to today's branch that would overwrite
+  ignored files, an `exec` run that left a process behind (`lingering`), or
+  a lock error from `dispatch open` or `dispatch close` sets
+  `paused: true`.
 
 ## Project .gitignore addition (bootstrap)
 
