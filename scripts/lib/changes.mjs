@@ -46,7 +46,11 @@
 // is not listed even when they differ from what a checkout writes (LF bytes in an eol=crlf or
 // core.autocrlf file). Those bytes already have a durable home in the base, and listing them
 // would stall every save: the save captures a tree equal to the base and returns empty while
-// collect would stay dirty. Only files a conversion can touch are compared (core.autocrlf set,
+// collect would stay dirty. The same rule applies to git's own diff, in collect and touched alike:
+// a file git calls modified whose mode is unchanged and whose raw bytes equal the base blob (a
+// CRLF blob committed before `* text eol=lf` reads modified right after a clean checkout) is
+// neither saved, touched, committed nor counted against a clean clone; an edit to that file is
+// listed as usual. Only files a conversion can touch are compared (core.autocrlf set,
 // or a text, eol, crlf, ident or working-tree-encoding attribute); with core.filemode false, an
 // exec bit that differs from the base mode is listed too.
 //
@@ -622,11 +626,25 @@ export function listUntracked(wt, { base, rules, nonce = newNonce() } = {}) {
 // Tracked paths whose work-tree state differs from the base (independent of HEAD: loop04), from
 // a fresh index of the base (no stat data, so every file is compared by content).
 // A gitlink's commit change is seen; nothing inside a nested repository is looked at (R26).
+// A modified regular file whose raw bytes equal the base blob is dropped (R29a, see the header).
 function trackedChanges(wt, idx, baseOid, opts) {
   git(wt, ['read-tree', baseOid], { ...opts, indexFile: idx })
   git(wt, ['update-index', '-q', '--ignore-submodules', '--refresh'], { ...opts, indexFile: idx })
   const out = git(wt, ['diff-index', '-z', '--raw', '--no-renames', '--ignore-submodules=dirty', baseOid], { ...opts, indexFile: idx, buffer: true })
-  return parseRaw(out)
+  return dropRawEqual(wt, parseRaw(out))
+}
+
+// The records of git's diff less each regular file git calls modified with an unchanged mode
+// whose raw bytes hash to the base blob: a blob its own attributes would normalize (CRLF committed
+// before `* text eol=lf`) reads modified right after a clean checkout, yet nothing changed.
+function dropRawEqual(wt, recs) {
+  const stat = treeStat(wt.W)
+  const cand = recs.filter(r => r.status === 'M' && r.oldMode === r.newMode && (r.oldMode === '100644' || r.oldMode === '100755') &&
+    stat(r.path).kind === 'file' && readable(stat.root, r.path))
+  if (!cand.length) return recs
+  const oids = hashFiles(wt, cand.map(r => r.path), { write: false })
+  const same = new Set(cand.filter((r, n) => oids[n] === r.oldOid).map(r => key(r.path)))
+  return same.size ? recs.filter(r => !same.has(key(r.path))) : recs
 }
 
 // ---------------------------------------------------------------- raw comparison (R29)
