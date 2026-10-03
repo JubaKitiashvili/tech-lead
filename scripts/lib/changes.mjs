@@ -63,7 +63,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { assertAttrSource, workGit, workGitRun } from './git-safe.mjs'
 import { loopPaths } from './loop-paths.mjs'
-import { tempDir } from './atomic.mjs'
+import { storageDir, tempDir } from './atomic.mjs'
 import { canonicalJson, sha256Hex } from './canonical.mjs'
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
@@ -1080,7 +1080,8 @@ export function touched(wt, { base, rules = null, also = [] } = {}) {
 // ---------------------------------------------------------------- the work tree
 
 // The clone layout (0c-4 adds `legacy`): <W> = loopPaths(P).W with a real <W>/.git directory;
-// store = <V>/patches (created). Anything else is refused `layout`.
+// store = <V>/patches (created; atomic.storageDir, so a symlink there throws CLONE_INVALID
+// before any temp is allocated in it). Anything else is refused `layout`.
 export function openWorkTree(P, { env = process.env } = {}) {
   const paths = loopPaths(P, { env })
   const gitDir = path.join(paths.W, '.git')
@@ -1091,7 +1092,6 @@ export function openWorkTree(P, { env = process.env } = {}) {
     throw refused('layout', `${paths.W} is not a loop clone (${e.code || e.message})`)
   }
   if (!st.isDirectory()) throw refused('layout', `${gitDir} is not a directory`)
-  const store = path.join(paths.V, 'patches')
-  fs.mkdirSync(store, { recursive: true, mode: 0o700 })
+  const store = storageDir(paths.V, path.join(paths.V, 'patches'), { create: true })
   return { P, R: paths.R, S: paths.S, V: paths.V, W: paths.W, store, env }
 }

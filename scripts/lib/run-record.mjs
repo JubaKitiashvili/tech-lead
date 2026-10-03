@@ -54,6 +54,8 @@
 //   committedSha(rec) -> rec.commit?.sha ?? rec.intent?.commit ?? null.
 //   vettedTip({records, ledger, branch, tip, inBase}) -> boolean (see below; R28).
 //   cloneVerdict(rec | null, facts) -> {verdict, generation, ...} (pure; see below).
+// <V>/run is checked with atomic.storageDir before create, update and delete write there: a
+// symlink at <V>/run throws CLONE_INVALID and nothing is written.
 // A record that would not pass the schema is never written: create and update throw
 // 'bad-record: <why>' (code BAD_RECORD) and leave the file as it was. guard (optional, R31):
 // the caller's assertHeld, passed to atomic's createExclusive / writeReplace, which call it
@@ -61,7 +63,7 @@
 // is written.
 import fs from 'node:fs'
 import path from 'node:path'
-import { createExclusive, readJson, writeReplace } from './atomic.mjs'
+import { createExclusive, readJson, storageDir, writeReplace } from './atomic.mjs'
 import { DATED_BRANCH_RE } from './clone-check.mjs'
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -343,12 +345,8 @@ export function createRecord(paths, N, fields = {}, opts = {}) {
     recovery: null, ...fields,
     generation: N, recovery: withRecoveryDefaults(fields.recovery ?? null), created_at: now, updated_at: now,
   }, N)
-  // <V> itself is ensureV's; only run/ is made here, owner-only.
-  try {
-    fs.mkdirSync(path.dirname(file), { mode: 0o700 })
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e
-  }
+  // <V> itself is ensureV's; only run/ is made here, owner-only, and never through a symlink.
+  storageDir(paths.V, path.dirname(file), { create: true })
   return createExclusive(file, rec, { guard: opts?.guard })
 }
 
@@ -372,6 +370,7 @@ export function updateRecord(paths, N, patch, opts = {}) {
   const kept = new Set(anchors(rec))
   const lost = anchors(cur).filter(sha => !kept.has(sha))
   if (lost.length) throw badRecord(`the update would drop the anchored sha ${lost.join(', ')}`)
+  storageDir(paths.V, path.dirname(file))
   writeReplace(file, rec, { guard: opts?.guard })
   return rec
 }
@@ -391,6 +390,7 @@ function fsyncDir(dir) {
 
 export function deleteRecord(paths, N) {
   const file = recordFile(paths, N)
+  if (!storageDir(paths.V, path.dirname(file))) return false
   try {
     fs.unlinkSync(file)
   } catch (e) {

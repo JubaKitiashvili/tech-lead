@@ -45,6 +45,10 @@
 //                                    sidecar and after its temp's fsync (right before its
 //                                    rename); the ancestry check runs before all of them.
 //                                    guard is required: without a function, TypeError.
+//                                    <V>/out/<prefix> is made and checked with
+//                                    atomic.storageDir first: a symlinked component throws
+//                                    CLONE_INVALID (syncBundles reports it as that branch's
+//                                    error) and nothing is written.
 //   syncBundles(paths, {vetted, retired, base = BASE_REF, why = 'regenerated', guard})
 //                                    -> [{branch, result}] for every dated refs/heads/* in <W>,
 //                                    in ref order; see the function. guard is required
@@ -53,7 +57,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { workGit, workGitRun } from './git-safe.mjs'
-import { readJson, tempFile, writeReplace } from './atomic.mjs'
+import { readJson, storageDir, tempFile, writeReplace } from './atomic.mjs'
 import { DATED_BRANCH_RE } from './clone-check.mjs'
 import { fault } from './fault.mjs'
 import { containedIn, retiredRefs, validPrefix } from '../loop-start.mjs'
@@ -309,8 +313,7 @@ export function writeBundle(paths, branch, { why, tip: expect, guard } = {}) {
   if (expect !== undefined && tip !== expect) throw moved(tip)
   if (workGit(W, ['rev-list', '--count', `${BASE_REF}..${tip}`]) === '0') return { empty: true }
 
-  const dir = path.dirname(file)
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const dir = storageDir(paths.V, path.dirname(file), { create: true })
   const tmp = tempFile(dir, '.bundle')
   let renamed = false
   let digest
