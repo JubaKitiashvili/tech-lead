@@ -58,9 +58,9 @@
 //       runs inside a nested repository (status and diff get --ignore-submodules=dirty; the
 //       options that override it or inspect nested repositories, their --no- forms included,
 //       and describe --dirty/--broken, are refused), runs no filter program (drivers emptied,
-//       attributes read from HEAD) and no merge driver (drivers emptied, --remerge-diff and
-//       --diff-merges=remerge refused, log.diffMerges pinned), and reads a private copy of the
-//       index, so <W>/.git/index is never written.
+//       attributes read from HEAD), no textconv (status -v refused) and no merge driver
+//       (drivers emptied, --remerge-diff and --diff-merges=remerge refused, log.diffMerges
+//       pinned), and reads a private copy of the index, so <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
 // commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
@@ -121,8 +121,11 @@ const FORBIDDEN_LONG = ['output', 'ext-diff', 'textconv', 'filters', 'open-files
 // is --remerge-diff. m and on take log.diffMerges, which PASS_CONFIG pins.
 const DIFF_MERGES_OK = new Set(['off', 'none', '1', 'first-parent', 'separate', 'c', 'combined', 'cc', 'dense-combined', 'm', 'on'])
 // Refused for one subcommand: describe --dirty refreshes and writes the index and looks inside
-// every gitlink; --broken runs git diff-index as a child.
-const FORBIDDEN_BY_SUB = Object.freeze({ describe: ['dirty', 'broken'] })
+// every gitlink; --broken runs git diff-index as a child; status --verbose (-v) diffs the
+// changes with textconv on, and status takes no --no-textconv.
+const FORBIDDEN_BY_SUB = Object.freeze({ describe: ['dirty', 'broken'], status: ['verbose'] })
+// Short options refused in any cluster (-sv): -O for every subcommand, and these per subcommand.
+const FORBIDDEN_SHORT_BY_SUB = Object.freeze({ status: 'v' })
 // The subcommands that read a gitlink's work tree unless told not to: --ignore-submodules=dirty
 // goes right after the subcommand (a gitlink's commit change is still shown, R26).
 const PIN_SUBMODULES = new Set(['status', 'diff'])
@@ -135,12 +138,13 @@ const PASS_CONFIG = Object.freeze(['status.submoduleSummary=false', 'diff.submod
 // Real options that are also prefixes of a forbidden one (an exact name never abbreviates).
 const LONG_EXACT_OK = new Set(['text', 'filter'])
 // The forbidden names whose negation (--no-<name>, or an abbreviation of it) the passthrough
-// still allows: each only turns off what workGit pins off already. Every other negation of a
-// forbidden name is refused, since git takes the last spelling of an option: status
-// --no-ignore-submodules clears the pinned --ignore-submodules=dirty and looks inside every
-// populated gitlink again (R26). The pin itself stays right after the subcommand; at the end it
-// could be swallowed as the value of a caller's option that takes one (diff -S, --stat-width).
-const NEG_OK = new Set(['ext-diff', 'textconv'])
+// still allows: each only turns something off (ext-diff and textconv what workGit pins off
+// already). Every other negation of a forbidden name is refused, since git takes the last
+// spelling of an option: status --no-ignore-submodules clears the pinned
+// --ignore-submodules=dirty and looks inside every populated gitlink again (R26). The pin
+// itself stays right after the subcommand; at the end it could be swallowed as the value of a
+// caller's option that takes one (diff -S, --stat-width).
+const NEG_OK = new Set(['ext-diff', 'textconv', 'verbose'])
 
 const isPlain = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 // The errors of a lost (or unknowable) firing lock: they always propagate as they are (R31).
@@ -1577,7 +1581,9 @@ function passRefusal(arg, sub) {
     }
     return null
   }
-  if (arg.startsWith('-') && arg.length > 1 && arg.slice(1).includes('O')) return `${arg}: -O is not allowed`
+  if (arg.startsWith('-') && arg.length > 1) {
+    for (const c of `O${FORBIDDEN_SHORT_BY_SUB[sub] ?? ''}`) if (arg.slice(1).includes(c)) return `${arg}: -${c} is not allowed`
+  }
   return null
 }
 
