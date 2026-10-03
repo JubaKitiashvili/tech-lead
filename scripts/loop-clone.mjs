@@ -63,7 +63,8 @@
 //       attributes read from HEAD), no textconv (status -v refused) and no merge driver
 //       (drivers emptied, --remerge-diff and --diff-merges=remerge refused, log.diffMerges
 //       pinned), and reads a private copy of the index (in a temporary directory of
-//       <V>/patches, never under os.tmpdir()), so <W>/.git/index is never written.
+//       <V>/patches, never under os.tmpdir(); git's TMPDIR is that directory too), so
+//       <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
 // commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
@@ -1685,7 +1686,8 @@ function gitPassthrough(argv, env, trace = {}) {
   if (!at) return refuse(`${W} has no HEAD commit to read attributes from`)
   // In the work area, never under os.tmpdir() (a TMPDIR inside <P> would take a write): a
   // temporary directory of <V>/patches, which prepare's gone-pid sweep removes when this run is
-  // killed before its own removal.
+  // killed before its own removal. git's own temporary files (a signature check writes the
+  // signature to TMPDIR before it runs the verifier) go there too: TMPDIR is that directory.
   let dir
   try {
     dir = tempDir(storageDir(paths.V, path.join(paths.V, 'patches'), { create: true }))
@@ -1698,7 +1700,7 @@ function gitPassthrough(argv, env, trace = {}) {
     if (!indexFile) return refuse(`clone-invalid: ${W}/.git/index is not a regular file`)
     // diff, log and show get --no-ext-diff --no-textconv from workGit itself.
     const args = [sub, ...(sub === 'blame' ? ['--no-textconv'] : PIN_SUBMODULES.has(sub) ? ['--ignore-submodules=dirty'] : []), ...rest]
-    const r = workGitRun(W, args, { outFd: 1, config, indexFile, env: { ...trace, GIT_ATTR_SOURCE: at } })
+    const r = workGitRun(W, args, { outFd: 1, config, indexFile, env: { ...trace, GIT_ATTR_SOURCE: at, TMPDIR: dir } })
     if (r.stderr) process.stderr.write(r.stderr)
     if (r.code === 'CLONE_INVALID') return refuse(r.error)
     if (r.code) return fail(r.error)
