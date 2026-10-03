@@ -4,8 +4,9 @@
 // preload, tests/fixtures/fsync-hook.cjs, kills it right after that fsync). The guard inside the
 // atomic publication runs after the fsync, so nothing is published, the temp is gone and the
 // helper reports not-holder. Covered: the save's run-record write and bundle link
-// (reflex-bundle.mjs), deps --mark, close's run anchor, and writeBundle's sidecar. Real
-// repositories and processes, a held lock.
+// (reflex-bundle.mjs), deps --mark, close's run anchor, writeBundle's sidecar, and the clone
+// helper's own record writes (prepare's new record, check --after deps's rules, commit's intent).
+// Real repositories and processes, a held lock.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -13,7 +14,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import {
-  D2, PREFIX, T, appendLedger, attempt, check, firing, prepare, project, recordOf, run, write,
+  D2, PREFIX, T, appendLedger, attempt, check, commitCli, firing, prepare, prepareArgs, project, recordOf, run, tipOf, write,
 } from './loop-clone-fixture.mjs'
 import { sidecarPath, writeBundle } from '../../scripts/lib/delivery.mjs'
 
@@ -132,4 +133,50 @@ test('writeBundle: the guard runs again after the sidecar\'s fsync, right before
   assert.equal(JSON.parse(seen[2][0]).tip.length, 40, 'it held the whole sidecar')
   assert.equal(fs.existsSync(side), false, 'no sidecar is published')
   assert.deepEqual(temps(dir), [], 'no temp is left')
+})
+
+test('prepare: a lock lost during the new run record\'s fsync creates no record; not-holder (F6)', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  const runDir = path.join(fx.V, 'run')
+  fs.mkdirSync(runDir, { recursive: true })
+  const h = hooked(fx, { dir: runDir })
+  const out = run(h.env, 3, ...prepareArgs(fx))
+  assert.equal(h.fired().length, 1, 'the holder was killed during the record\'s fsync')
+  assert.equal(out.state, 'not-holder')
+  assert.equal(recordOf(fx), null, 'no record of this generation')
+  assert.deepEqual(temps(runDir), [])
+})
+
+test('check --after deps: a lock lost during the record\'s fsync leaves the record as it was; not-holder (F6)', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  prepare(fx)
+  const runDir = path.join(fx.V, 'run')
+  const before = recordOf(fx)
+  const h = hooked(fx, { dir: runDir })
+  const out = check(fx, 'deps', { status: 3, env: h.env })
+  assert.equal(h.fired().length, 1, 'the holder was killed during the record\'s fsync')
+  assert.equal(out.state, 'not-holder')
+  assert.deepEqual(recordOf(fx), before, 'the record is unchanged')
+  assert.deepEqual(temps(runDir), [])
+})
+
+test('commit: a lock lost during the intent\'s fsync records no intent and moves no ref; not-holder (F6)', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  prepare(fx)
+  check(fx, 'deps')
+  write(fx.W, 'one.txt', '1\n')
+  const c = check(fx, 'dispatch')
+  const runDir = path.join(fx.V, 'run')
+  const before = recordOf(fx)
+  const head = tipOf(fx.W)
+  const h = hooked(fx, { dir: runDir })
+  const out = commitCli(fx, c.digest, { status: 3, env: h.env })
+  assert.equal(h.fired().length, 1, 'the holder was killed during the intent\'s fsync')
+  assert.equal(out.state, 'not-holder')
+  assert.deepEqual(recordOf(fx), before, 'no intent is recorded')
+  assert.equal(tipOf(fx.W), head, 'the branch did not move')
+  assert.deepEqual(temps(runDir), [])
 })

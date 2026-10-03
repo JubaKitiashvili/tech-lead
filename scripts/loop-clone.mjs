@@ -38,7 +38,8 @@
 //       then the delivery bundle. Exit 0 {state:'committed', sha, branch, bundle, bundleError} |
 //       {state:'unchanged'}; exit 3 no-attempt, work-changed, out-of-scope {paths}, index-only
 //       {paths}, tampered, clone-invalid, commit-failed (a read-tree of the commit or its
-//       compare-and-swap failed: the intent is cleared and the attempt stays open).
+//       compare-and-swap failed, the rollback read-tree too: the intent is cleared and the
+//       attempt stays open).
 //   bundle <P> --generation <N> --branch <b>
 //       {state:'bundled', bundle} | {state:'current'}; exit 3 unvetted, clone-invalid.
 //   close <P> --generation <N>
@@ -401,7 +402,7 @@ export function ensureClone(paths, { generation, prefix, date, base, env = proce
       assertHeld(paths, generation, env)
       updateRecord(paths, generation, rec => ({
         ...rec, adopted: [...rec.adopted, ...adoption.adopted.map(a => ({ ref: `refs/heads/${a.branch}`, tip: a.tip }))],
-      }))
+      }), { guard: () => assertHeld(paths, generation, env) })
     }
     const rot = rotate(paths, tmp, { prefix, date, generation, env, extra: adoptedTips })
     notes.push(...rot.notes)
@@ -780,7 +781,7 @@ class Recovery {
           step: cur.step ?? 'done', note: null, ...patch, by: this.N,
         },
       }
-    })
+    }, { guard: () => this.assertHeld() })
   }
 
   done(base) {
@@ -801,7 +802,7 @@ class Recovery {
     updateRecord(this.paths, this.N, rec => ({
       ...rec, phase: 'saved', base,
       saves: rec.saves.some(s => s.sha === sha) ? rec.saves : [...rec.saves, { sha, why: 'clean-clone' }],
-    }))
+    }), { guard: () => this.assertHeld() })
   }
 
   save(base, rules, also) {
@@ -924,7 +925,7 @@ class Recovery {
         return
       case 'committed':
         this.assertHeld()
-        updateRecord(this.paths, r.generation, rec => ({ ...rec, phase: 'committed', commit: { sha: v.sha } }))
+        updateRecord(this.paths, r.generation, rec => ({ ...rec, phase: 'committed', commit: { sha: v.sha } }), { guard: () => this.assertHeld() })
         this.leftovers(v.base, v.rules, v.also)
         return
       case 'delegate-commit':
@@ -963,7 +964,7 @@ function resolveLeftovers(ctx) {
     if (x === r) continue
     assertHeld(paths, N, env)
     // Laid over x's recovery: updateRecord keeps every anchor (saves, bundles, resets) it holds.
-    updateRecord(paths, x.generation, { recovery: { by: N, step: 'done', note: 'superseded' } })
+    updateRecord(paths, x.generation, { recovery: { by: N, step: 'done', note: 'superseded' } }, { guard: () => assertHeld(paths, N, env) })
     notes.push(`generation ${x.generation} superseded by generation ${r.generation}`)
   }
   const wt = openWorkTree(paths.P, { env })
@@ -1008,11 +1009,11 @@ async function prepareCmd(a, env) {
   if (!lstatOrNull(W)) {
     preflight(paths)
     assertHeld(paths, N, env)
-    createRecord(paths, N, { phase: 'preparing', pre_head: null })
+    createRecord(paths, N, { phase: 'preparing', pre_head: null }, { guard: () => assertHeld(paths, N, env) })
     fault('prepare:after-preparing')
     for (const x of listRecords(paths).filter(x => x.generation < N && !isResolved(x))) {
       assertHeld(paths, N, env)
-      updateRecord(paths, x.generation, { recovery: { by: N, step: 'done', note: 'clone-missing' } })
+      updateRecord(paths, x.generation, { recovery: { by: N, step: 'done', note: 'clone-missing' } }, { guard: () => assertHeld(paths, N, env) })
       notes.push(`clone missing: generation ${x.generation}'s uncommitted work was not saved`)
     }
     made = ensureClone(paths, { generation: N, prefix, date, base: a.base, env })
@@ -1035,7 +1036,7 @@ async function prepareCmd(a, env) {
     fault('prepare:after-locks')
     const preHead = revParse(W, 'HEAD^{commit}')
     assertHeld(paths, N, env)
-    createRecord(paths, N, { phase: 'preparing', pre_head: preHead })
+    createRecord(paths, N, { phase: 'preparing', pre_head: preHead }, { guard: () => assertHeld(paths, N, env) })
     fault('prepare:after-preparing')
     resolveLeftovers(ctx)
   }
@@ -1074,7 +1075,7 @@ async function prepareCmd(a, env) {
     refs: refsSnapshot(W).refs, meta_sha: cloneMeta(W), now_sha256: nowSha(paths),
   }
   assertHeld(paths, N, env)
-  updateRecord(paths, N, fields)
+  updateRecord(paths, N, fields, { guard: () => assertHeld(paths, N, env) })
   fault('prepare:after-record')
   return {
     state: 'ready', W, branch, base: baseInfo.base, baseSha, head, startPoint: rot.startPoint ?? null, chainedFrom: rot.chainedFrom ?? null,
@@ -1195,7 +1196,7 @@ function checkCmd(a, env) {
     const io = indexOnly(wt, { base, also: present(W, [tip, ...knownCommits(rec)].filter(o => o !== base)) })
     if (io.length) throw refused('index-only', `staged content found nowhere else: ${io.length} path(s)`, { paths: io.slice(0, LIST_MAX) })
     assertHeld(paths, N, env)
-    updateRecord(paths, N, r => ({ ...r, delegate_commits: r.delegate_commits.includes(tip) ? r.delegate_commits : [...r.delegate_commits, tip] }))
+    updateRecord(paths, N, r => ({ ...r, delegate_commits: r.delegate_commits.includes(tip) ? r.delegate_commits : [...r.delegate_commits, tip] }), { guard: () => assertHeld(paths, N, env) })
     assertHeld(paths, N, env)
     const cas = workGitRun(W, ['update-ref', rec.head_ref, base, tip])
     if (cas.code || cas.status !== 0) throw refused('tampered', `the rewind of ${rec.head_ref} failed: ${cas.error || String(cas.stderr).trim()}`)
@@ -1221,7 +1222,7 @@ function checkCmd(a, env) {
     if (t.paths.length) throw refused('deps-dirty', `the dependency preparation changed ${t.paths.length} path(s)`, { paths: t.paths.slice(0, LIST_MAX) })
     const rules = cur.rules ?? recordRules(wt, { base })
     assertHeld(paths, N, env)
-    updateRecord(paths, N, r => ({ ...r, rules, meta_sha: meta }))
+    updateRecord(paths, N, r => ({ ...r, rules, meta_sha: meta }), { guard: () => assertHeld(paths, N, env) })
   }
   const { scope, out } = scopeOf(paths, W, t.paths)
   const tc = capped(t.paths)
@@ -1264,7 +1265,7 @@ function commitCmd(a, env) {
   if (t.digest !== a.digest) throw refused('work-changed', 'the touched set differs from the one check reported')
   if (!t.paths.length) {
     assertHeld(paths, N, env)
-    updateRecord(paths, N, r => ({ ...r, phase: 'clean' }))
+    updateRecord(paths, N, r => ({ ...r, phase: 'clean' }), { guard: () => assertHeld(paths, N, env) })
     return { state: 'unchanged' }
   }
   const { out } = scopeOf(paths, W, t.paths)
@@ -1286,7 +1287,7 @@ function commitCmd(a, env) {
   }
   const guard = () => assertHeld(paths, N, env)
   guard()
-  updateRecord(paths, N, r => ({ ...r, phase: 'intent', intent: { tree: T, parent: H0, commit: C } }))
+  updateRecord(paths, N, r => ({ ...r, phase: 'intent', intent: { tree: T, parent: H0, commit: C } }), { guard })
   fault('commit:after-intent')
   guard()
   try {
@@ -1296,7 +1297,7 @@ function commitCmd(a, env) {
     // intent is cleared, as a failed compare-and-swap clears it, so the attempt stays open (loop
     // section 7 retries or saves it) and the next firing reads a prepared record.
     guard()
-    updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }))
+    updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }), { guard })
     if (e.code === 'CLONE_INVALID') throw e
     throw refused('commit-failed', String(e.message).trim())
   }
@@ -1304,16 +1305,28 @@ function commitCmd(a, env) {
   const cas = workGitRun(W, ['update-ref', rec.head_ref, C, H0])
   if (cas.code || cas.status !== 0) {
     guard()
-    // A failure here leaves the intent: the index holds C, and the next firing's recovery reads
-    // that (rule 6, C among the commits the index may match) as leftovers against H0.
-    workGit(W, ['read-tree', H0])
+    // When the rollback read-tree fails too, the index still holds C's tree, which is the work
+    // tree's content: the intent is cleared all the same, so the attempt stays open in this firing
+    // and the next firing's recovery reads a prepared record with a dirty index (leftovers,
+    // saved and reset).
+    let rollback = ''
+    try {
+      workGit(W, ['read-tree', H0])
+    } catch (e) {
+      if (e.code === 'CLONE_INVALID') {
+        guard()
+        updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }), { guard })
+        throw e
+      }
+      rollback = `; ${String(e.message).trim()}`
+    }
     guard()
-    updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }))
-    throw refused('commit-failed', `update-ref ${rec.head_ref}: ${cas.error || String(cas.stderr).trim()}`)
+    updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }), { guard })
+    throw refused('commit-failed', `update-ref ${rec.head_ref}: ${cas.error || String(cas.stderr).trim()}${rollback}`)
   }
   fault('commit:after-update-ref')
   guard()
-  updateRecord(paths, N, r => ({ ...r, phase: 'committed', commit: { sha: C }, refs: { ...r.refs, [r.head_ref]: C } }))
+  updateRecord(paths, N, r => ({ ...r, phase: 'committed', commit: { sha: C }, refs: { ...r.refs, [r.head_ref]: C } }), { guard })
   fault('commit:after-record')
   let bundle = null
   let bundleError = null
