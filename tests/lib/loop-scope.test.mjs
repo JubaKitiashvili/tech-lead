@@ -7,6 +7,7 @@
 // whose real path stays inside the root, invalid or unreadable marks every path out; R7:
 // .tech-lead/ is always out). Every spec section 11 scope case is here: each whole spelling,
 // a .. entry, an absolute path and a prefix-sibling directory.
+import '../helpers.mjs' // scrubs inherited git routing variables from process.env before any other module loads
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
