@@ -113,3 +113,53 @@ test('firing-driver.mjs: a firing started with GIT_DIR, GIT_INDEX_FILE and GIT_C
   assert.equal(exit.code, 0, f.describe())
   assert.equal(f.get('released')?.outcome, 'done', f.describe())
 })
+
+// The suite-level scenario (Codex g4 #1, closing-review verifier): a whole test file run under
+// the hostile environment. tests/lib/loop-paths.test.mjs makes its repositories with a plain git
+// helper (add -A, commit) and imports no fixture.
+test('a test file run with GIT_DIR, GIT_INDEX_FILE and GIT_CONFIG_* aimed at a decoy leaves the decoy untouched', T, t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tl-fxenv-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const { decoy, hostile } = decoyRepo(root)
+  const before = decoyState(decoy)
+  // NODE_TEST_CONTEXT would make the child report to this runner instead of printing TAP.
+  const env = { ...HERMETIC, ...hostile }
+  delete env.NODE_TEST_CONTEXT
+  const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', path.join(ROOT, 'tests', 'lib', 'loop-paths.test.mjs')], {
+    encoding: 'utf8', cwd: root, env,
+  })
+  assertUntouched(decoy, before)
+  assert.match(r.stdout, /^# pass [1-9]/m, r.stdout.slice(-2000))
+  assert.match(r.stdout, /^# fail 0/m, r.stdout.slice(-2000))
+})
+
+// Every test file that runs git imports tests/helpers.mjs, directly or through a fixture module
+// that does: importing it scrubs the routing variables from process.env.
+test('every test file that runs git imports tests/helpers.mjs, which scrubs the routing variables', () => {
+  const GIT_SPAWN = /spawnSync\(['"]git|execFileSync\(['"]git|execSync\(['"`]git|'git', \[/
+  const IMPORT = /(?:^|\n)\s*import\s+(?:[^'"]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g
+  const reaches = new Map()
+  const reachesHelpers = file => {
+    if (reaches.has(file)) return reaches.get(file)
+    reaches.set(file, false)
+    const src = fs.readFileSync(file, 'utf8')
+    let ok = false
+    for (const m of src.matchAll(IMPORT)) {
+      const dep = path.resolve(path.dirname(file), m[1])
+      if (dep === path.join(ROOT, 'tests', 'helpers.mjs') || (dep.startsWith(path.join(ROOT, 'tests')) && fs.existsSync(dep) && reachesHelpers(dep))) ok = true
+    }
+    reaches.set(file, ok)
+    return ok
+  }
+  const files = []
+  const walk = dir => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.name.endsWith('.test.mjs')) files.push(p)
+    }
+  }
+  walk(path.join(ROOT, 'tests'))
+  const missing = files.filter(f => GIT_SPAWN.test(fs.readFileSync(f, 'utf8')) && !reachesHelpers(f)).map(f => path.relative(ROOT, f))
+  assert.deepEqual(missing, [], 'test files that run git without importing tests/helpers.mjs')
+})

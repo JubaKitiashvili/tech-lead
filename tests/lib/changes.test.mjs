@@ -4,6 +4,7 @@
 // content, unsavable kinds and the touched digest. Real temp repositories: <P> is a top-level
 // repository, <V> lives under a temp TECH_LEAD_CACHE, and the clone <W> = loopPaths(P).W is made
 // with plain git (clone --no-local, normalized as the brief's section 13.4 does).
+import '../helpers.mjs' // scrubs inherited git routing variables from process.env before any other module loads
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'

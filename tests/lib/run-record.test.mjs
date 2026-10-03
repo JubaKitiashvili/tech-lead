@@ -4,6 +4,7 @@
 // vettedTip, the one predicate for bundle writes, rotation and chaining; and the pure
 // cloneVerdict with its nine ordered rules. Records live under a real <V> (loopPaths over a
 // real temporary git repository, TECH_LEAD_CACHE in a temporary directory).
+import '../helpers.mjs' // scrubs inherited git routing variables from process.env before any other module loads
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
