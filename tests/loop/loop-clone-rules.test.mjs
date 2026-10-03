@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  D1, D2, D3, D4, PREFIX, T, appendLedger, attempt, check, closeCli, commitCli, firing, git, headerOf, killAt, prepare,
+  D1, D2, D3, D4, PREFIX, T, appendLedger, attempt, check, closeCli, commitCli, firing, git, gitCode, headerOf, killAt, prepare,
   prepareArgs, project, recordGenerations, recordOf, scratchApply, snapshot, status, tipOf, write,
 } from './loop-clone-fixture.mjs'
 
@@ -184,7 +184,7 @@ test('a ref planted while the newest record is preparing reaches the next snapsh
   assert.equal(f4.chainedFrom, `${PREFIX}/${D3}`)
   assert.ok(!f4.bundles.some(b => b.branch === planted || b.tip === D), JSON.stringify(f4.bundles))
   assert.equal(fs.existsSync(path.join(fx.V, 'out', PREFIX, '2026-10-09.bundle')), false)
-  assert.notEqual(git(fx.W, ['merge-base', '--is-ancestor', D, 'HEAD'], { check: false }), 0)
+  assert.equal(gitCode(fx.W, ['merge-base', '--is-ancestor', D, 'HEAD']), 1, 'the planted commit is not an ancestor of HEAD')
   assert.equal(fs.existsSync(path.join(fx.W, 'evil.txt')), false)
 })
 
