@@ -44,11 +44,14 @@
 //                 first that failed; a changed digest restarts from K = 0 once (R22), before
 //                 any failure counts, and the scope rail applies to the check after it; commit
 //                 --digest; the item to ## Done with the sha
-//     section 7   the first failure keeps the attempt (a second dispatch), the second does
-//                 Save and reset (attempt-failed) and Blocks the item with its recovery:
-//                 sub-bullet (outcome failed); check/commit tampered or work-changed -> Save
-//                 and reset (pause); every other refusal is a touch-nothing pause (the item
-//                 back to ## Backlog, its status unchanged)
+//     section 7   an attempt failure (a verify failure, the scope rail, verify changing the
+//                 work twice, or commit refused out-of-scope or commit-failed): the first
+//                 keeps the attempt (a second dispatch), the second does Save and reset
+//                 (attempt-failed) and Blocks the item with its recovery: sub-bullet (outcome
+//                 failed); check/commit tampered or work-changed -> Save and reset (pause); an
+//                 exit 2 from dispatch open or close is the lock-error pause, with nothing
+//                 more dispatched, checked, verified or committed; every other refusal is a
+//                 touch-nothing pause (the item back to ## Backlog, its status unchanged)
 //     section 8   ## Last run, ## Now (empty), one ledger row, loop-clone.mjs close, release
 //   Every pause (a touch-nothing pause, a planner exit 2, Save and reset (pause), a failed save
 //   or reset) sets `paused: true` in LOOP.md's front matter before section 8, and its ledger row
@@ -635,6 +638,12 @@ function cloneFiring(sc) {
   })()
   const attempts = sc.attempts ?? [{ ops: [] }]
   let failures = 0
+  // An attempt failure (loop section 7): the first keeps the attempt (the caller dispatches
+  // again), the second runs Save and reset (attempt-failed) and Blocks the item.
+  const attemptFailed = () => {
+    failures++
+    if (failures >= 2) saveResetThen('attempt-failed', placeSub('Blocked', 'attempt failed twice'), 'failed', { verify: 'fail' })
+  }
   for (let i = 0; ; i++) {
     const attempt = attempts[i] ?? { ops: [], fail: attempts[0]?.fail }
     const d = lock(['dispatch', 'open', P, ...gen(), '--label', `delegate-${i}`])
@@ -645,6 +654,9 @@ function cloneFiring(sc) {
     at(committed ? 'dispatched-commit' : 'dispatched', { attempt: i, dwellers, codex })
     const dc = lock(['dispatch', 'close', P, ...gen(), '--id', d.out.id])
     if (dc.status === 3) lostLock('dispatch close', dc.out)
+    // Loop section 1 step 3, Lock errors: an exit 2 from dispatch close dispatches nothing more
+    // and runs no check, verify or commit: the lock-error pause.
+    if (dc.status !== 0) pause('lock error', dc.out?.detail ?? dc.stderr)
     const ck = clone('check', ['--after', 'dispatch'], i ? `check${i}` : 'check')
     lost(ck, 'check')
     if (ck.status !== 0) {
@@ -712,9 +724,8 @@ function cloneFiring(sc) {
       }
     }
     if (failed) {
-      failures++
-      if (failures < 2) continue
-      saveResetThen('attempt-failed', placeSub('Blocked', 'attempt failed twice'), 'failed', { verify: 'fail' })
+      attemptFailed()
+      continue
     }
     at('verified', { digest })
     const subject = path.join(S, 'briefs', `item-${N}.subject`)
@@ -724,6 +735,13 @@ function cloneFiring(sc) {
     if (cm.status === 3 && cm.out?.state === 'not-holder') lostLock('commit', cm.out)
     if (cm.status !== 0) {
       if (['tampered', 'work-changed'].includes(cm.out?.state)) saveResetThen('pause', placeSub('Backlog'), 'skipped')
+      // references/clone.md: out-of-scope and commit-failed are an attempt failure, the detail
+      // its failure excerpt.
+      if (cm.status === 3 && ['out-of-scope', 'commit-failed'].includes(cm.out?.state)) {
+        notes.push(`commit ${cm.out.state}: ${String(cm.out.detail ?? '').slice(0, 300)}`)
+        attemptFailed()
+        continue
+      }
       pause(`commit ${cm.out?.state ?? cm.status}`, cm.out?.detail)
     }
     let sha = null
