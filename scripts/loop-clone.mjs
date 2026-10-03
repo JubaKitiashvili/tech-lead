@@ -60,17 +60,17 @@
 //       and describe --dirty/--broken, are refused), runs no filter program (drivers emptied,
 //       attributes read from HEAD), no textconv (status -v refused) and no merge driver
 //       (drivers emptied, --remerge-diff and --diff-merges=remerge refused, log.diffMerges
-//       pinned), and reads a private copy of the index, so <W>/.git/index is never written.
+//       pinned), and reads a private copy of the index (in a temporary directory of
+//       <V>/patches, never under os.tmpdir()), so <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
 // commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertAttrSource, cloneRepo, safeGit, workGit, workGitRun } from './lib/git-safe.mjs'
-import { readJson, storageDir, sweepTemps, tempFile, writeReplace } from './lib/atomic.mjs'
+import { readJson, storageDir, sweepTemps, tempDir, tempFile, writeReplace } from './lib/atomic.mjs'
 import { canonicalJson, sha256Hex } from './lib/canonical.mjs'
 import { chainStart, containedIn, resolveBase, retiredRefs, validPrefix } from './loop-start.mjs'
 import { baseRules, collect, currentRules, indexOnly, openWorkTree, recordRules, touched } from './lib/changes.mjs'
@@ -1642,16 +1642,18 @@ function removePassDir(dir) {
   for (const n of names) {
     try { fs.unlinkSync(path.join(dir, n)) } catch { /* gone, or a directory git never makes here */ }
   }
-  try { fs.rmdirSync(dir) } catch { /* left in the OS temp directory */ }
+  try { fs.rmdirSync(dir) } catch { /* left for prepare's sweep of <V>/patches */ }
 }
 
 // The caller's git command in <W>, read-only and inert (R26): checkClone first; git never runs
 // inside a nested repository (--ignore-submodules=dirty pinned for status and diff, PASS_CONFIG,
 // the options that would undo either refused); no merge driver runs (remerge refused, every
-// configured driver emptied); no filter program runs (every configured driver emptied, attributes read from HEAD, as collect reads the clone; refused git-too-old when git
-// ignores GIT_ATTR_SOURCE, R24); and the command reads a private copy of the index, so nothing it
-// does (git diff refreshes and rewrites the index even with optional locks off) writes
-// <W>/.git/index or holds its lock.
+// configured driver emptied); no textconv runs (status -v refused); no filter program runs
+// (every configured driver emptied, attributes read from HEAD, as collect reads the clone;
+// refused git-too-old when git ignores GIT_ATTR_SOURCE, R24); and the command reads a private
+// copy of the index, so nothing it does (git diff refreshes and rewrites the index even with
+// optional locks off) writes <W>/.git/index or holds its lock; the copy's directory is a
+// temporary one of <V>/patches.
 function gitPassthrough(argv, env, trace = {}) {
   const refuse = detail => {
     process.stderr.write(`loop-clone git: ${JSON.stringify({ state: 'refused', detail })}\n`)
@@ -1689,7 +1691,16 @@ function gitPassthrough(argv, env, trace = {}) {
     return fail(e.message)
   }
   if (!at) return refuse(`${W} has no HEAD commit to read attributes from`)
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-pass-'))
+  // In the work area, never under os.tmpdir() (a TMPDIR inside <P> would take a write): a
+  // temporary directory of <V>/patches, which prepare's gone-pid sweep removes when this run is
+  // killed before its own removal.
+  let dir
+  try {
+    dir = tempDir(storageDir(paths.V, path.join(paths.V, 'patches'), { create: true }))
+  } catch (e) {
+    if (e.code === 'CLONE_INVALID') return refuse(e.message)
+    return fail(e.message)
+  }
   try {
     const indexFile = indexCopy(W, dir)
     if (!indexFile) return refuse(`clone-invalid: ${W}/.git/index is not a regular file`)
