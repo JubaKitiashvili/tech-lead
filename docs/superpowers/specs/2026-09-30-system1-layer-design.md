@@ -1,13 +1,14 @@
 # System 1 layer for tech-lead: design
 
 - **Date:** 2026-09-30
-- **Status:** revision 6. Design approved section by section; revisions 1-4
+- **Status:** revision 7. Design approved section by section; revisions 1-4
   each went through a cross-family review (Claude critic lenses with
   adversarial verification, plus Codex gpt-6.1-sol). Round 4, run under a
   stopping rule (blockers and design-level majors only), found no blockers;
   revision 5 settled its design-level majors (§17). Revision 6 applies the
   stage 0c amendment set the owner approved on 2026-10-01 (§17), found by the
-  stage 0c design run.
+  stage 0c design run. Revision 7 (2026-10-03) reconciles §7.5's two ignore-rule
+  statements, as the owner approved during the stage 0c-2 design (§17).
 - **Plugin version at design time:** 0.3.3 (HEAD 642edc6); Fable was removed
   in 0.3.4
 - **Architecture chosen:** `hybrid-staged`, as amended (see §17)
@@ -784,10 +785,13 @@ worktrees.
 **The private clone starts clean.** Nothing in `<W>` belongs to the owner, so
 the firing's first clone preparation (never a retry, which keeps its attempt)
 saves any leftovers of an interrupted firing into a recovery bundle bound to
-that firing's generation, then removes them. The tracked diff is saved and the
-tracked files (`.gitignore` included) are restored to the base first, so the
-untracked files are listed under the base's ignore rules and a delegate's edit
-to `.gitignore` cannot hide one. Cleanliness is checked again after the reset
+that firing's generation, then removes them. Its untracked files are listed
+under the interrupted firing's recorded ignore rules (the patch-helper rule
+above), read back from the record and never from the working tree, so a
+delegate's new or edited ignore rule cannot hide a file; leftovers with no
+record are listed under the base's rules alone. One bundle holds the tracked
+diff and those files, and it is validated before anything is reset or
+removed. Cleanliness is checked again after the reset
 and after dependency preparation. `U` is therefore empty at every dispatch,
 and a delegate cannot edit a file the loop is not allowed to save or reset
 (audit cx-lr04).
@@ -1262,3 +1266,4 @@ contract comes back here first.
 | 2026-09-30 | Revision 5 (round 4 found no blockers): the work area moves outside `<P>` to `~/.cache/tech-lead/<project_id>`; the governance write mechanism is chosen by probe P5 with no-dispatch as the fallback; the decided-item cap binds to the approved title, notes and decision text; re-signing needs a fresh eval cohort, and replay on a used cohort is diagnostic only; kills bind to the signed lineage and clear only from the owner's terminal; post-switch Haiku monitoring fires on evidence of regression, not on too few samples; releases survive unrelated commits; injected egress controls (read boundary, publish denial, egress floors); Codex off in sandboxed runs unless signed on | tech lead; for owner review |
 | 2026-09-30 | Runner-model comparison (§7.9): Opus runner by default; a Sonnet runner only after a signed, measured comparison | owner |
 | 2026-10-01 | Revision 6, the stage 0c amendment set from the stage 0c design run: `<key>` replaces `project_id` as a path segment (§3); a new spine is ignored through `.git/info/exclude` and never committed, a tracked spine is untracked by `git rm --cached` plus a committed `.gitignore` rule, and a spine copy in `<V>` guards the branch-switch hazard (§4, §9.1); migration is staged with `spine_version:`; runs start in `<P>` until stage 2's runner settings; the lock reclaims from the same process and stops a dead holder's children itself, and its generation is the ledger `iteration`; recovery bundles keep out-of-scope untracked files and the private clone starts clean (§7.5); item origins, open-title uniqueness and the item digest (§7.1); "in scope" defined and `./` refused at bootstrap and at §2; lock integrity and pre-stage-2 governance writes recorded as residual risks (§15); 0c split into 0c-1 to 0c-4 (§10); `skills/quick` added to §9.2. A verification round (a Claude find-and-refute workflow and Codex) made these exact: the canonical, bounded, collision-checked `<key>`; the ignore rule on every branch through the exclude file; the spine anchor in `<S>/SPINE.json`, lost and regressed defined by the append-only ledger, and an interactive, confirmed restore that never touches `POLICY.json`; the scope validator; same-process reclaim refused while an in-process dispatch is open; no watchdog daemons; the generation floor; safe, resumable untracking; out-of-scope bundles refused at release; the clean-clone timing; stage qualifiers for the runner checks | owner, on the tech lead's recommendation |
+| 2026-10-03 | Revision 7 (amendment A11, from the stage 0c-2 design and its review): the clean clone lists an interrupted firing's untracked files under that firing's recorded ignore rules (read back from the record, never from the working tree; recorded after dependency preparation, before any dispatch), so tool-written self-ignored directories (a venv, `.husky/_`, test caches) are not bundled and deleted at every firing; leftovers with no record use the base's rules; the restore-first sentence of §7.5 is removed | owner, on the tech lead's recommendation |

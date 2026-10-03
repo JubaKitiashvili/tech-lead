@@ -4,9 +4,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync, execSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
-import { commandLine, cwdSweep, groupAlive, isAlive, killGroup, parseProcStat, procCwds, resolveHolder, startToken } from '../../scripts/lib/loop-proc.mjs'
+import {
+  ancestry, commandLine, cwdSweep, groupAlive, isAlive, killGroup, parseProcStat, procCwds, resolveHolder, startToken, sweepOthers,
+} from '../../scripts/lib/loop-proc.mjs'
+import { killGroupIfOurs } from '../loop/interrupt-fixture.mjs'
+import { dweller, sleeper as cloneSleeper } from '../loop/loop-clone-fixture.mjs'
+import { sleeper as bundleSleeper } from '../loop/reflex-bundle-fixture.mjs'
 
 const MODULE = path.join(ROOT, 'scripts', 'lib', 'loop-proc.mjs')
 const tmp = t => {
@@ -22,14 +27,27 @@ const waitFor = async (fn, ms = 3000) => {
   while (!v && Date.now() < deadline) { await sleep(50); v = fn() }
   return v
 }
+// SIGKILL for pid only while its start token is still `start`, so a pid the kernel has
+// handed to another process is never signalled (contracts-tests#7); true when it was sent.
+const killIfOurs = (pid, start) => {
+  if (isAlive({ pid, start }) !== true) return false
+  try {
+    process.kill(pid, 'SIGKILL')
+    return true
+  } catch {
+    return false
+  }
+}
+// Kills pid when the test ends, while it is still the process whose token is read here.
+const reapPid = (t, pid) => {
+  const start = startToken(pid).token ?? null
+  t.after(() => { killIfOurs(pid, start) })
+  return pid
+}
 // A real process standing in for a holder. It is started through a shell that exits at
 // once, so the test runner is not its parent and a killed one never lingers as a zombie.
 // Its working directory is cwd (the test runner's when cwd is not given).
-const sleeper = (t, cwd) => {
-  const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8', cwd }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
-  return pid
-}
+const sleeper = (t, cwd) => reapPid(t, Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8', cwd }).trim()))
 // A pid that named a real process a moment ago and names none now.
 const deadPid = async t => {
   const pid = sleeper(t)
@@ -39,10 +57,14 @@ const deadPid = async t => {
 }
 // A process group of its own (setsid), led by /bin/sh running script. A short-lived node
 // launcher starts it and exits at once, so the group's parent is init, which reaps it.
+// The cleanup kills the group only while killGroupIfOurs finds its leader's token the one
+// read here, or the leader's pid free. Init reaps a dead leader at once, so a zombie at
+// the pid is another process's.
 const LAUNCH = "const c = require('node:child_process').spawn('/bin/sh', ['-c', process.argv[1]], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
 const group = (t, script) => {
   const pgid = Number(execFileSync(process.execPath, ['-e', LAUNCH, script], { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(-pgid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pgid).token ?? null
+  t.after(() => { killGroupIfOurs(pgid, start, { zombieOurs: false }) })
   return pgid
 }
 
@@ -82,18 +104,38 @@ test('a live pid under a different start token is not alive (the pid was reused)
 })
 
 test('a zombie counts as gone even though it can still be signalled', async t => {
-  const file = path.join(tmp(t), 'zombie.pid')
-  // The inner shell starts a child that exits at once, records its pid, then becomes
-  // `sleep 120`, which never reaps it: the child stays a zombie until the parent dies.
+  const dir = tmp(t)
+  const file = path.join(dir, 'zombie.pid')
+  const go = path.join(dir, 'go')
+  // The inner shell starts a child, records its pid, then becomes `sleep 120`, which never
+  // reaps anything. The child waits for the go file before it exits, and the test writes that
+  // file only once the parent runs sleep: a child that exited earlier could be reaped by the
+  // shell before its exec (ESRCH under load), but this one can only exit into a zombie.
   const parent = Number(execFileSync('/bin/sh', ['-c',
-    `sh -c 'sleep 0 & echo $! > "$1"; exec sleep 120' sh "$1" >/dev/null 2>&1 & echo $!`, 'sh', file],
+    `sh -c '(while [ ! -e "$2" ]; do sleep 0.05; done) & echo $! > "$1"; exec sleep 120' sh "$1" "$2" >/dev/null 2>&1 & echo $!`,
+    'sh', file, go],
   { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(parent, 'SIGKILL') } catch { /* gone */ } })
-  const zombie = await waitFor(() => { try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0 } catch { return 0 } })
-  assert.ok(zombie > 0, 'the zombie pid was never written')
-  assert.ok(await waitFor(() => startToken(zombie).state === 'gone'), 'the exited child never read as gone')
-  assert.doesNotThrow(() => process.kill(zombie, 0), 'the child was reaped, so this was not a zombie')
-  assert.equal(isAlive({ pid: zombie, start: 'any' }), false)
+  // The parent's token holds across its exec into sleep; the child's is read once its pid is
+  // known, while it still waits for the go file.
+  const parentStart = startToken(parent).token ?? null
+  let child = 0, childStart = null
+  t.after(() => {
+    // The child first (alive or a zombie, its pid stays reserved until the parent dies), then
+    // the parent; each only while it is still the process recorded (a zombie is left as it is).
+    if (child > 0) killIfOurs(child, childStart)
+    killIfOurs(parent, parentStart)
+  })
+  child = await waitFor(() => { try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0 } catch { return 0 } })
+  assert.ok(child > 0, 'the child pid was never written')
+  childStart = startToken(child).token ?? null
+  const parentCommand = () => spawnSync('ps', ['-o', 'command=', '-p', String(parent)], { encoding: 'utf8' }).stdout.trim()
+  assert.ok(await waitFor(() => /^(\S*\/)?sleep 120$/.test(parentCommand()), 10000), `the parent never became sleep 120 (${parentCommand()})`)
+  assert.equal(startToken(child).state, 'live', 'the child still waits for the go file')
+  fs.writeFileSync(go, '')
+  assert.ok(await waitFor(() => startToken(child).state === 'gone', 10000), 'the exited child never read as gone')
+  assert.doesNotThrow(() => process.kill(child, 0), 'the child was reaped, so this was not a zombie')
+  assert.equal(isAlive({ pid: child, start: 'any' }), false)
+  assert.match(spawnSync('ps', ['-o', 'stat=', '-p', String(child)], { encoding: 'utf8' }).stdout.trim(), /^Z/, 'ps reads it as a zombie')
 })
 
 test('a process this user may not signal (EPERM) still has a live token', () => {
@@ -211,15 +253,29 @@ test('resolveHolder throws no-holder unless the variable it reads names a live p
   }
 })
 
+// Sets process.env[name] for the rest of test t. The value it had before the test first
+// set it comes back afterwards: after hooks run in the order they were added, so a hook per
+// call that restored its own predecessor would leave an intermediate (deleted) fake behind
+// for the tests that follow.
+const restoring = new Map()
+const setEnv = (t, name, value) => {
+  if (!restoring.has(t)) restoring.set(t, new Set())
+  const names = restoring.get(t)
+  if (!names.has(name)) {
+    names.add(name)
+    const before = process.env[name]
+    t.after(() => { if (before === undefined) delete process.env[name]; else process.env[name] = before })
+  }
+  process.env[name] = value
+}
+
 // Points TECH_LEAD_PS at a fake ps for the rest of the test. The script appends a line to
 // `count` on every run, then runs body.
 const fakePs = (t, body) => {
   const dir = tmp(t)
   const count = path.join(dir, 'count'), file = path.join(dir, 'ps')
   fs.writeFileSync(file, `#!/bin/sh\necho run >> '${count}'\n${body}\n`, { mode: 0o755 })
-  const before = process.env.TECH_LEAD_PS
-  process.env.TECH_LEAD_PS = file
-  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+  setEnv(t, 'TECH_LEAD_PS', file)
   return () => { try { return fs.readFileSync(count, 'utf8').split('\n').filter(Boolean).length } catch { return 0 } }
 }
 
@@ -232,6 +288,9 @@ test('resolveHolder retries a live holder whose token ps cannot read, then throw
   // The first read and three retries, 100 ms apart.
   assert.equal(runs(), 4)
   assert.ok(Date.now() - t0 >= 300, 'the retries were not spaced 100 ms apart')
+  // The failing ps is still in place when the cleanup runs, and the cleanup kills only a
+  // process whose token it can read, so the sleeper is stopped here.
+  process.kill(live, 'SIGKILL')
 })
 
 test('resolveHolder rides out a transient ps failure on the last retry', { skip: process.platform !== 'darwin' }, t => {
@@ -251,8 +310,8 @@ test('resolveHolder does not retry a gone holder: it is no-holder at once', { sk
 })
 
 test('commandLine reads a live process\'s argv as words, and reports a gone process, a zombie and a bad pid', async t => {
-  const pid = Number(execFileSync('/bin/sh', ['-c', '"$@" >/dev/null 2>&1 & echo $!', 'sh', process.execPath, '-e', 'setInterval(() => {}, 1e9)', 'two words'], { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  // Its start token, read here before or after its exec, is the same.
+  const pid = reapPid(t, Number(execFileSync('/bin/sh', ['-c', '"$@" >/dev/null 2>&1 & echo $!', 'sh', process.execPath, '-e', 'setInterval(() => {}, 1e9)', 'two words'], { encoding: 'utf8' }).trim()))
   // Between fork and exec the child still runs the shell; wait for the exec.
   const c = await waitFor(() => { const r = commandLine(pid); return r.state === 'live' && r.words.includes('-e') ? r : null })
   assert.ok(c, JSON.stringify(commandLine(pid)))
@@ -359,9 +418,7 @@ test('cwdSweep refuses arguments it cannot judge', { skip: !sweepable }, t => {
 const fakeLsof = (t, body) => {
   const file = path.join(tmp(t), 'lsof')
   fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
-  const before = process.env.TECH_LEAD_LSOF
-  process.env.TECH_LEAD_LSOF = file
-  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_LSOF; else process.env.TECH_LEAD_LSOF = before })
+  setEnv(t, 'TECH_LEAD_LSOF', file)
   return file
 }
 
@@ -381,7 +438,7 @@ test('cwdSweep judges lsof by what it printed: a failed, killed or garbled run, 
     fakeLsof(t, body)
     assert.equal(cwdSweep([dir]).state, 'unknown', body)
   }
-  process.env.TECH_LEAD_LSOF = path.join(dir, 'no-such-lsof')
+  setEnv(t, 'TECH_LEAD_LSOF', path.join(dir, 'no-such-lsof'))
   assert.match(cwdSweep([dir]).detail, /ENOENT/)
 })
 
@@ -413,4 +470,195 @@ test('procCwds reads every numeric entry of a proc tree, skips unreadable and go
   fs.writeFileSync(path.join(root, '99', 'cwd'), 'not a link')
   assert.equal(procCwds(root).state, 'unknown')
   assert.equal(procCwds(path.join(root, 'missing')).state, 'unknown')
+})
+
+// ancestry and sweepOthers (stage 0c-2 brief section 7): moved here from loop-lock.mjs.
+
+test('ancestry lists this process and each of its ancestors up to (not including) pid 1', t => {
+  const a = ancestry()
+  assert.equal(a.state, 'ok', a.detail)
+  assert.equal(a.pids[0], process.pid)
+  if (process.ppid > 1) assert.equal(a.pids[1], process.ppid)
+  assert.ok(a.pids.every(p => Number.isInteger(p) && p > 1), JSON.stringify(a.pids))
+  assert.equal(new Set(a.pids).size, a.pids.length)
+  assert.deepEqual(ancestry(process.pid), a)
+  // From a child of this process: the child, then this process's own chain.
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'ignore' })
+  t.after(() => { try { child.kill('SIGKILL') } catch { /* gone */ } })
+  const c = ancestry(child.pid)
+  assert.equal(c.state, 'ok', c.detail)
+  assert.deepEqual(c.pids, [child.pid, ...a.pids])
+})
+
+test('ancestry is unknown for a pid it cannot walk: a bad pid or a gone one', async t => {
+  for (const bad of [0, -1, 1.5, '12', null]) {
+    const r = ancestry(bad)
+    assert.equal(r.state, 'unknown', String(bad))
+    assert.match(r.detail, /^bad pid: /, String(bad))
+  }
+  const dead = await deadPid(t)
+  assert.deepEqual(ancestry(dead), { state: 'unknown', detail: `cannot read the parent of pid ${dead}` })
+})
+
+test('ancestry and sweepOthers are unknown when ps cannot list the processes', { skip: process.platform !== 'darwin' && 'ancestry reads ps on darwin only' }, t => {
+  const dir = tmp(t)
+  const runs = fakePs(t, 'exit 1')
+  const a = ancestry()
+  assert.deepEqual(a, { state: 'unknown', detail: 'ps -A: exit 1' })
+  // The unknown ancestry is returned as it is, so no sweep runs on a partial exclusion list.
+  assert.deepEqual(sweepOthers([dir]), a)
+  assert.equal(runs(), 2)
+  // A ps that is not there at all.
+  setEnv(t, 'TECH_LEAD_PS', path.join(dir, 'no-such-ps'))
+  assert.deepEqual(sweepOthers([dir]), { state: 'unknown', detail: 'ps -A: ENOENT' })
+})
+
+test('sweepOthers lists processes working in the dirs but never the caller or any of its ancestors', { skip: !sweepable }, async t => {
+  const dir = tmp(t)
+  const other = sleeper(t, dir)
+  await sweepUntil([dir], [other])
+  // Two nested shells working in dir run node (neither as its last command, so both fork
+  // rather than exec). cwdSweep leaves out only node and its parent, so it lists the outer
+  // shell; sweepOthers leaves out the whole chain.
+  const script = `import { cwdSweep, sweepOthers } from ${JSON.stringify(new URL(`file://${MODULE}`).href)}
+console.log(JSON.stringify({ chain: [process.pid, process.ppid], others: sweepOthers([process.cwd()]), all: cwdSweep([process.cwd()]) }))`
+  const out = execFileSync('/bin/sh', ['-c', '/bin/sh -c "\\"\\$0\\" --input-type=module -e \\"\\$1\\"; :" "$0" "$1"; :', process.execPath, script], { cwd: dir, encoding: 'utf8' })
+  const { chain, others, all } = JSON.parse(out)
+  assert.equal(others.state, 'ok', others.detail)
+  assert.equal(all.state, 'ok', all.detail)
+  assert.deepEqual(pidsOf(others), [other])
+  const outer = pidsOf(all).filter(p => p !== other)
+  assert.equal(outer.length, 1, `cwdSweep should list the outer shell: ${JSON.stringify(all.procs)}`)
+  assert.ok(!chain.includes(outer[0]))
+  // A directory list sweepOthers cannot judge is unknown, as cwdSweep's is.
+  assert.equal(sweepOthers(['relative']).state, 'unknown')
+  assert.deepEqual(sweepOthers([path.join(dir, 'missing')]), { state: 'ok', procs: [] })
+})
+
+// The firing lock's two sweeps go through sweepOthers: an unknown ancestry holds a reclaim
+// (sweep-unknown) and makes an exec run lingering. The fake ps answers everything but the
+// full listing (-A), so the holder's start token still reads.
+const LOCK = path.join(ROOT, 'scripts', 'loop-lock.mjs')
+const HERMETIC = {
+  GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com',
+  TECH_LEAD_CODEX_COMPANION: '/nonexistent/codex-companion.mjs',
+}
+const lockProject = t => {
+  const P = tmp(t), cache = tmp(t)
+  const g = (...args) => execFileSync('git', ['-C', P, ...args], { encoding: 'utf8', env: { ...process.env, ...HERMETIC }, stdio: ['ignore', 'pipe', 'pipe'] })
+  g('init', '-q', '-b', 'main')
+  fs.writeFileSync(path.join(P, 'a.txt'), 'a\n')
+  g('add', '-A')
+  g('commit', '-q', '-m', 'base')
+  fs.mkdirSync(path.join(P, '.tech-lead'))
+  fs.writeFileSync(path.join(P, '.tech-lead', 'LOOP.md'), '---\nverify:\n  - "true"\n---\n')
+  return { P, cache }
+}
+const lockEnv = (p, holder, extra = {}) => {
+  const e = { ...process.env, ...HERMETIC, TECH_LEAD_CACHE: p.cache, TECH_LEAD_HOLDER_PID: String(holder), CLAUDE_CODE_SESSION_ID: 'session-test', ...extra }
+  for (const tool of ['TECH_LEAD_PS', 'TECH_LEAD_LSOF']) if (!(tool in extra)) delete e[tool]
+  return e
+}
+const lockCli = (e, ...args) => {
+  const r = spawnSync(process.execPath, [LOCK, ...args], { encoding: 'utf8', env: e, timeout: 60000 })
+  return { status: r.status, out: r.stdout.trim() ? JSON.parse(r.stdout.trim()) : null, stderr: r.stderr }
+}
+const noFullListing = t => {
+  const file = path.join(tmp(t), 'ps')
+  fs.writeFileSync(file, '#!/bin/sh\n[ "$1" = -A ] && exit 1\nexec /bin/ps "$@"\n', { mode: 0o755 })
+  return file
+}
+
+test('a reclaim whose ancestry ps cannot read is held sweep-unknown, and acquires once ps works', { skip: process.platform !== 'darwin' && 'ancestry reads ps on darwin only', timeout: 90000 }, async t => {
+  const p = lockProject(t), a = sleeper(t), b = sleeper(t)
+  const first = lockCli(lockEnv(p, a), 'acquire', p.P)
+  assert.deepEqual([first.status, first.out.state, first.out.generation], [0, 'acquired', 1], first.stderr)
+  process.kill(a, 'SIGKILL')
+  assert.ok(await waitFor(() => startToken(a).state === 'gone'))
+  const r = lockCli(lockEnv(p, b, { TECH_LEAD_PS: noFullListing(t) }), 'acquire', p.P)
+  assert.equal(r.status, 3, JSON.stringify(r.out))
+  assert.deepEqual([r.out.state, r.out.reason, r.out.generation], ['held', 'sweep-unknown', 1])
+  assert.match(r.out.detail, /^cannot sweep .* for live processes: ps -A: exit 1$/)
+  const slots = fs.readdirSync(path.join(first.out.lockDir, 'slots')).filter(n => /^\d+\.json$/.test(n))
+  assert.deepEqual(slots, ['1.json'])
+  const ok = lockCli(lockEnv(p, b), 'acquire', p.P)
+  assert.deepEqual([ok.status, ok.out.state, ok.out.generation, ok.out.reclaimed.how], [0, 'acquired', 2, 'dead-holder'], JSON.stringify(ok.out))
+})
+
+test('an exec run whose post-run sweep ps cannot read is lingering, with the command\'s own result as its outcome', { skip: process.platform !== 'darwin' && 'ancestry reads ps on darwin only', timeout: 90000 }, t => {
+  const p = lockProject(t), a = sleeper(t), dir = tmp(t)
+  const first = lockCli(lockEnv(p, a), 'acquire', p.P)
+  assert.equal(first.out.state, 'acquired', first.stderr)
+  const x = spawnSync(process.execPath, [LOCK, 'exec', p.P, '--generation', '1', '--label', 'verify', '--cwd', dir, '--', '/bin/sh', '-c', 'echo ran > ran.txt'], {
+    encoding: 'utf8', env: lockEnv(p, a, { TECH_LEAD_PS: noFullListing(t) }), timeout: 60000,
+  })
+  assert.equal(x.status, 123, x.stderr)
+  const st = JSON.parse(/loop-lock exec: (\{.*\})\s*$/.exec(x.stderr)[1])
+  assert.equal(st.state, 'lingering')
+  assert.equal(st.exit, 123)
+  assert.deepEqual(st.outcome, { state: 'exited', exit: 0 })
+  assert.match(st.left, /^the sweep of .* for processes left behind could not run: ps -A: exit 1$/)
+  assert.equal(fs.readFileSync(path.join(dir, 'ran.txt'), 'utf8'), 'ran\n')
+  // The group is gone, so its record is removed; the same run with a working ps is clean.
+  assert.deepEqual(fs.readdirSync(path.join(first.out.lockDir, 'children')), [])
+  const clean = spawnSync(process.execPath, [LOCK, 'exec', p.P, '--generation', '1', '--label', 'verify', '--cwd', dir, '--', '/bin/sh', '-c', 'exit 0'], {
+    encoding: 'utf8', env: lockEnv(p, a), timeout: 60000,
+  })
+  assert.equal(clean.status, 0, clean.stderr)
+  assert.equal(JSON.parse(/loop-lock exec: (\{.*\})\s*$/.exec(clean.stderr)[1]).state, 'exited')
+  assert.equal(lockCli(lockEnv(p, a), 'release', p.P, '--generation', '1').out.state, 'released')
+})
+
+// The test harness's cleanup (review round, contracts-tests#7). A hook that runs when a test
+// ends signals a recorded pid or process group only while the id still names the process the
+// test made: under several concurrent suites the pid counter can wrap between a process's end
+// and the hook, and an unchecked SIGKILL could then hit any process of this user. A fake ps
+// that reads every live process as one started in 1970 stands in for that reuse. The helpers
+// of the shared fixtures are pinned here too, as their own test files belong to other work.
+const impostorPs = t => {
+  const file = path.join(tmp(t), 'ps')
+  fs.writeFileSync(file, '#!/bin/sh\necho "S Thu Jan 1 00:00:00 1970"\n', { mode: 0o755 })
+  setEnv(t, 'TECH_LEAD_PS', file)
+}
+const darwinOnly = { skip: process.platform !== 'darwin' && 'the start token reads ps on darwin only' }
+const PID_HELPERS = [
+  ['loop-proc.test sleeper', t => sleeper(t)],
+  ['loop-clone-fixture sleeper', t => cloneSleeper(t)],
+  ['loop-clone-fixture dweller', t => dweller(t, tmp(t))],
+  ['reflex-bundle-fixture sleeper', t => bundleSleeper(t)],
+]
+
+for (const [name, make] of PID_HELPERS) {
+  test(`contracts-tests#7: the ${name} cleanup kills its own process, and leaves alone a pid that names another process by then`, darwinOnly, async t => {
+    let pid, start
+    await t.test('the pid reads as another process when the test ends', st => {
+      pid = make(st)
+      start = startToken(pid).token
+      impostorPs(st)
+    })
+    t.after(() => { killIfOurs(pid, start) })
+    assert.equal(isAlive({ pid, start }), true, `the cleanup killed pid ${pid}, which it could not prove its own`)
+    process.kill(pid, 'SIGKILL')
+    let own
+    await t.test('the pid still names its process when the test ends', st => { own = make(st) })
+    assert.ok(await waitFor(() => startToken(own).state === 'gone'), `the cleanup left its own process ${own} running`)
+  })
+}
+
+test('contracts-tests#7: a group cleanup kills its own group, and leaves alone a group id whose leader is another process by then', darwinOnly, async t => {
+  let pgid, start
+  await t.test('the leader reads as another process when the test ends', st => {
+    pgid = group(st, 'exec sleep 120')
+    start = startToken(pgid).token
+    impostorPs(st)
+  })
+  t.after(() => { killGroupIfOurs(pgid, start, { zombieOurs: false }) })
+  assert.equal(groupAlive(pgid), true, `the cleanup killed group ${pgid}, which it could not prove its own`)
+  assert.equal(isAlive({ pid: pgid, start }), true)
+  process.kill(-pgid, 'SIGKILL')
+  assert.ok(await waitFor(() => groupAlive(pgid) === false))
+  let own
+  await t.test('the leader is still the one recorded when the test ends', st => { own = group(st, 'exec sleep 120') })
+  assert.ok(await waitFor(() => groupAlive(own) === false), `the cleanup left its own group ${own} running`)
 })

@@ -4,6 +4,8 @@
 // after its ledger append but before release. The next acquire reclaims, kills the group
 // the dead firing left behind, and never repeats a generation. The work tree is the 0c-1
 // loop's <S>/worktree, so every reclaim also sweeps it for processes no record names.
+// Cleanup never signals a process that only reused an id (Cg4#2, contracts-tests#7): a pid only
+// while its start token is the recorded one, a group only while groupIsOurs holds.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -35,19 +37,43 @@ const waitFor = async (fn, ms = 10000) => {
   return v
 }
 const gone = pid => startToken(pid).state === 'gone'
-// A real process standing in for a holder, started through a shell that exits at once.
+// Whether the process group pgid is still the one whose leader had start token `start` (as
+// tests/loop/interrupt-fixture.mjs groupIsOurs): its leader alive with that token, or its pid
+// free (no group id is handed out while the group exists, so the members left are ours). A pid
+// held by another live process, a zombie when zombieOurs is false, or an unreadable token: no.
+function groupIsOurs(pgid, start, { zombieOurs = true } = {}) {
+  if (groupAlive(pgid) !== true) return false
+  const tok = startToken(pgid)
+  if (tok.state === 'live') return typeof start === 'string' && tok.token === start
+  if (tok.state !== 'gone') return false
+  try {
+    process.kill(pgid, 0)
+  } catch (e) {
+    return e.code === 'ESRCH'
+  }
+  return zombieOurs
+}
+const killPid = (pid, start) => {
+  if (isAlive({ pid, start }) !== true) return
+  try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+}
+// A real process standing in for a holder, started through a shell that exits at once; killed
+// when the test ends only while its start token is the one read here.
 const sleeper = t => {
   const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pid).token ?? null
+  t.after(() => killPid(pid, start))
   return pid
 }
 // Kills a process group (-pgid) or a process when the test ends; a process only while its
-// start token still matches, so a reused pid is left alone.
+// start token still matches, a group only while groupIsOurs, so a reused id is left alone.
 const reap = (t, id) => {
-  const start = id > 0 ? startToken(id).token : null
+  const start = startToken(Math.abs(id)).token ?? null
   t.after(() => {
-    if (id > 0 ? isAlive({ pid: id, start }) !== true : groupAlive(-id) !== true) return
-    try { process.kill(id, 'SIGKILL') } catch { /* gone */ }
+    if (id > 0) killPid(id, start)
+    else if (groupIsOurs(-id, start)) {
+      try { process.kill(id, 'SIGKILL') } catch { /* gone */ }
+    }
   })
 }
 
@@ -86,16 +112,27 @@ const firing = (t, p, stop) => {
   const c = spawn(process.execPath, [DRIVER, p.P, p.W, stop], {
     env: { ...process.env, TECH_LEAD_CACHE: p.cache }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const leaderStart = startToken(c.pid).token ?? null
   const events = []
   let buf = '', stderr = '', exit = null
+  // Set once the firing's group is known to be empty: no later kill is aimed at its id.
+  let disarmed = false
   c.stdout.on('data', d => {
     buf += d
     for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) events.push(JSON.parse(buf.slice(0, i)))
   })
   c.stderr.on('data', d => { stderr += d })
-  const exited = new Promise(resolve => c.on('exit', (code, signal) => { exit = { code, signal }; resolve(exit) }))
+  const exited = new Promise(resolve => c.on('exit', (code, signal) => {
+    exit = { code, signal }
+    if (groupAlive(c.pid) === false) disarmed = true
+    resolve(exit)
+  }))
   t.after(() => {
-    try { process.kill(-c.pid, 'SIGKILL') } catch { /* gone */ }
+    // Unreaped, the driver's pid (its group id) is still ours; once reaped, only while
+    // groupIsOurs (a surviving exec wrapper keeps the group, and so the id, alive).
+    if (!disarmed && (exit === null || groupIsOurs(c.pid, leaderStart, { zombieOurs: false }))) {
+      try { process.kill(-c.pid, 'SIGKILL') } catch { /* gone */ }
+    }
     c.stdout.destroy()
     c.stderr.destroy()
   })
@@ -109,6 +146,7 @@ const firing = (t, p, stop) => {
     process.kill(-c.pid, 'SIGKILL')
     await exited
     assert.ok(await waitFor(() => groupAlive(c.pid) === false), `firing group ${c.pid} survived`)
+    disarmed = true
   }
   return { pid: c.pid, event, kill, exited, events }
 }
