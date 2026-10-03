@@ -37,7 +37,8 @@
 //       commit-tree of the checked tree on H0 with <P>'s identity, compare-and-swap update-ref,
 //       then the delivery bundle. Exit 0 {state:'committed', sha, branch, bundle, bundleError} |
 //       {state:'unchanged'}; exit 3 no-attempt, work-changed, out-of-scope {paths}, index-only
-//       {paths}, tampered, clone-invalid, commit-failed.
+//       {paths}, tampered, clone-invalid, commit-failed (a read-tree of the commit or its
+//       compare-and-swap failed: the intent is cleared and the attempt stays open).
 //   bundle <P> --generation <N> --branch <b>
 //       {state:'bundled', bundle} | {state:'current'}; exit 3 unvetted, clone-invalid.
 //   close <P> --generation <N>
@@ -1288,11 +1289,23 @@ function commitCmd(a, env) {
   updateRecord(paths, N, r => ({ ...r, phase: 'intent', intent: { tree: T, parent: H0, commit: C } }))
   fault('commit:after-intent')
   guard()
-  workGit(W, ['read-tree', C])
+  try {
+    workGit(W, ['read-tree', C])
+  } catch (e) {
+    // read-tree writes the index atomically and HEAD has not moved: nothing of C landed. The
+    // intent is cleared, as a failed compare-and-swap clears it, so the attempt stays open (loop
+    // section 7 retries or saves it) and the next firing reads a prepared record.
+    guard()
+    updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }))
+    if (e.code === 'CLONE_INVALID') throw e
+    throw refused('commit-failed', String(e.message).trim())
+  }
   guard()
   const cas = workGitRun(W, ['update-ref', rec.head_ref, C, H0])
   if (cas.code || cas.status !== 0) {
     guard()
+    // A failure here leaves the intent: the index holds C, and the next firing's recovery reads
+    // that (rule 6, C among the commits the index may match) as leftovers against H0.
     workGit(W, ['read-tree', H0])
     guard()
     updateRecord(paths, N, r => ({ ...r, phase: 'prepared', intent: null }))
