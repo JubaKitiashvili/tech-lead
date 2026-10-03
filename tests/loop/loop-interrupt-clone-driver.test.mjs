@@ -7,7 +7,7 @@ import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
   BASE_FILES, DOT, ROWS, T, assertRecovered, git, go, gone, groupIsOurs, helperAs, interrupt, itemBlock, itemLine, killGroupIfOurs, ledger,
   loopMd, patches, project, reap, run, sections, start, stateText, titles, tmp, waitFor, workSnap,
@@ -218,6 +218,85 @@ describe('the firing driver follows the prose', ROWS, () => {
     fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopText(fx).replace(PAUSED, 'paused: false'))
     const f3 = await run(fx, work('three'))
     assertRecovered(fx, { rows: [2, 3, 4], tip: committedSha(f3), sections: { Done: ['item A'], Backlog: ['item B', 'item C', 'item D'] } })
+  })
+
+  // A git on PATH (for the helpers only: the scenario's env) that fails `commit-tree`, the
+  // commit's first git write, `times` times (a counter file outside <W>); every other call runs
+  // the real git. commit then refuses commit-failed before it records an intent.
+  const commitTreeFails = (fx, times) => {
+    const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: fx.env }).stdout.trim()
+    const bin = path.join(fx.root, 'fake-git')
+    const count = path.join(fx.root, 'commit-tree.count')
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, 'git'), [
+      '#!/bin/sh',
+      'for a in "$@"; do',
+      '  if [ "$a" = commit-tree ]; then',
+      `    n=$(cat '${count}' 2>/dev/null || echo 0)`,
+      `    if [ "$n" -lt ${times} ]; then echo $((n + 1)) > '${count}'; echo "fatal: injected commit-tree failure" >&2; exit 128; fi`,
+      '  fi',
+      'done',
+      `exec '${real}' "$@"`,
+      '',
+    ].join('\n'), { mode: 0o755 })
+    return { env: { PATH: `${bin}:${fx.env.PATH}` }, count: () => Number(fs.readFileSync(count, 'utf8')) }
+  }
+
+  test('Codex f2 #1: a commit refused commit-failed is an attempt failure (loop section 7): the retry in the same firing commits, with no pause', T, async t => {
+    const fx = project(t)
+    const fake = commitTreeFails(fx, 1)
+    const f1 = await run(fx, { attempts: [{ ops: EDIT }, { ops: [] }], env: fake.env })
+    assert.equal(fake.count(), 1, 'the first commit was refused')
+    assert.equal(f1.get('paused'), undefined, f1.describe())
+    assert.equal(f1.events.filter(e => e.event === 'dispatched').length, 2, `the attempt was retried: ${f1.describe()}`)
+    const sha = committedSha(f1)
+    const row = ledger(fx)[0]
+    assert.deepEqual([row.outcome, row.verify, row.paused], ['done', 'pass', undefined])
+    assert.match(row.notes, /commit commit-failed: git commit-tree: fatal: injected commit-tree failure/)
+    assert.doesNotMatch(loopText(fx), PAUSED, 'an attempt failure is no pause')
+    assert.equal(git(fx.W, ['show', `${sha}:a.txt`]), 'edited')
+    assertRecovered(fx, { rows: [1], tip: sha, sections: { Done: ['item A'], Backlog: ['item B', 'item C', 'item D'] } })
+  })
+
+  test('Codex f2 #1: a commit refused commit-failed twice runs Save and reset (attempt-failed) and Blocks the item: outcome failed, no pause', T, async t => {
+    const fx = project(t)
+    const fake = commitTreeFails(fx, 2)
+    const f1 = await run(fx, { attempts: [{ ops: EDIT }, { ops: [] }], env: fake.env })
+    assert.equal(fake.count(), 2)
+    assert.equal(f1.get('paused'), undefined, f1.describe())
+    assert.equal(f1.get('committed'), undefined, f1.describe())
+    const row = ledger(fx)[0]
+    assert.deepEqual([row.outcome, row.verify, row.paused], ['failed', 'fail', undefined])
+    const sha = row.saves[0].sha
+    assert.equal(row.saves[0].why, 'attempt-failed')
+    assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), [`- [ ] item A ${DOT} attempts: 2 ${DOT} attempt failed twice`, `  - recovery: ${sha}`])
+    assert.doesNotMatch(loopText(fx), PAUSED, 'an attempt failure is no pause')
+  })
+
+  test('Codex f2 #2: an exit 2 from dispatch close is a lock error: the pause, with no check, verify or commit after it', T, async t => {
+    const fx = project(t)
+    const f1 = start(fx, { gates: ['dispatched'], attempts: [{ ops: EDIT }, { ops: [] }] })
+    await f1.event('dispatched')
+    // The dispatch record gone before its close: dispatch close answers exit 2 no-dispatch.
+    const children = path.join(f1.get('acquired').lockDir, 'children')
+    const recs = fs.readdirSync(children).filter(n => n.includes('-dispatch-'))
+    assert.equal(recs.length, 1, JSON.stringify(recs))
+    fs.rmSync(path.join(children, recs[0]))
+    const snap = workSnap(fx.W)
+    go(fx, 'dispatched')
+    const { exit } = await f1.ended()
+    assert.deepEqual(exit, { code: 0, signal: null }, f1.describe())
+    const paused = f1.get('paused')
+    assert.ok(paused, f1.describe())
+    assert.equal(paused.why, 'lock error')
+    assert.match(paused.detail, /^no-dispatch: /)
+    for (const name of ['checked', 'verify-run', 'verify-checked', 'verified', 'saved', 'committed', 'done']) assert.equal(f1.get(name), undefined, `${name} after a lock error: ${f1.describe()}`)
+    assert.equal(f1.events.filter(e => e.event === 'dispatched').length, 1, 'nothing more dispatched')
+    assert.deepEqual(workSnap(fx.W), snap, '<W> untouched')
+    const row = ledger(fx)[0]
+    assert.deepEqual([row.outcome, row.paused, row.verify, row.commits], ['skipped', true, null, []])
+    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A')], 'the item back with its status unchanged')
+    assert.match(loopText(fx), PAUSED)
   })
 })
 
