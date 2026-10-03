@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, execSync, spawnSync } from 'node:child_process'
-import { ROOT } from '../helpers.mjs'
+import { ROOT, scrubGitRouting } from '../helpers.mjs'
 import { acquire, release } from '../../scripts/loop-lock.mjs'
 import { loopPaths } from '../../scripts/lib/loop-paths.mjs'
 import { isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
@@ -25,7 +25,10 @@ export const D2 = '2026-10-02'
 export const D3 = '2026-10-03'
 export const D4 = '2026-10-04'
 
-// A private XDG_CONFIG_HOME keeps the user's ~/.config/git/ignore out of every listing.
+// A private XDG_CONFIG_HOME keeps the user's ~/.config/git/ignore out of every listing, and no
+// inherited variable routes the fixture's own git to another repository, index, object store or
+// configuration (Codex g4 #1); a test sets a hostile one explicitly, in the env it passes.
+scrubGitRouting(process.env)
 const XDG = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-lc-xdg-'))
 after(() => fs.rmSync(XDG, { recursive: true, force: true }))
 Object.assign(process.env, {

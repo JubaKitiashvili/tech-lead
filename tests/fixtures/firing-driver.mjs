@@ -71,7 +71,9 @@
 //
 // Scenario (JSON): {P, stop, gates: [], ctl, prefix, base, date, deps: {install} | null,
 //   attempts: [{ops, fail, flag}], path: 'commit' | 'flag' | 'fail' | 'pause', subject,
-//   faults: {}, betweenSaveReset: [ops], env: {}}. Delegate ops, run with cwd <W>:
+//   faults: {}, betweenSaveReset: [ops], env: {}}; env reaches the helpers, after the inherited
+//   git routing variables (GIT_ROUTING, tests/helpers.mjs) are scrubbed. Delegate ops, run with
+//   cwd <W>:
 //   ['write', rel, text], ['write64', rel, base64], ['append', rel, text], ['rm', rel],
 //   ['chmod', rel, 'octal'], ['symlink', target, rel], ['mkdir', rel], ['git', ...args],
 //   ['commit', message] (git add -A, git commit), ['dweller'] (a process left in <W>, in a
@@ -81,6 +83,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { scrubGitRouting } from '../helpers.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SCRIPTS = path.resolve(HERE, '..', '..', 'scripts')
@@ -240,6 +243,9 @@ function cloneFiring(sc) {
   const base = sc.base ?? 'main'
   const date = sc.date ?? '2026-10-02'
   const whyPath = sc.path ?? 'commit'
+  // No inherited variable routes the delegate's git to another repository, index, object store
+  // or configuration (Codex g4 #1); the scenario's env still sets one for the helpers.
+  scrubGitRouting(process.env)
   const env = { ...process.env, ...(sc.env ?? {}), TECH_LEAD_HOLDER_PID: String(process.pid) }
   delete env.TECH_LEAD_FAULT
   const notes = []
