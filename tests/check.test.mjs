@@ -609,6 +609,8 @@ test('fails when the Save and reset procedure resets before it saves, or writes 
   for (const [label, to] of [
     ['destination', 'The helper writes the full `sha` into its run record. One Edit of `STATE.md` moves the item at the'],
     ['negation', 'One Edit of `STATE.md` never writes the full `sha` at the'],
+    ['no Edit', 'No Edit of `STATE.md` writes the full `sha` at the'],
+    ['destination after', 'One Edit of `STATE.md` writes the full `sha` into the run record, not `STATE.md`, at the'],
   ]) {
     const dir = copyRepo(t)
     mutate(dir, LOOP_SKILL, 'One Edit of `STATE.md` writes the full `sha` at the', to)
