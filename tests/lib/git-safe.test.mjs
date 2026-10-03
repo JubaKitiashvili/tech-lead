@@ -714,9 +714,11 @@ test('cloneRepo makes a full clone with no hooks/ and no info/ from an empty tem
   const seen = fake.parse(fake.run(() => cloneRepo(src, d2, { templateDir: template })))
   assert.deepEqual(seen.args, [
     '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'protocol.allow=never',
-    '-c', 'protocol.file.allow=always', 'clone', '--no-local', '--no-checkout', '--no-recurse-submodules',
-    `--template=${template}`, '-q', '--', src, d2,
+    '-c', 'protocol.file.allow=always', '-c', 'clone.defaultRemoteName=origin', 'clone', '--no-local', '--no-checkout',
+    '--no-recurse-submodules', `--template=${template}`, '-q', '--', src, d2,
   ])
+  // The files ref backend whatever the owner's init.defaultRefFormat says (F2).
+  assert.equal(seen.env.GIT_DEFAULT_REF_FORMAT, 'files')
   assert.throws(() => cloneRepo(src, d2, {}), /templateDir/)
 })
 

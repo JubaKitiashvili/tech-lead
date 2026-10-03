@@ -35,7 +35,9 @@ export const SPECIAL_FILES = Object.freeze([
 ])
 
 // The only keys .git/config may hold, as `git config --list` prints them (section and
-// variable lower-cased). core.bare must also be false.
+// variable lower-cased). core.bare must also be false, and extensions.refstorage, when present,
+// files: the storage checks here and in git-safe model the files ref backend only (refs/heads a
+// directory), cloneRepo pins it, and git writes the key only for another backend (F2).
 export const CONFIG_KEYS = Object.freeze([
   'core.repositoryformatversion', 'core.filemode', 'core.bare', 'core.logallrefupdates',
   'core.ignorecase', 'core.precomposeunicode', 'core.symlinks', 'core.hookspath',
@@ -231,6 +233,8 @@ export function checkClone(W) {
         if (!ALLOWED_KEYS.has(key)) problems.push(`config key not allowed: ${key}`)
         else if (key === 'core.bare' && (value === null || !FALSE_VALUES.has(value.toString('utf8').trim().toLowerCase()))) {
           problems.push('config core.bare is not false')
+        } else if (key === 'extensions.refstorage' && (value === null || value.toString('utf8').trim().toLowerCase() !== 'files')) {
+          problems.push('config extensions.refstorage is not files')
         }
       }
     }

@@ -69,7 +69,12 @@ export const WORK_OVERRIDES = Object.freeze([
   'submodule.recurse=false',
 ])
 const WORK_TIMEOUT_MS = 540000
-const CLONE_OVERRIDES = ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'protocol.allow=never', 'protocol.file.allow=always']
+// clone.defaultRemoteName=origin: the owner's global name would leave remote.<name> and
+// refs/remotes/<name>/ in the clone, which normalize does not remove and checkClone refuses (F2).
+const CLONE_OVERRIDES = [
+  'core.hooksPath=/dev/null', 'core.fsmonitor=false', 'protocol.allow=never', 'protocol.file.allow=always',
+  'clone.defaultRemoteName=origin',
+]
 // The porcelain commands that would run an external diff driver or a textconv filter.
 const DIFF_PORCELAIN = new Set(['diff', 'log', 'show'])
 const NO_EXT = ['--no-ext-diff', '--no-textconv']
@@ -276,10 +281,13 @@ export function assertAttrSource(W) {
 
 // A full clone of `src` into the existing empty directory `dest` (made mode 0700 by the
 // caller): objects copied by the transport (--no-local), nothing checked out, no submodules,
-// the template directory's content only (an empty one gives no hooks/ and no info/).
+// the template directory's content only (an empty one gives no hooks/ and no info/), the remote
+// named origin and the files ref backend whatever the owner's clone.defaultRemoteName,
+// init.defaultRefFormat or GIT_DEFAULT_REF_FORMAT say (the storage checks need refs/heads as a
+// directory; GIT_DEFAULT_REF_FORMAT wins over the config, and a git older than 2.45 ignores it).
 export function cloneRepo(src, dest, { templateDir, timeoutMs = WORK_TIMEOUT_MS } = {}) {
   if (typeof templateDir !== 'string' || templateDir === '') throw new TypeError('git-safe: cloneRepo needs a templateDir')
-  const env = buildEnv({ GIT_NO_REPLACE_OBJECTS: '1', LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0', ...TRACE2_OFF }, {})
+  const env = buildEnv({ GIT_NO_REPLACE_OBJECTS: '1', LC_ALL: 'C', GIT_TERMINAL_PROMPT: '0', GIT_DEFAULT_REF_FORMAT: 'files', ...TRACE2_OFF }, {})
   const argv = [...asConfig(CLONE_OVERRIDES), 'clone', '--no-local', '--no-checkout', '--no-recurse-submodules',
     `--template=${templateDir}`, '-q', '--', src, dest]
   const label = `clone ${src} ${dest}`

@@ -125,6 +125,7 @@ const TAMPER = [
   ['a url.*.insteadOf', W => git(W, ['config', 'url./elsewhere/.insteadOf', '/here/']), /^config key not allowed: url\.\/elsewhere\/\.insteadof$/],
   ['a filter.*', W => git(W, ['config', 'filter.evil.clean', 'touch pwned']), /^config key not allowed: filter\.evil\.clean$/],
   ['core.bare true', W => git(W, ['config', 'core.bare', 'true']), /^config core\.bare is not false$/],
+  ['extensions.refstorage reftable', W => git(W, ['config', 'extensions.refstorage', 'reftable']), /^config extensions\.refstorage is not files$/],
   ['an objects/info/alternates file', W => write(path.join(W, '.git/objects/info/alternates'), '/elsewhere/objects\n'), /^\.git\/objects\/info\/alternates exists$/],
   ['an objects/info/http-alternates file', W => write(path.join(W, '.git/objects/info/http-alternates'), 'http://x/\n'), /^\.git\/objects\/info\/http-alternates exists$/],
   ['an info/grafts file', W => write(path.join(W, '.git/info/grafts'), `${git(W, ['rev-parse', 'HEAD'])}\n`), /^\.git\/info\/grafts exists$/],
