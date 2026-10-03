@@ -260,6 +260,55 @@ export function cwdSweep(dirs, { exclude = [] } = {}) {
   return { state: 'ok', procs }
 }
 
+// ancestry(pid = process.pid) -> {state:'ok', pids} | {state:'unknown', detail}: pid and
+// each of its ancestors up to (not including) pid 1. darwin: one `ps -A -o pid= -o ppid=`
+// listing; linux: the ppid field of /proc/<pid>/stat. A pid whose parent cannot be read
+// (one that is gone included) makes the whole chain unknown.
+export function ancestry(pid = process.pid) {
+  if (!validPid(pid)) return unknown(`bad pid: ${String(pid)}`)
+  let parentOf
+  if (process.platform === 'linux') {
+    parentOf = p => {
+      try {
+        const text = fs.readFileSync(`/proc/${p}/stat`, 'utf8')
+        const ppid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[1])
+        return Number.isInteger(ppid) && ppid >= 0 ? ppid : undefined
+      } catch {
+        return undefined
+      }
+    }
+  } else {
+    const r = spawnSync(PS(), ['-A', '-o', 'pid=', '-o', 'ppid='], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' },
+    })
+    if (r.error || r.status !== 0) return unknown(`ps -A: ${r.error ? r.error.code || r.error.message : `exit ${r.status}`}`)
+    const map = new Map()
+    for (const line of r.stdout.split('\n')) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+      if (m) map.set(Number(m[1]), Number(m[2]))
+    }
+    parentOf = p => map.get(p)
+  }
+  const pids = []
+  for (let p = pid; p > 1 && !pids.includes(p);) {
+    pids.push(p)
+    const ppid = parentOf(p)
+    if (ppid === undefined) return unknown(`cannot read the parent of pid ${p}`)
+    p = ppid
+  }
+  return { state: 'ok', pids }
+}
+
+// sweepOthers(dirs) -> cwdSweep's result: the processes working in dirs, never this
+// process or any of its ancestors (the runner, its shell, a terminal standing in the work
+// tree). An ancestry that cannot be read is returned as it is (state unknown), so no sweep
+// runs on a partial exclusion list.
+export function sweepOthers(dirs) {
+  const a = ancestry()
+  if (a.state !== 'ok') return a
+  return cwdSweep(dirs, { exclude: a.pids })
+}
+
 // TECH_LEAD_LSOF replaces /usr/sbin/lsof in tests only.
 const LSOF = () => process.env.TECH_LEAD_LSOF || '/usr/sbin/lsof'
 
