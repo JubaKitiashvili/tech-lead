@@ -185,8 +185,8 @@ This skill executes exactly one iteration of the backlog executor.
 
 ## 2 · Gates (in order; the first hit wins; each hit appends a ledger entry)
 
-1. **Paused.** `paused: true` → outcome `halted`, note "paused". Stop the
-   runner.
+1. **Paused.** `LOOP.md` says `paused: true` → outcome `halted`, note
+   "paused". Stop the runner.
 2. **Circuit breaker.** If the last `max_consecutive_failures` ledger outcomes
    are all `failed`:
    - write an incident to `## Last run`, naming the tasks and their failure
@@ -518,12 +518,13 @@ built from the checked tree (step 4).
      ```
 
    - If its `digest` differs from the previous check's, a verify command
-     changed the work (a formatter, a generated file): run every `verify:`
-     command again from `<K>` = 0, then `check --after verify` once more,
-     and apply the scope rail (step 2) to it. A second change is an attempt
-     failure (§7), note "verify changed the work twice".
-   - Any verify failure is an attempt failure (§7). A `lingering` run is
-     not one: it is the infra incident above.
+     changed the work (a formatter, a generated file), the one that failed
+     included: run every `verify:` command again from `<K>` = 0, then
+     `check --after verify` once more, and apply the scope rail (step 2) to
+     it. A second change is an attempt failure (§7), note "verify changed
+     the work twice".
+   - Any verify failure left after that is an attempt failure (§7). A
+     `lingering` run is not one: it is the infra incident above.
 4. **Commit.**
    - **All pass:**
      1. Write the commit subject, one line (the item's title), to

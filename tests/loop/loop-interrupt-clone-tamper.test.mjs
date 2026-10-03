@@ -3,8 +3,8 @@
 // 2, reset refuses, <W> unchanged); a corrupt or future run record; a store collision; a
 // tampered delivery bundle (the sidecar mismatch regenerates it); a delivery bundle that cannot
 // be read (planner exit 2 bundle-check); a ref changed in <W> between firings (tampered). Plus matrix row 36, a staged-then-reverted change (index-only pause,
-// nothing lost). Each ends with the owner's fix from the README troubleshooting rows and the
-// loop recovering. Invariants I1-I8: tests/loop/interrupt-fixture.mjs.
+// nothing lost). Each ends with the owner's fix from the README troubleshooting rows (the
+// unpause included) and the loop recovering. Invariants I1-I8: tests/loop/interrupt-fixture.mjs.
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
@@ -13,7 +13,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   ROWS, D2, PREFIX, SCRIPTS, T, assertRecovered, git, go, helperAs, interrupt, ledger, patches, project, recordGenerations, run, snapshot, start,
-  titles, workSnap,
+  titles, unpause, workSnap,
 } from './interrupt-fixture.mjs'
 import { createRecord } from '../../scripts/lib/run-record.mjs'
 
@@ -65,6 +65,7 @@ describe('section 19 tamper table', ROWS, () => {
       assert.deepEqual(fullSnap(fx.W), before, '<W> unchanged by the halted firing')
       assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].paused], ['skipped', true])
       setAside(fx, 1)
+      unpause(fx)
       const f3 = await run(fx, work('three'))
       const rec = f3.get('prepared').out.recovered
       assert.deepEqual(rec.map(r => r.generation), [null], 'with the record set aside, the leftovers have no record')
@@ -85,6 +86,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.deepEqual([f2.get('closed').status, f2.get('closed').out.state], [3, 'corrupt'])
     assert.deepEqual(fullSnap(fx.W), before)
     setAside(fx, 1)
+    unpause(fx)
     const f3 = await run(fx, work('three'))
     assertRecovered(fx, { rows: [1, 2, 3], tip: committedSha(f3), sections: { Done: ['item A', 'item B'] } })
     await run(fx, work('four'))
@@ -101,6 +103,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.match(f1.get('halted').out.detail, /^record-from-the-future: /)
     assert.equal(f1.get('prepared'), undefined)
     setAside(fx, 1)
+    unpause(fx)
     const f2 = await run(fx, work('two'))
     assertRecovered(fx, { rows: [1, 2], tip: committedSha(f2), sections: { Done: ['item A'] } })
     await run(fx, work('three'))
@@ -129,6 +132,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].paused], ['halted', true])
     assert.deepEqual(cloneState(fx.W), before, 'no reset, nothing touched')
     assert.deepEqual(titles(fx, 'Backlog')[0], 'item A', 'the item is back unchanged')
+    unpause(fx)
     const f2 = await run(fx, work('two'))
     assert.deepEqual(f2.get('planned').plan.actions, ['note-leftovers'])
     const rec = f2.get('prepared').out.recovered
@@ -197,6 +201,7 @@ describe('section 19 tamper table', ROWS, () => {
       fs.mkdirSync(aside)
       fs.renameSync(file, path.join(aside, path.basename(file)))
       fs.renameSync(`${file}.json`, path.join(aside, `${path.basename(file)}.json`))
+      unpause(fx)
       const f3 = await run(fx, work('three'))
       const p = f3.get('planned').plan
       assert.deepEqual(p.write_bundles, [BRANCH], JSON.stringify(p))
@@ -233,6 +238,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.deepEqual(fullSnap(fx.W), before)
     assert.deepEqual(recordGenerations(fx), [1])
     undoRefs(fx)
+    unpause(fx)
     const f3 = await run(fx, work('three'))
     const rec = f3.get('prepared').out.recovered
     assert.deepEqual(rec.map(r => r.generation), [1])
@@ -263,6 +269,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.deepEqual(f1.get('closed').out.kept.map(k => [k.generation, k.dirty]), [[1, true]])
     assert.equal(git(fx.W, ['show', ':a.txt']), 'staged')
     const before = fullSnap(fx.W)
+    unpause(fx)
     const f2 = await run(fx, work('two'))
     assert.equal(f2.get('paused').why, 'prepare index-only')
     assert.deepEqual(fullSnap(fx.W), before, 'nothing touched')
@@ -273,6 +280,7 @@ describe('section 19 tamper table', ROWS, () => {
     assert.deepEqual([look.status, look.stdout], [0, 'staged\n'])
     const broken = path.join(fx.V, 'clone.broken-1')
     fs.renameSync(fx.W, broken)
+    unpause(fx)
     const f3 = await run(fx, work('three'))
     const out = f3.get('prepared').out
     assert.equal(out.created, true)
