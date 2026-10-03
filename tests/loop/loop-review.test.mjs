@@ -471,8 +471,11 @@ test('fetch refuses a non-fast-forward and leaves the remote-tracking ref where 
   const t1b = work(p, D1, 1)
   bundle(p, D1)
   ledger(p, { iteration: 1, commits: [t1] }, { iteration: 2, commits: [t1b] })
+  // Under fetch.showForcedUpdates=false git skips its ancestry check and moves the ref as a
+  // fast-forward (closing review F8); the helper's fetch passes --show-forced-updates.
+  git(p.P, 'config', 'fetch.showForcedUpdates', 'false')
   const r = await runMain(p, tty(), 'fetch', p.P, '--branch', D1)
-  assert.equal(r.status, 3)
+  assert.equal(r.status, 3, JSON.stringify(r.out))
   assert.equal(r.out.results[0].reason, 'non-fast-forward')
   assert.equal(r.out.results[0].previous, t1)
   assert.equal(revParse(p.P, remote(D1)), t1)
