@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import {
-  BASE_FILES, DOT, ROWS, T, assertRecovered, go, gone, groupIsOurs, helperAs, interrupt, itemBlock, itemLine, killGroupIfOurs, ledger,
+  BASE_FILES, DOT, ROWS, T, assertRecovered, git, go, gone, groupIsOurs, helperAs, interrupt, itemBlock, itemLine, killGroupIfOurs, ledger,
   loopMd, patches, project, reap, run, sections, start, stateText, titles, tmp, waitFor, workSnap,
 } from './interrupt-fixture.mjs'
 import { groupAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
@@ -21,6 +21,23 @@ const committedSha = f => {
   const e = f.get('committed')
   assert.ok(e, `the firing did not commit: ${f.describe()}`)
   return e.out.sha
+}
+const loopText = fx => fs.readFileSync(path.join(fx.S, 'LOOP.md'), 'utf8')
+const PAUSED = /^paused: true$/m
+// A firing while LOOP.md says paused: true recovers, then halts at the gate (loop section 2):
+// outcome halted, note "paused", nothing picked, prepared or dispatched, <W> untouched.
+async function assertGated(fx, o) {
+  const snap = workSnap(fx.W)
+  const before = ledger(fx).length
+  const f = await run(fx, o)
+  assert.ok(f.get('gated'), f.describe())
+  for (const name of ['picked', 'prepared', 'dispatched', 'dispatched-commit']) assert.equal(f.get(name), undefined, `${name} while paused: ${f.describe()}`)
+  const row = ledger(fx)[before]
+  assert.equal(row.outcome, 'halted')
+  assert.ok(row.notes.split('; ').includes('paused'), row.notes)
+  assert.deepEqual(workSnap(fx.W), snap, '<W> untouched while paused')
+  assert.match(loopText(fx), PAUSED, 'still paused')
+  return f
 }
 const ledgerText = fx => {
   try { return fs.readFileSync(path.join(fx.S, 'LEDGER.jsonl'), 'utf8') } catch { return '' }
@@ -46,7 +63,7 @@ describe('the firing driver follows the prose', ROWS, () => {
   const LINGER = "const c = require('node:child_process').spawn('/bin/sleep', ['120'], { detached: true, stdio: 'ignore' }); c.unref(); "
     + "require('node:fs').appendFileSync(process.argv[2], c.pid + '\\n')\n"
 
-  test('Cg4#3: a verify run that leaves a process in the clone is an infra pause: never retried, <W> untouched, the item back as waiting-infra', T, async t => {
+  test('Cg4#3, Codex g4 #2: a verify run that leaves a process in the clone is an infra pause: never retried, <W> untouched, the item back as waiting-infra, LOOP.md paused until the owner unpauses', T, async t => {
     const fx = project(t, { files: { ...BASE_FILES, 'linger.js': LINGER } })
     const pidFile = path.join(fx.ctl, 'linger.pids')
     fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd({ verify: [`${process.execPath} linger.js ${pidFile}`] }))
@@ -68,34 +85,57 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.ok(snap.some(([p]) => p === 'new.txt'), 'the attempt stays in <W>')
     assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].paused], ['skipped', true])
     assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A'), '  - status: waiting-infra'])
-    // The owner ends the processes and fixes verify, then unpauses.
+    assert.match(loopText(fx), PAUSED, 'the pause is LOOP.md\'s flag')
+    // The owner ends the processes and fixes verify, but has not unpaused yet: no dispatch.
     for (const pid of alive) process.kill(pid, 'SIGKILL')
     assert.ok(await waitFor(() => alive.every(gone)))
-    fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd())
+    fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd().replace('---\n', '---\npaused: true\n'))
+    await assertGated(fx, work('gated'))
+    // The owner unpauses: the next firing dispatches again.
+    fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd().replace('---\n', '---\npaused: false\n'))
     const f2 = await run(fx, work('two'))
+    assert.ok(f2.get('dispatched'), f2.describe())
     const rec = f2.get('prepared').out.recovered
     assert.deepEqual(rec.map(r => r.generation), [1])
     const ex = { work: [{ snap, via: 'bundle', sha: rec[0].sha }] }
-    assertRecovered(fx, { ...ex, rows: [1, 2], tip: committedSha(f2), sections: { Done: ['item B'], Backlog: ['item A', 'item C', 'item D'] } })
+    assertRecovered(fx, { ...ex, rows: [1, 2, 3], tip: committedSha(f2), sections: { Done: ['item B'], Backlog: ['item A', 'item C', 'item D'] } })
     assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A'), '  - status: waiting-infra'], 'a waiting-infra item is never picked')
   })
 
-  test('Cg4#3, Cg4#9: a verify command that edits and fails is followed by check --after verify; the second failure Blocks with outcome failed', T, async t => {
-    const fx = project(t, { verify: ['echo more >> a.txt; exit 1'] })
+  // The verify events in order: [event, K, restarted] for a verify run, [event, attempt] else.
+  const verifyTrail = f => f.events.filter(e => ['dispatched', 'checked', 'verify-run', 'verify-checked'].includes(e.event))
+    .map(e => e.event === 'verify-run' ? [e.event, e.K, e.restarted] : e.event === 'verify-checked' ? [e.event, e.restarted] : [e.event])
+
+  test('Cg4#3, Cg4#9, Codex g4 #3: a verify command that edits and fails is followed by check --after verify and a restart from command zero (R22); the second change fails the attempt, the second failure Blocks with outcome failed', T, async t => {
+    const fx = project(t, { verify: ['echo more >> a.txt; exit 1', 'true'] })
     const f1 = await run(fx, { attempts: [{ ops: EDIT }, { ops: [] }] })
-    const order = f1.events.map(e => e.event).filter(n => ['dispatched', 'checked', 'verify-checked'].includes(n))
-    assert.deepEqual(order, ['dispatched', 'checked', 'verify-checked', 'dispatched', 'checked', 'verify-checked'])
+    const once = [['verify-run', 0, false], ['verify-checked', false], ['verify-run', 0, true], ['verify-checked', true]]
+    assert.deepEqual(verifyTrail(f1), [['dispatched'], ['checked'], ...once, ['dispatched'], ['checked'], ...once])
     const vc = f1.events.filter(e => e.event === 'verify-checked')
     assert.ok(vc.every(e => e.verifyFailed), JSON.stringify(vc))
     assert.ok(vc[0].check.touched.includes('a.txt'), 'the failed command\'s edit is checked')
     const row = ledger(fx)[0]
     assert.deepEqual([row.outcome, row.verify], ['failed', 'fail'])
+    assert.equal(row.notes.split('; ').filter(n => n === 'verify changed the work twice').length, 2, row.notes)
     const sha = row.saves[0].sha
     assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), [`- [ ] item A ${DOT} attempts: 2 ${DOT} attempt failed twice`, `  - recovery: ${sha}`])
-    assert.match(fs.readFileSync(path.join(fx.V, 'patches', `${sha}.patch`), 'utf8'), /\+edited\n\+more\n\+more/)
+    assert.match(fs.readFileSync(path.join(fx.V, 'patches', `${sha}.patch`), 'utf8'), /\+edited\n(\+more\n){4}(?!\+more)/)
+    assert.doesNotMatch(loopText(fx), PAUSED, 'an attempt failure is no pause')
     fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd())
     const f2 = await run(fx, work('two'))
     assertRecovered(fx, { rows: [1, 2], tip: committedSha(f2), sections: { Blocked: ['item A'], Done: ['item B'] } })
+  })
+
+  test('Codex g4 #3: a formatter that rewrites a file and exits 1 once is cured by the restart from command zero: one dispatch, then the commit (R22)', T, async t => {
+    const fx = project(t)
+    const mark = path.join(fx.ctl, 'formatted')
+    fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd({ verify: [`[ -e '${mark}' ] || { touch '${mark}'; echo formatted >> a.txt; exit 1; }`, 'true'] }))
+    const f1 = await run(fx, { attempts: [{ ops: EDIT }, { ops: [] }] })
+    assert.deepEqual(verifyTrail(f1), [['dispatched'], ['checked'],
+      ['verify-run', 0, false], ['verify-checked', false], ['verify-run', 0, true], ['verify-run', 1, true], ['verify-checked', true]])
+    const sha = committedSha(f1)
+    assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].verify], ['done', 'pass'])
+    assert.equal(git(fx.W, ['show', `${sha}:a.txt`]), 'edited\nformatted')
   })
 
   // The owner's release, run as the live driver (the holder), while it waits at `gate`.
@@ -170,11 +210,14 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.deepEqual(titles(fx, 'Now'), [])
     assert.deepEqual(titles(fx, 'Backlog'), ['item A', 'item B', 'item C', 'item D'])
     assert.match(ledger(fx)[0].notes, /item A back to the top of ## Backlog/)
-    // The owner's fix (README "recovery planner"): the record set aside.
+    assert.match(loopText(fx), PAUSED, 'the planner incident pauses the loop')
+    // The owner's fix (README "recovery planner"): the record set aside, then the unpause.
     fs.mkdirSync(path.join(fx.V, 'run.broken-1'))
     fs.renameSync(path.join(fx.V, 'run', '1.json'), path.join(fx.V, 'run.broken-1', '1.json'))
+    await assertGated(fx, work('gated'))
+    fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopText(fx).replace(PAUSED, 'paused: false'))
     const f3 = await run(fx, work('three'))
-    assertRecovered(fx, { rows: [2, 3], tip: committedSha(f3), sections: { Done: ['item A'], Backlog: ['item B', 'item C', 'item D'] } })
+    assertRecovered(fx, { rows: [2, 3, 4], tip: committedSha(f3), sections: { Done: ['item A'], Backlog: ['item B', 'item C', 'item D'] } })
   })
 })
 

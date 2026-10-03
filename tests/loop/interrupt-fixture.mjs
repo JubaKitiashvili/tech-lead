@@ -225,6 +225,15 @@ export const go = (fx, name) => fs.writeFileSync(path.join(fx.ctl, `${name}.go`)
 // ---------------------------------------------------------------- facts
 
 export const stateText = fx => fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8')
+// The owner's unpause: a pausing firing set `paused: true` in LOOP.md's front matter (the
+// driver does it the way the loop does), and no firing dispatches again until the owner sets
+// it back to false (Codex g4 #2).
+export function unpause(fx) {
+  const file = path.join(fx.S, 'LOOP.md')
+  const text = fs.readFileSync(file, 'utf8')
+  assert.match(text, /^paused: true$/m, 'the loop is paused')
+  fs.writeFileSync(file, text.replace(/^paused: true$/m, 'paused: false'))
+}
 // The lines of the first item titled `title` in a section: its `- ` line and the indented
 // sub-bullets under it; null when there is none.
 export function itemBlock(fx, name, title) {

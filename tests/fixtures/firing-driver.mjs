@@ -27,7 +27,9 @@
 //                 bundle per write-bundle, `recovered` carried to the ledger row with
 //                 `action` the ## Now action taken); planner exit 2 puts a ## Now item back at
 //                 the top of ## Backlog and halts the firing (incident, paused, outcome skipped)
-//     sections 2-4  pick: the first ## Backlog item whose status is `—` moves to ## Now
+//     section 2   gate 1 only: LOOP.md's `paused: true` -> {"event":"gated","gate":"paused"},
+//                 outcome halted, note "paused", nothing picked, prepared or dispatched
+//     sections 3-4  pick: the first ## Backlog item whose status is `—` moves to ## Now
 //     section 5   loop-clone.mjs prepare; deps; the install through loop-lock exec --label
 //                 deps --cwd <W> --timeout-ms 540000 when not fresh (judged by the exec
 //                 line's state); check --after deps; deps --mark when the install ran;
@@ -37,9 +39,10 @@
 //                 entry and the item back in ## Backlog with status waiting-decision; else the
 //                 scope rail on out_of_scope; verify: exec --verify K --timeout-ms 540000
 //                 judged by its state (exited 0 passes; lingering is an infra pause, never
-//                 retried; anything else fails), then check --after verify after the last
-//                 command or the first that failed, restarting from K = 0 once when the
-//                 digest changed (R22) and applying the scope rail to that check; commit
+//                 retried; anything else fails; {"event":"verify-run","K","restarted","state",
+//                 "exit"} after each), then check --after verify after the last command or the
+//                 first that failed; a changed digest restarts from K = 0 once (R22), before
+//                 any failure counts, and the scope rail applies to the check after it; commit
 //                 --digest; the item to ## Done with the sha
 //     section 7   the first failure keeps the attempt (a second dispatch), the second does
 //                 Save and reset (attempt-failed) and Blocks the item with its recovery:
@@ -47,6 +50,9 @@
 //                 and reset (pause); every other refusal is a touch-nothing pause (the item
 //                 back to ## Backlog, its status unchanged)
 //     section 8   ## Last run, ## Now (empty), one ledger row, loop-clone.mjs close, release
+//   Every pause (a touch-nothing pause, a planner exit 2, Save and reset (pause), a failed save
+//   or reset) sets `paused: true` in LOOP.md's front matter before section 8, and its ledger row
+//   carries paused: true; only the owner sets the flag back.
 //   Save and reset: reflex-bundle.mjs save, one STATE.md edit with the sha (`none` and the
 //   empty answer's base and scope on an empty save, which skips the reset), reflex-bundle.mjs
 //   reset (unsaved: once more from the save; busy: pause without a reset).
@@ -297,6 +303,24 @@ function cloneFiring(sc) {
     process.exit(0)
   }
 
+  // LOOP.md's `paused:` flag (references/loop-templates.md: any runner exits at once when it
+  // is true), read from the front matter. A firing pauses the loop by setting it there: its
+  // `paused:` line becomes `paused: true` (a comment after it kept), or the line is added
+  // after the opening `---` when the key is missing. Only the owner sets it back.
+  const LOOP = path.join(S, 'LOOP.md')
+  const frontEnd = lines => lines.findIndex((l, i) => i > 0 && /^---\s*$/.test(l))
+  const isPaused = () => {
+    const lines = fs.readFileSync(LOOP, 'utf8').split('\n')
+    return lines.slice(1, frontEnd(lines)).some(l => /^paused\s*:\s*true\s*(#.*)?$/.test(l))
+  }
+  const setPaused = () => {
+    const lines = fs.readFileSync(LOOP, 'utf8').split('\n')
+    const at0 = lines.slice(1, frontEnd(lines)).findIndex(l => /^paused\s*:/.test(l)) + 1
+    if (at0 > 0) lines[at0] = lines[at0].replace(/^paused\s*:\s*[^\s#]*/, 'paused: true')
+    else lines.splice(1, 0, 'paused: true')
+    fs.writeFileSync(LOOP, lines.join('\n'))
+  }
+
   const editState = fn => {
     const s = parseState(fs.readFileSync(STATE, 'utf8'))
     fn(s)
@@ -356,6 +380,7 @@ function cloneFiring(sc) {
 
   // ---- section 8: ## Last run, ## Now (empty), the ledger row, close, release.
   const finish = (outcome, extra = {}) => {
+    if (extra.paused) setPaused()
     editState(s => {
       if (s.body.Now.length) {
         s.body.Backlog.unshift(...s.body.Now)
@@ -546,6 +571,14 @@ function cloneFiring(sc) {
   }
   at('planned', { plan: plan.out })
 
+  // ---- section 2, gate 1: LOOP.md's paused flag, read after the recovery above and before
+  // any pick, prepare or dispatch -> outcome halted, note "paused".
+  if (isPaused()) {
+    notes.push('paused')
+    emit({ event: 'gated', gate: 'paused' })
+    finish('halted')
+  }
+
   // ---- sections 2-4: pick.
   editState(s => {
     if (!s.body.Now.length) {
@@ -634,6 +667,7 @@ function cloneFiring(sc) {
           if (stop === 'verifying' && K === 0 && !restarted) at('verifying', execAsync(args))
           const v = spawnSync(process.execPath, [LOCK, ...args], { encoding: 'utf8', env })
           const last = execLast(v)
+          emit({ event: 'verify-run', K, restarted, state: last.state, exit: last.exit })
           // Loop section 6 step 3, judged by the exec line's state, never the exit code alone.
           if (execLost(last)) lostLock('verify exec', last)
           if (last.state === 'lingering') pause('exec lingering', last, 'waiting-infra')
@@ -651,25 +685,30 @@ function cloneFiring(sc) {
           pause(`check ${cv.out?.state ?? cv.status}`, cv.out?.detail ?? cv.stderr)
         }
         at('verify-checked', { check: cv.out, restarted, verifyFailed })
+        // R22 first, the failing command included (plan Appendix B): a changed digest restarts
+        // every verify command from K = 0 once, whether or not a command failed; a second
+        // change is an attempt failure.
+        if (cv.out.digest !== digest) {
+          digest = cv.out.digest
+          if (restarted) {
+            failed = true
+            notes.push('verify changed the work twice')
+            break
+          }
+          restarted = true
+          notes.push('verify changed the work: verification restarted')
+          continue
+        }
         if (verifyFailed) {
           failed = true
           break
         }
-        // The scope rail (section 6 step 2) on the check a verify run may have changed.
+        // The scope rail (section 6 step 2) on the check after a restart.
         if (cv.out.out_of_scope.length) {
           failed = true
           notes.push(`out of scope after verify: ${cv.out.out_of_scope.join(', ')}`)
-          break
         }
-        if (cv.out.digest === digest) break
-        digest = cv.out.digest
-        if (restarted) {
-          failed = true
-          notes.push('verify changed the work twice')
-          break
-        }
-        restarted = true
-        notes.push('verify changed the work: verification restarted')
+        break
       }
     }
     if (failed) {

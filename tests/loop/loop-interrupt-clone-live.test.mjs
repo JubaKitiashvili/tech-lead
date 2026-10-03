@@ -11,7 +11,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import {
   ROWS, FAKE_CODEX, T, assertRecovered, gone, go, helperAs, interrupt, ledger, loopMd, project, reap, recordGenerations, run, sections, snapshot,
-  start, titles, waitFor, workSnap,
+  start, titles, unpause, waitFor, workSnap,
 } from './interrupt-fixture.mjs'
 import { groupAlive } from '../../scripts/lib/loop-proc.mjs'
 
@@ -104,6 +104,7 @@ describe('section 19 live children', ROWS, () => {
     assert.equal(ledger(fx)[1].paused, true)
     process.kill(pid, 'SIGKILL')
     assert.ok(await waitFor(() => gone(pid)))
+    unpause(fx)
     const f3 = await run(fx, work('three'))
     const rec = f3.get('prepared').out.recovered
     assert.deepEqual(rec.map(r => r.generation), [null])
