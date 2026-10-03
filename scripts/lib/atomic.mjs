@@ -4,9 +4,9 @@
 // directory (<dir>/.tmp-<pid>-<16 hex>), fsynced, and only then given its name, so a reader
 // in another process sees either no record, the old one or the new one, never a partial
 // one; the directory is fsynced after the name changes, so the name survives a crash too.
-//   createExclusive(file, obj) -> true, or false when file already exists (link(2) is the
-//                                 exclusive step, so two racers cannot both win)
-//   writeReplace(file, obj)       creates or replaces file (rename(2))
+//   createExclusive(file, obj, {guard}) -> true, or false when file already exists (link(2)
+//                                 is the exclusive step, so two racers cannot both win)
+//   writeReplace(file, obj, {guard})  creates or replaces file (rename(2))
 //   readJson(file) -> object | null; null only when file is missing; throws
 //                                 Error('corrupt: <file>') when the content is not a JSON object
 //                                 or the name is not a regular file (a symlink, a FIFO, a
@@ -19,11 +19,12 @@
 //   tempDir(dir) -> path          <dir>/.tmp-<pid>-<16 hex>, created mode 0700. A temporary
 //                                 git index is a path inside one that does not exist yet:
 //                                 git refuses an existing empty file as an index.
-//   commitExclusive(tmpPath, file) -> {created}: fsync tmpPath, link(2) it to file, fsync
-//                                 the directory. A file already there with identical bytes
+//   commitExclusive(tmpPath, file, {guard}) -> {created}: fsync tmpPath, link(2) it to file,
+//                                 fsync the directory. A file already there with identical bytes
 //                                 is {created:false}; anything else there (other bytes, or
 //                                 not a regular file) throws 'integrity: ...' with code
-//                                 INTEGRITY. tmpPath is removed in every case.
+//                                 INTEGRITY. tmpPath is removed in every case (a bad guard
+//                                 included).
 //   sweepTemps(dir) -> string[]   removes the .tmp-<pid>-* entries of dir whose pid is gone
 //                                 (startToken), and returns the paths it removed. A file
 //                                 (or symlink) is unlinked; a directory has its regular files
@@ -32,6 +33,10 @@
 //                                 unknown keep their entries. A missing dir sweeps nothing.
 // The modes are set on the open descriptor after creation, so the caller's umask neither
 // widens nor narrows them.
+// guard (optional; R31 as sharpened): the caller's lock check, called after the temp is written
+// and fsynced, immediately before the rename(2) or link(2) that publishes it, with nothing in
+// between; whatever it throws propagates and the temp is removed, so a lock lost during the
+// fsync publishes nothing. Anything but a function or undefined is a TypeError before any I/O.
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -66,6 +71,12 @@ function fsyncFile(file) {
   }
 }
 
+function guardOf(opts, who) {
+  const guard = opts?.guard
+  if (guard !== undefined && typeof guard !== 'function') throw new TypeError(`${who}: guard must be a function () => void that throws when the firing lock is lost`)
+  return guard ?? (() => {})
+}
+
 // The record's bytes in a new temp file next to file, fsynced and closed. A failure after
 // the temp exists removes it; a failure to create it removes nothing (the name is not ours).
 function writeTemp(file, obj) {
@@ -83,10 +94,12 @@ function writeTemp(file, obj) {
   return tmp
 }
 
-export function createExclusive(file, obj) {
+export function createExclusive(file, obj, opts = {}) {
+  const guard = guardOf(opts, 'createExclusive')
   const tmp = writeTemp(file, obj)
   let created = false
   try {
+    guard()
     fs.linkSync(tmp, file)
     created = true
   } catch (e) {
@@ -98,9 +111,11 @@ export function createExclusive(file, obj) {
   return created
 }
 
-export function writeReplace(file, obj) {
+export function writeReplace(file, obj, opts = {}) {
+  const guard = guardOf(opts, 'writeReplace')
   const tmp = writeTemp(file, obj)
   try {
+    guard()
     fs.renameSync(tmp, file)
   } catch (e) {
     fs.rmSync(tmp, { force: true })
@@ -216,11 +231,13 @@ function sameBytes(tmp, file) {
   }
 }
 
-export function commitExclusive(tmpPath, file) {
+export function commitExclusive(tmpPath, file, opts = {}) {
   try {
+    const guard = guardOf(opts, 'commitExclusive')
     fsyncFile(tmpPath)
     let created = true
     try {
+      guard()
       fs.linkSync(tmpPath, file)
     } catch (e) {
       if (e.code !== 'EEXIST') throw e

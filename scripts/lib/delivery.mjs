@@ -8,8 +8,9 @@
 // loop-recover.mjs import it. The callers hold the firing lock and have checked <W>
 // (checkClone); nothing here takes the lock, but every publication re-checks it through the
 // caller's guard() (R31): guard is called right before each .prev link, right before the rename
-// that publishes the bundle and right before its sidecar is written, with no git call or other
-// blocking work between a check and its write (every git-derived value is computed first), and
+// that publishes the bundle, and before the sidecar's temp is written and again after its fsync,
+// right before the rename that publishes it (atomic.writeReplace's guard), with no git call or
+// other blocking work between a check and its write (every git-derived value is computed first), and
 // whatever it throws (NOT_HOLDER, HOLDER_UNKNOWN) propagates as it is. A lock lost between the
 // rename and the sidecar leaves the new bundle published beside the old sidecar (bundleCurrent
 // reads it other-tip, so the next sync writes it again). Every git call goes through workGit.
@@ -40,8 +41,9 @@
 //                                    given, is the tip the caller vetted: a branch that moved
 //                                    throws `tip-moved`. An empty range writes nothing.
 //                                    guard() (the caller's assertHeld) runs right before each
-//                                    .prev link, right before the rename and right before the
-//                                    sidecar; the ancestry check runs before all of them.
+//                                    .prev link, right before the rename, and before the
+//                                    sidecar and after its temp's fsync (right before its
+//                                    rename); the ancestry check runs before all of them.
 //                                    guard is required: without a function, TypeError.
 //   syncBundles(paths, {vetted, retired, base = BASE_REF, why = 'regenerated', guard})
 //                                    -> [{branch, result}] for every dated refs/heads/* in <W>,
@@ -342,7 +344,7 @@ export function writeBundle(paths, branch, { why, tip: expect, guard } = {}) {
     if (!renamed) fs.rmSync(tmp.path, { force: true })
   }
   held()
-  writeReplace(sidecarPath(paths, branch), { tip, sha256: digest.sha256 })
+  writeReplace(sidecarPath(paths, branch), { tip, sha256: digest.sha256 }, { guard: held })
   return { file, tip, sha256: digest.sha256, bytes: digest.bytes, why }
 }
 

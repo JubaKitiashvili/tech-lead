@@ -32,10 +32,11 @@
 //       file holding a record of generation N throws 'corrupt: <file>: <why>' (code CORRUPT).
 //   listRecords(paths) -> records ascending by generation; only names '<N>.json' count; a
 //       corrupt one throws as readRecord does; a missing <V>/run is [].
-//   createRecord(paths, N, fields = {}) -> boolean: the defaults above (phase preparing, null
-//       and empty fields) overlaid with fields, timestamps set; false when the record exists.
-//       createRecord(paths, {generation: N, ...fields}) is the same call. Never creates <V>.
-//   updateRecord(paths, N, patch) -> the record written. patch is an object merged over the
+//   createRecord(paths, N, fields = {}, {guard}) -> boolean: the defaults above (phase
+//       preparing, null and empty fields) overlaid with fields, timestamps set; false when the
+//       record exists. createRecord(paths, {generation: N, ...fields}, {guard}) is the same
+//       call. Never creates <V>.
+//   updateRecord(paths, N, patch, {guard}) -> the record written. patch is an object merged over the
 //       record's top-level keys (a recovery object is laid over the current recovery, so what
 //       it leaves out keeps its value; with no current recovery, base, rewind, bundles,
 //       reset_sha and note default to null/[]), or a function rec -> new record. v, generation
@@ -54,7 +55,10 @@
 //   vettedTip({records, ledger, branch, tip, inBase}) -> boolean (see below; R28).
 //   cloneVerdict(rec | null, facts) -> {verdict, generation, ...} (pure; see below).
 // A record that would not pass the schema is never written: create and update throw
-// 'bad-record: <why>' (code BAD_RECORD) and leave the file as it was.
+// 'bad-record: <why>' (code BAD_RECORD) and leave the file as it was. guard (optional, R31):
+// the caller's assertHeld, passed to atomic's createExclusive / writeReplace, which call it
+// after the record's temp is fsynced, right before the link or rename; when it throws, nothing
+// is written.
 import fs from 'node:fs'
 import path from 'node:path'
 import { createExclusive, readJson, writeReplace } from './atomic.mjs'
@@ -321,8 +325,9 @@ export function listRecords(paths) {
   return out
 }
 
-export function createRecord(paths, N, fields = {}) {
+export function createRecord(paths, N, fields = {}, opts = {}) {
   if (isPlain(N)) {
+    opts = fields
     fields = N
     N = fields.generation
   }
@@ -344,10 +349,10 @@ export function createRecord(paths, N, fields = {}) {
   } catch (e) {
     if (e.code !== 'EEXIST') throw e
   }
-  return createExclusive(file, rec)
+  return createExclusive(file, rec, { guard: opts?.guard })
 }
 
-export function updateRecord(paths, N, patch) {
+export function updateRecord(paths, N, patch, opts = {}) {
   const file = recordFile(paths, N)
   const cur = readFileRecord(file, N)
   if (cur === null) throw Object.assign(new Error(`no-record: ${file}`), { code: 'NO_RECORD', file })
@@ -367,7 +372,7 @@ export function updateRecord(paths, N, patch) {
   const kept = new Set(anchors(rec))
   const lost = anchors(cur).filter(sha => !kept.has(sha))
   if (lost.length) throw badRecord(`the update would drop the anchored sha ${lost.join(', ')}`)
-  writeReplace(file, rec)
+  writeReplace(file, rec, { guard: opts?.guard })
   return rec
 }
 

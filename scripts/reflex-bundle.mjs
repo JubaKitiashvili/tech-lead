@@ -41,6 +41,9 @@
 // Lock loss (R31): every step that publishes or destroys (the rules sidecar, the bundle link, the
 // record writes, the reset's intent, each unlink and rmdir, each read-tree) re-checks the lock
 // right before it, and a lost lock propagates as NOT_HOLDER / HOLDER_UNKNOWN, never as partial.
+// A publication through a temp (the rules sidecar, the bundle, each record write) also passes
+// the check to atomic as its guard, which runs it after the temp's fsync, right before the link
+// or rename, so a lock lost during that fsync publishes nothing.
 // Every entry needs a git that honours GIT_ATTR_SOURCE (R24): else REFUSED infra git-too-old.
 // CLI (one JSON line on stdout; exit 0 ok, 2 {state:'error', detail[, partial]}, 3 refused):
 //   save <P> --generation <N> --why <why> [--item-digest <64hex>]   (refuses head-moved when
@@ -302,8 +305,8 @@ function hashFile(file) {
 }
 
 // Writes bytes to <store>/<name> through a temp file and link(2): identical bytes already there
-// are fine, other bytes are tampering.
-function commitBytes(store, name, bytes) {
+// are fine, other bytes are tampering. guard runs right before the link (atomic.commitExclusive).
+function commitBytes(store, name, bytes, guard) {
   const { path: tmp, fd } = tempFile(store)
   try {
     writeAll(fd, bytes)
@@ -312,7 +315,7 @@ function commitBytes(store, name, bytes) {
     fs.closeSync(fd)
   }
   try {
-    return commitExclusive(tmp, path.join(store, name))
+    return commitExclusive(tmp, path.join(store, name), { guard })
   } catch (e) {
     if (e.code === 'INTEGRITY') throw refused('tampered', e.message)
     throw e
@@ -559,13 +562,14 @@ export function saveFor(paths, { saver, source = null, base, rules, why, itemDig
     if (replayed !== tree) throw new Error(`apply-check: the bundle replays to ${replayed}, not the captured tree ${tree}`)
     fault('save:after-check')
     const sha = hashFile(tmp)
-    assertHeld(paths, saver, env)
-    commitBytes(wt.store, `rules-${rsha}.json`, Buffer.from(canonicalJson(rules), 'utf8'))
+    const held = () => assertHeld(paths, saver, env)
+    held()
+    commitBytes(wt.store, `rules-${rsha}.json`, Buffer.from(canonicalJson(rules), 'utf8'), held)
     const file = bundleFile(wt.store, sha)
     let created
-    assertHeld(paths, saver, env)
+    held()
     try {
-      ({ created } = commitExclusive(tmp, file))
+      ({ created } = commitExclusive(tmp, file, { guard: held }))
     } catch (e) {
       if (e.code === 'INTEGRITY') throw refused('tampered', e.message)
       throw e
@@ -696,14 +700,14 @@ function indexNeedsReset(wt, base) {
   return splitNul(tags).some(rec => rec.length && rec[0] !== 0x48) // 'H': a plain cached entry
 }
 
-function recordIntent(paths, g, holder, sha, base) {
+function recordIntent(paths, g, holder, sha, base, guard) {
   updateRecord(paths, g, r => (g === holder
     ? { ...r, phase: 'resetting', reset_sha: sha }
-    : { ...r, recovery: { ...(r.recovery ?? {}), by: holder, base: r.recovery?.base ?? base, step: 'resetting', reset_sha: sha, note: null } }))
+    : { ...r, recovery: { ...(r.recovery ?? {}), by: holder, base: r.recovery?.base ?? base, step: 'resetting', reset_sha: sha, note: null } }), { guard })
 }
 
-function recordDone(paths, g, holder) {
-  updateRecord(paths, g, r => (g === holder ? { ...r, phase: 'clean' } : { ...r, recovery: { ...r.recovery, by: holder, step: 'done' } }))
+function recordDone(paths, g, holder, guard) {
+  updateRecord(paths, g, r => (g === holder ? { ...r, phase: 'clean' } : { ...r, recovery: { ...r.recovery, by: holder, step: 'done' } }), { guard })
 }
 
 const isClean = c => !c.tracked.length && !c.untracked.length && !c.indexDirty && !c.indexOnly.length
@@ -741,7 +745,7 @@ export function resetFor(paths, { holder, record, sha, relaxed = false, also = n
   const restoreOpts = { config: filterOverrides(wt), env: { GIT_ATTR_SOURCE: h.base } }
   const held = () => assertHeld(paths, holder, env)
   held()
-  recordIntent(paths, g, holder, sha, h.base)
+  recordIntent(paths, g, holder, sha, h.base, held)
   fault('reset:after-intent')
   const restore = () => {
     held()
@@ -774,7 +778,7 @@ export function resetFor(paths, { holder, record, sha, relaxed = false, also = n
     throw partial(e.message)
   }
   held()
-  recordDone(paths, g, holder)
+  recordDone(paths, g, holder, held)
   fault('reset:after-record')
   const rm = capList(removed)
   const rs = capList(c.tracked)
@@ -971,12 +975,13 @@ function saveCli(a, env) {
     itemDigest: a['item-digest'] ?? null, also: knownCommits(rec), requireHeadAtBase: true, env,
   })
   if (r.state !== 'saved') return r
-  assertHeld(paths, a.generation, env)
+  const held = () => assertHeld(paths, a.generation, env)
+  held()
   updateRecord(paths, a.generation, cur => {
     const last = cur.saves[cur.saves.length - 1]
     const saves = last && last.sha === r.sha && last.why === a.why ? cur.saves : [...cur.saves, { sha: r.sha, why: a.why }]
     return { ...cur, phase: 'saved', saves }
-  })
+  }, { guard: held })
   fault('save:after-record')
   return r
 }
