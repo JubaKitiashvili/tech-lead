@@ -20,7 +20,9 @@ const HAS_REFTABLE = MAJOR > 2 || (MAJOR === 2 && MINOR >= 45)
 
 // A global config file under fx.root and the environment that points the CLI children at it.
 // The filter program appends to `marker` whenever git runs it.
-function ownerConfig(fx, { reftable = false } = {}) {
+// remote: clone.defaultRemoteName=upstream; reftable: init.defaultRefFormat=reftable with
+// GIT_DEFAULT_REF_FORMAT=reftable; gitConfig: GIT_CONFIG naming an empty file (F10).
+function ownerConfig(fx, { remote = true, reftable = false, gitConfig = false } = {}) {
   const dir = path.join(fx.root, 'owner-config')
   fs.mkdirSync(dir)
   const marker = path.join(dir, 'filter-ran')
@@ -30,7 +32,7 @@ function ownerConfig(fx, { reftable = false } = {}) {
   fs.writeFileSync(attrs, '* filter=x\n')
   const file = path.join(dir, 'gitconfig')
   fs.writeFileSync(file, [
-    '[clone]', '\tdefaultRemoteName = upstream',
+    ...(remote ? ['[clone]', '\tdefaultRemoteName = upstream'] : []),
     ...(reftable ? ['[init]', '\tdefaultRefFormat = reftable'] : []),
     '[core]', '\tautocrlf = true', `\tattributesFile = "${attrs}"`,
     '[filter "x"]', `\tclean = "${prog}" clean`, `\tsmudge = "${prog}" smudge`,
@@ -38,7 +40,12 @@ function ownerConfig(fx, { reftable = false } = {}) {
   ].join('\n'))
   // The variable wins over init.defaultRefFormat, so cloneRepo has to pin the variable.
   const refEnv = reftable ? { GIT_DEFAULT_REF_FORMAT: 'reftable' } : {}
-  return { env: { ...fx.env, GIT_CONFIG_GLOBAL: file, ...refEnv }, marker }
+  let cfgEnv = {}
+  if (gitConfig) {
+    cfgEnv = { GIT_CONFIG: path.join(dir, 'empty-config') }
+    fs.writeFileSync(cfgEnv.GIT_CONFIG, '')
+  }
+  return { env: { ...fx.env, GIT_CONFIG_GLOBAL: file, ...refEnv, ...cfgEnv }, marker }
 }
 
 function saveCli(fx, env) {
@@ -104,4 +111,29 @@ test('owner config: clone.defaultRemoteName, core.autocrlf and a global filter; 
 
 test('owner config with init.defaultRefFormat=reftable and GIT_DEFAULT_REF_FORMAT=reftable: the clone is made with the files backend', { ...T, skip: !HAS_REFTABLE && 'git < 2.45 has no reftable' }, async t => {
   await firingUnder(t, { reftable: true })
+})
+
+// GIT_CONFIG points `git config` alone at one file (closing review F10): the filter
+// neutralization's `config --get-regexp ^filter[.]` read only that empty file and emptied no
+// driver, while every other git command still read the global config and ran the filter (and
+// normalize's `git config` writes went to that file, leaving remote.origin in a new clone).
+// git-safe drops the variable, so the neutralization and the commands it guards read the same
+// files.
+test('an inherited GIT_CONFIG naming an empty file: a save of an edited clone runs no global filter', T, async t => {
+  const fx = project(t)
+  const { env, marker } = ownerConfig(fx, { remote: false })
+  await firing(fx)
+  assert.equal(prepare(fx, { env }).created, true)
+  check(fx, 'deps', { env }) // records the rules a save needs (and may run the filter, R9)
+  write(fx.W, 'a.txt', 'changed\n')
+  const withGitConfig = { ...env, GIT_CONFIG: path.join(fx.root, 'owner-config', 'empty-config') }
+  fs.writeFileSync(withGitConfig.GIT_CONFIG, '')
+  fs.rmSync(marker, { force: true })
+  const saved = saveCli(fx, withGitConfig)
+  assert.equal(saved.state, 'saved', JSON.stringify(saved))
+  assert.equal(ran(marker), '', 'a save under GIT_CONFIG ran the owner\'s filter')
+})
+
+test('an inherited GIT_CONFIG naming an empty file: prepare, check and save succeed and run no filter', T, async t => {
+  await firingUnder(t, { remote: false, gitConfig: true })
 })
