@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { SCRIPT, T, cli, firing, prepare, project, waitGone } from './loop-clone-fixture.mjs'
+import { SCRIPT, T, cli, firing, git, prepare, project, waitGone } from './loop-clone-fixture.mjs'
 import { sweepTemps } from '../../scripts/lib/atomic.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -71,4 +71,33 @@ test('passthrough refuses clone-invalid when <V>/patches is a symlink, and write
   assert.equal(last.state, 'refused')
   assert.match(last.detail, /^clone-invalid: .*patches/)
   assert.deepEqual(fs.readdirSync(target), [])
+})
+
+// git's own signature check (log --show-signature, %G?, the owner's log.showSignature) writes the
+// signature to a .git_vtag_tmp* file in TMPDIR before it runs the verifier: the passthrough points
+// TMPDIR at its private directory too, so that file never lands in a TMPDIR inside <P>.
+test('passthrough signature checks write their temporary file in <V>/patches, not in TMPDIR', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  prepare(fx)
+  const inside = path.join(fx.P, 'tmp-inside')
+  fs.mkdirSync(inside)
+  const mark = path.join(fx.root, `gpg-args-${process.hrtime.bigint()}`)
+  const gpg = path.join(fx.root, 'fake-gpg')
+  fs.writeFileSync(gpg, `#!/bin/sh\nfor a in "$@"; do case "$a" in *.git_vtag_tmp*) echo "$a" >> '${mark}' ;; esac; done\ncat >/dev/null\nexit 1\n`, { mode: 0o755 })
+  const globalConfig = path.join(fx.root, `global-${process.hrtime.bigint()}.gitconfig`)
+  fs.writeFileSync(globalConfig, `[gpg]\n\tprogram = ${gpg}\n`)
+  const tree = git(fx.W, ['rev-parse', 'HEAD^{tree}'])
+  const head = git(fx.W, ['rev-parse', 'HEAD'])
+  const body = `tree ${tree}\nparent ${head}\nauthor t <t@example.com> 0 +0000\ncommitter t <t@example.com> 0 +0000\n` +
+    'gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----\n\nsigned\n'
+  const signed = git(fx.W, ['hash-object', '-w', '-t', 'commit', '--stdin'], { input: body })
+  const env = { ...fx.env, TMPDIR: inside, GIT_CONFIG_GLOBAL: globalConfig }
+  const r = cli(env, 'git', fx.P, '--', 'log', '--show-signature', '-1', signed)
+  assert.equal(r.status, 0, r.stderr)
+  const seen = fs.existsSync(mark) ? fs.readFileSync(mark, 'utf8').trim().split('\n') : []
+  assert.equal(seen.length, 1, 'git ran the verifier on a temporary file')
+  assert.equal(seen[0].startsWith(inside + path.sep), false, `the signature file was written into TMPDIR: ${seen[0]}`)
+  assert.ok(seen[0].startsWith(path.join(fx.V, 'patches') + path.sep), `the signature file lives in <V>/patches: ${seen[0]}`)
+  assert.deepEqual(fs.readdirSync(inside), [])
 })
