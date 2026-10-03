@@ -1,4 +1,5 @@
 // tests/lib/loop-paths.test.mjs
+import '../helpers.mjs' // scrubs inherited git routing variables from process.env before any other module loads
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'

@@ -11,9 +11,9 @@
 //                             no child registers in N any more (assertHeld refuses it)
 //   children/<N>-<name>.json  child records: kind proc (exec), codex, dispatch
 //
-// Acquire takes N = max(last generation, largest ledger iteration) + 1; with no slot on
-// record at all, N also exceeds every child record's generation (a generation that had
-// children existed). An unreleased last generation blocks it while its holder is alive (or
+// Acquire takes N = max(last generation, largest ledger iteration, largest run record
+// <V>/run/<g>.json) + 1; with no slot on record at all, N also exceeds every child record's
+// generation (a generation that had children existed, as one with a run record did). An unreleased last generation blocks it while its holder is alive (or
 // unknown) and while the same process still has a dispatch of it open. Then the children
 // of every generation below N (a released one's too: an owner release stops nothing) are
 // stopped, each generation marked closing first, and any child that cannot be stopped
@@ -31,7 +31,8 @@
 // holder's process).
 //
 // CLI (one JSON line on stdout; exit 0, 2 error or usage, 3 held or not holder):
-//   acquire <P>                                         {state:'acquired', generation, V, lockDir, previous, reclaimed} (no W until stage 0c-2's clone)
+//   acquire <P>                                         {state:'acquired', generation, V, W, lockDir, previous, reclaimed}
+//                                                       (W = <V>/clone, the clone loop-clone.mjs prepare makes)
 //                                                       exit 3 {state:'held', reason, generation, ...}
 //   release <P> --generation <N> [--owner]              {state:'released', generation, ...}
 //                                                       exit 3 {state:'dispatch-open', ...}: nothing released
@@ -59,9 +60,15 @@ import readline from 'node:readline/promises'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { createExclusive, readJson, writeReplace } from './lib/atomic.mjs'
+import { ledgerFloor } from './lib/ledger.mjs'
+import { frontList } from './lib/loop-md.mjs'
 import { ensureV, loopPaths } from './lib/loop-paths.mjs'
-import { cwdSweep, groupAlive, isAlive, killGroup, resolveHolder, startToken } from './lib/loop-proc.mjs'
+import { groupAlive, isAlive, killGroup, resolveHolder, startToken, sweepOthers } from './lib/loop-proc.mjs'
+import { maxRecordGeneration } from './lib/run-record.mjs'
 import { quiesce } from './loop-codex.mjs'
+
+// Moved to scripts/lib/ledger.mjs (stage 0c-2); re-exported for existing callers.
+export { ledgerFloor }
 
 const ATTEMPTS = 5
 // A wrapper sent SIGTERM ends once its own cleanup is done, which includes its sweep for
@@ -91,7 +98,6 @@ const slotFile = (paths, g) => path.join(slotsDir(paths), `${g}.json`)
 const releasedFile = (paths, g) => path.join(slotsDir(paths), `${g}.released.json`)
 const closingFile = (paths, g) => path.join(slotsDir(paths), `${g}.closing.json`)
 const held = (reason, generation, extra = {}) => ({ state: 'held', reason, generation, ...extra })
-const unknownFact = detail => ({ state: 'unknown', detail })
 
 // reason, when given, names why in one word (e.reason, and `reason` in the CLI output).
 function notHolder(detail, reason) {
@@ -145,30 +151,6 @@ function childGenerations(paths) {
   return [...out].sort((a, b) => a - b)
 }
 
-// max numeric `iteration` over the parseable lines of <S>/LEDGER.jsonl; 0 when missing.
-// A fractional value is rounded up, so the next generation still exceeds it.
-export function ledgerFloor(S) {
-  let text
-  try {
-    text = fs.readFileSync(path.join(S, 'LEDGER.jsonl'), 'utf8')
-  } catch (e) {
-    if (e.code === 'ENOENT') return 0
-    throw e
-  }
-  let floor = 0
-  for (const line of text.split('\n')) {
-    let row
-    try {
-      row = JSON.parse(line)
-    } catch {
-      continue
-    }
-    const it = row !== null && typeof row === 'object' ? row.iteration : undefined
-    if (typeof it === 'number' && Number.isFinite(it)) floor = Math.max(floor, Math.ceil(it))
-  }
-  return floor
-}
-
 // TECH_LEAD_PS replaces /bin/ps in tests only, as in loop-proc.mjs.
 const PS = () => process.env.TECH_LEAD_PS || '/bin/ps'
 const ps = args => spawnSync(PS(), args, {
@@ -189,49 +171,6 @@ function processGroup(pid) {
     }
   } catch { /* unreadable: null */ }
   return Number.isInteger(pgid) && pgid > 1 ? pgid : null
-}
-
-// ancestry() -> {state:'ok', pids} | {state:'unknown', detail}: this process and each of
-// its ancestors up to (not including) pid 1. darwin: one `ps -A -o pid= -o ppid=` listing;
-// linux: the ppid field of /proc/<pid>/stat.
-function ancestry() {
-  let parentOf
-  if (process.platform === 'linux') {
-    parentOf = pid => {
-      try {
-        const text = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
-        const ppid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[1])
-        return Number.isInteger(ppid) && ppid >= 0 ? ppid : undefined
-      } catch {
-        return undefined
-      }
-    }
-  } else {
-    const r = ps(['-A', '-o', 'pid=', '-o', 'ppid='])
-    if (r.error || r.status !== 0) return unknownFact(`ps -A: ${r.error ? r.error.code || r.error.message : `exit ${r.status}`}`)
-    const map = new Map()
-    for (const line of r.stdout.split('\n')) {
-      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
-      if (m) map.set(Number(m[1]), Number(m[2]))
-    }
-    parentOf = pid => map.get(pid)
-  }
-  const pids = []
-  for (let pid = process.pid; pid > 1 && !pids.includes(pid);) {
-    pids.push(pid)
-    const ppid = parentOf(pid)
-    if (ppid === undefined) return unknownFact(`cannot read the parent of pid ${pid}`)
-    pid = ppid
-  }
-  return { state: 'ok', pids }
-}
-
-// cwdSweep over dirs, never listing this process or any of its ancestors (the runner, its
-// shell, a terminal standing in the work tree): {state:'ok', procs} | {state:'unknown', detail}.
-function sweep(dirs) {
-  const a = ancestry()
-  if (a.state !== 'ok') return a
-  return cwdSweep(dirs, { exclude: a.pids })
 }
 
 // The slot of generation N when the caller's holder holds it: N is the last generation,
@@ -321,7 +260,9 @@ export async function acquire(P, { env = process.env } = {}) {
   let max = null
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     max = maxSlot(paths)
-    const floor = ledgerFloor(paths.S)
+    // The generation floor (spec 10): the ledger's iterations and the run records' names, so
+    // neither a wiped lock nor a lost ledger row repeats a generation that wrote anything.
+    const floor = Math.max(ledgerFloor(paths.S), maxRecordGeneration(paths))
     let previous = null, reclaimed = null, reclaim = null
     if (max !== null) {
       const released = fs.existsSync(releasedFile(paths, max))
@@ -376,7 +317,7 @@ export async function acquire(P, { env = process.env } = {}) {
       // Spec 16's sweep: a process the dead (or interrupted) firing never recorded, such as
       // a delegate's command, may still write in the work tree. It is reported, never signalled.
       const dirs = [path.join(paths.S, 'worktree'), paths.V]
-      const sw = sweep(dirs)
+      const sw = sweepOthers(dirs)
       if (sw.state !== 'ok') return held('sweep-unknown', max, { detail: `cannot sweep ${dirs.join(' and ')} for live processes: ${sw.detail}`, stopped: stoppedSoFar() })
       if (sw.procs.length) {
         return held('child-live', max, {
@@ -390,7 +331,7 @@ export async function acquire(P, { env = process.env } = {}) {
     fs.mkdirSync(slotsDir(paths), { recursive: true })
     const record = { v: 1, generation: N, holder: me, session: env.CLAUDE_CODE_SESSION_ID || null, acquired_at: now(), previous }
     if (createExclusive(slotFile(paths, N), record)) {
-      const out = { state: 'acquired', generation: N, V: paths.V, lockDir: paths.lockDir, previous, reclaimed }
+      const out = { state: 'acquired', generation: N, V: paths.V, W: paths.W, lockDir: paths.lockDir, previous, reclaimed }
       // Children of other generations that this acquire stopped (the reclaimed one's are in
       // reclaimed.stopped).
       if (others.length) out.stopped = others
@@ -773,83 +714,10 @@ export function setCodexJob(file, jobId) {
   writeReplace(file, { ...rec, jobId })
 }
 
-// LOOP.md's verify: list as YAML reads it: a block sequence under the front matter's
-// top-level `verify:` key whose items all start at one indentation with "- ", each item a
-// plain, single-quoted or double-quoted scalar on one line, with comments and blank lines
-// dropped; a top-level key ends it. Every other shape is refused rather than guessed (a
-// more-indented "- ", a sibling at another indentation, a continuation line, anything else
-// before the next key: `unsupported verify: syntax at line N`), so exec never runs text
-// other than the command the owner reads in the file.
-const TOP_KEY = /^(?:[^\s#\-?:,[\]{}&*!|>%@`'"][^:]*|"[^"]*"|'[^']*')\s*:(?:\s|$)/
+// LOOP.md's verify: list (scripts/lib/loop-md.mjs, stage 0c-1's grammar and messages), so
+// exec never runs text other than the command the owner reads in the file.
 export function verifyCommands(text) {
-  const lines = String(text).split(/\r?\n/)
-  if (lines[0] !== '---') throw new Error('bad-loop-md: LOOP.md has no front matter')
-  const end = lines.findIndex((l, i) => i > 0 && /^---\s*$/.test(l))
-  if (end < 0) throw new Error('bad-loop-md: the front matter is not closed')
-  const keys = lines.slice(0, end).flatMap((l, i) => /^verify\s*:/.test(l) ? [i] : [])
-  if (!keys.length) throw new Error('no-verify: the front matter has no verify: key')
-  if (keys.length > 1) throw new Error(`bad-verify: verify: appears ${keys.length} times`)
-  const at = keys[0]
-  if (!/^verify\s*:\s*(#.*)?$/.test(lines[at])) throw new Error(`bad-verify: line ${at + 1}: verify: must be a block list of "  - <command>" lines`)
-  const out = []
-  let indent = null
-  const unsupported = (n, why) => new Error(`bad-verify: unsupported verify: syntax at line ${n} (${why})`)
-  for (let i = at + 1; i < end; i++) {
-    const line = lines[i]
-    if (/^\s*(#.*)?$/.test(line)) continue
-    const item = /^( *)-(?:[ \t]+(.*))?$/.exec(line)
-    if (item && (indent === null || item[1].length === indent)) {
-      indent = item[1].length
-      out.push(verifyItem(item[2] ?? '', i + 1))
-    } else if (item) {
-      throw unsupported(i + 1, `a "- " ${item[1].length > indent ? 'more' : 'less'} indented than the items above it`)
-    } else if (TOP_KEY.test(line)) {
-      break // the next top-level key
-    } else {
-      throw unsupported(i + 1, /^\s/.test(line) ? 'a continuation line or other text inside the list' : 'a line that is neither an item nor a key')
-    }
-  }
-  return out
-}
-
-function verifyItem(s, n) {
-  const bad = why => new Error(`bad-verify: line ${n}: ${why}`)
-  const tail = rest => {
-    if (!/^\s*(#.*)?$/.test(rest)) throw bad('text after the closing quote')
-  }
-  let v
-  if (s.startsWith('"')) {
-    let i = 1
-    while (i < s.length && s[i] !== '"') i += s[i] === '\\' ? 2 : 1
-    if (i >= s.length) throw bad('unterminated double-quoted command')
-    tail(s.slice(i + 1))
-    // YAML and JSON share \" \\ \/ \b \f \n \r \t \u; any other escape is refused.
-    try {
-      v = JSON.parse(s.slice(0, i + 1))
-    } catch {
-      throw bad('an escape JSON does not share with YAML; use single quotes')
-    }
-  } else if (s.startsWith("'")) {
-    let i = 1
-    v = ''
-    for (;;) {
-      if (i >= s.length) throw bad('unterminated single-quoted command')
-      if (s[i] === "'") {
-        if (s[i + 1] !== "'") break
-        v += "'"
-        i += 2
-      } else {
-        v += s[i++]
-      }
-    }
-    tail(s.slice(i + 1))
-  } else {
-    v = s.replace(/(^|\s)#.*$/, '').trim()
-    if (/^[-?:](\s|$)|^[[\]{},&*!|>%@`]/.test(v)) throw bad('a YAML indicator starts the command; quote it')
-    if (/:(\s|$)/.test(v)) throw bad('": " makes the item a mapping; quote the command')
-  }
-  if (!v.trim()) throw bad('empty command')
-  return v
+  return frontList(text, 'verify')
 }
 
 function verifyCommand(S, k) {
@@ -1033,7 +901,7 @@ async function superviseChild(paths, slot, pending, timeoutMs, env) {
     fs.rmSync(file, { force: true })
     // Spec 16's sweep: a process that left the group (a daemon in a session of its own) is
     // not ours to signal, but a run that leaves one behind in <dir> did not end cleanly.
-    const sw = sweep([pending.cwd])
+    const sw = sweepOthers([pending.cwd])
     if (sw.state !== 'ok') return lingering(result, { left: `the sweep of ${pending.cwd} for processes left behind could not run: ${sw.detail}` })
     if (sw.procs.length) {
       return lingering(result, { left: `${sw.procs.length} process(es) outside the group still run in ${pending.cwd}; none was signalled`, alive: sw.procs })

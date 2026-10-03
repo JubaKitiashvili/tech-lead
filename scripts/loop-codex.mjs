@@ -2,7 +2,8 @@
 // scripts/loop-codex.mjs
 // The loop's L3 Codex task (loop §5) as a Codex companion job: started in the
 // background, waited on in foreground calls, and ended by `quiesce`, which proves no
-// Codex process can still write into the worktree. Every call prints one JSON line.
+// Codex process can still write into the loop's clone <W> (<V>/clone, which
+// loop-clone.mjs prepares). Every call prints one JSON line.
 //   start --cwd <W> --prompt-file <brief> --cap-min <n> [--project <P> --generation <N>]
 //                                  {"state":"started","jobId":…}
 //                                  exit 3 {"state":"unavailable","detail":…}
@@ -254,7 +255,7 @@ export async function quiesce(cwd, jobId) {
     return notQuiet(`cannot read the record of Codex processes not yet proven gone: ${detailOf(e)}`)
   }
   const companionPath = locateCompanion()
-  // No companion, no companion-run Codex process: worktree prep must not pause owners without Codex.
+  // No companion, no companion-run Codex process: clone preparation must not pause owners without Codex.
   if (!companionPath && !memo.length) return { quiet: true, final: null, detail: 'Codex companion not installed' }
   let jobs = [], api = null
   if (companionPath) {
@@ -409,7 +410,7 @@ async function main(argv) {
   const { opts, pos } = parseArgs(rest)
   const print = o => process.stdout.write(JSON.stringify(o) + '\n')
   const usage = () => {
-    process.stderr.write('usage: loop-codex.mjs start --cwd <W> --prompt-file <f> --cap-min <n> [--project <P> --generation <N>] | wait <jobId> --cwd <W> --cap-min <n> | result <jobId> --cwd <W> | quiesce --cwd <W> [--job <id>]\n')
+    process.stderr.write('usage: loop-codex.mjs start --cwd <W> --prompt-file <f> --cap-min <n> [--project <P> --generation <N>] | wait <jobId> --cwd <W> --cap-min <n> | result <jobId> --cwd <W> | quiesce --cwd <W> [--job <id>]   (<W>: the loop\'s clone)\n')
     return 2
   }
   const cwd = opts.cwd, jobId = pos[0]

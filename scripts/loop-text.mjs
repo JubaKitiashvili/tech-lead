@@ -3,8 +3,8 @@
 // Neutralizes text that a delegate, a panel seat or tool output wrote, before the
 // loop copies it into STATE.md. The output never starts a line of its own (line mode
 // is one line; block mode quotes every line with "> "), carries no HTML tag or entity,
-// and has no `Decision`, `class`, `status`, `blocked-by`, `notes` or `attempts` label
-// followed by a colon, and no backlog field separator. So it can never form a heading,
+// and has no `Decision`, `class`, `status`, `blocked-by`, `notes`, `attempts` or `recovery`
+// label followed by a colon, and no backlog field separator. So it can never form a heading,
 // a list item, a backlog field, or the `**Decision:**` line loop §3.1 reads.
 // Usage: node loop-text.mjs line <file>...   one neutral line per file, in order
 //        node loop-text.mjs block <file>     the file's lines, each quoted with "> "
@@ -16,7 +16,7 @@ const LINE_BREAK = /\r\n|[\n\r\u000B\u000C\u0085\u2028\u2029]/u
 const SEPARATORS = /[\u00B7\u2022\u2219\u22C5\u30FB\uFF65]/gu
 const COLONS = ':\uA789\u2236\u02D0\u0589\u05C3\u205A'
 // A label, then up to 12 non-alphanumeric characters (markup such as `__`, `*`, backticks), then a colon.
-const LABEL = new RegExp(`(?<![\\p{L}\\p{N}])(decision|class|status|blocked-by|notes|attempts)([^\\p{L}\\p{N}]{0,12}?)[${COLONS}]`, 'giu')
+const LABEL = new RegExp(`(?<![\\p{L}\\p{N}])(decision|class|status|blocked-by|notes|attempts|recovery)([^\\p{L}\\p{N}]{0,12}?)[${COLONS}]`, 'giu')
 
 function defang(s) {
   return s
