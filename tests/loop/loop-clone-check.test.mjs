@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  D2, PREFIX, T, check, commitCli, deps, firing, git, prepare, project, recordOf, status, tipOf, write, run,
+  D2, PREFIX, T, check, commitCli, deps, firing, git, gitCode, prepare, project, recordOf, status, tipOf, write, run,
 } from './loop-clone-fixture.mjs'
 
 const BRANCH = `${PREFIX}/${D2}`
@@ -119,7 +119,7 @@ test('loop04: a delegate commit is rewound; its work stays as edits and the loop
   assert.equal(m.state, 'committed')
   assert.equal(git(fx.W, ['rev-parse', `${m.sha}^`]), base)
   assert.equal(git(fx.W, ['rev-list', '--count', `${m.sha}`, `^${base}`]), '1')
-  assert.notEqual(git(fx.W, ['merge-base', '--is-ancestor', tipD, m.sha], { check: false }), 0)
+  assert.equal(gitCode(fx.W, ['merge-base', '--is-ancestor', tipD, m.sha]), 1, 'the delegate commit is not an ancestor of the loop commit')
   assert.equal(git(fx.W, ['show', `${m.sha}:a.txt`]), 'by the delegate')
 })
 
