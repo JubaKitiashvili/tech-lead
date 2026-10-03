@@ -9,6 +9,9 @@
 //   writeReplace(file, obj)       creates or replaces file (rename(2))
 //   readJson(file) -> object | null; null only when file is missing; throws
 //                                 Error('corrupt: <file>') when the content is not a JSON object
+//                                 or the name is not a regular file (a symlink, a FIFO, a
+//                                 socket or a device: never followed, never a blocking read);
+//                                 a directory throws code EISDIR
 //   tempFile(dir, suffix = '') -> {path, fd}: <dir>/.tmp-<pid>-<16 hex><suffix>, created
 //                                 O_CREAT|O_EXCL|O_WRONLY with mode 0600; the caller writes
 //                                 and closes fd. A suffix holding '/' or NUL is refused
@@ -34,7 +37,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { startToken } from './loop-proc.mjs'
 
-const { O_CREAT, O_EXCL, O_WRONLY, O_RDONLY, O_NOFOLLOW, O_DIRECTORY } = fs.constants
+const { O_CREAT, O_EXCL, O_WRONLY, O_RDONLY, O_NOFOLLOW, O_DIRECTORY, O_NONBLOCK } = fs.constants
 const COMPARE_CHUNK = 1024 * 1024
 // The pid part is a decimal without a leading zero, as tempName writes it.
 const TEMP_ENTRY = /^\.tmp-([1-9][0-9]*)-/
@@ -106,13 +109,25 @@ export function writeReplace(file, obj) {
   fsyncDir(path.dirname(file))
 }
 
+// Opened O_NONBLOCK|O_NOFOLLOW and judged by fstat before any read: a FIFO put at the name (no
+// writer) would block a plain read forever, and a symlink there is no record a helper wrote.
 export function readJson(file) {
-  let text
+  let fd
   try {
-    text = fs.readFileSync(file, 'utf8')
+    fd = fs.openSync(file, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)
   } catch (e) {
     if (e.code === 'ENOENT') return null
+    if (e.code === 'ELOOP') throw new Error(`corrupt: ${file}`)
     throw e
+  }
+  let text
+  try {
+    const st = fs.fstatSync(fd)
+    if (st.isDirectory()) throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${file}'`), { code: 'EISDIR' })
+    if (!st.isFile()) throw new Error(`corrupt: ${file}`)
+    text = fs.readFileSync(fd, 'utf8')
+  } finally {
+    fs.closeSync(fd)
   }
   let value
   try {

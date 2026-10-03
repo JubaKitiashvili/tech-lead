@@ -19,7 +19,8 @@
 //                                    `bad-branch: ...` unless branch is a dated loop branch
 //                                    whose prefix passes loop-start's validPrefix
 //   sidecarPath(paths, branch)       bundlePath + '.json'
-//   readSidecar(paths, branch)       {tip, sha256} | null (missing, not JSON, or the wrong shape)
+//   readSidecar(paths, branch)       {tip, sha256} | null (missing, not JSON, the wrong shape, or
+//                                    not a regular file: a FIFO there never blocks the read)
 //   bundleHeader(file)               {version, capabilities, prerequisites: [oid],
 //                                    heads: [{oid, ref}], size (header bytes)}; throws
 //                                    `bad-bundle: ...` (code BAD_BUNDLE)
