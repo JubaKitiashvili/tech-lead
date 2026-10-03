@@ -13,7 +13,8 @@ import {
   acquire, assertHeld, closeDispatch, ledgerFloor, openDispatch, registerCodex, release, setCodexJob, status, stopChildren,
 } from '../../scripts/loop-lock.mjs'
 import { loopPaths } from '../../scripts/lib/loop-paths.mjs'
-import { groupAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { groupAlive, isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { killGroupIfOurs } from './interrupt-fixture.mjs'
 
 const SCRIPT = path.join(ROOT, 'scripts', 'loop-lock.mjs')
 const FAKE = path.join(ROOT, 'tests', 'fixtures', 'codex', 'scripts', 'codex-companion.mjs')
@@ -39,9 +40,15 @@ const waitFor = async (fn, ms = 3000) => {
 }
 // A real process standing in for a holder or a wrapper. It is started through a shell that
 // exits at once, so the test runner is not its parent and a killed one never lingers as a zombie.
+// The cleanup kills it only while its start token is still the one read here: a test may kill
+// it first, and a pid the kernel has since handed to another process is never signalled.
 const sleeper = t => {
   const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pid).token ?? null
+  t.after(() => {
+    if (isAlive({ pid, start }) !== true) return
+    try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+  })
   return pid
 }
 const kill = async pid => {
@@ -57,11 +64,14 @@ const deadProcess = async t => {
 }
 // A process group of its own led by /bin/sh running script. A short-lived node launcher
 // starts it and exits at once, so the group's parent is init, which reaps it.
-// cwd, when given, is the group's working directory.
+// cwd, when given, is the group's working directory. The cleanup kills the group only while
+// killGroupIfOurs finds its leader's token the one read here, or the leader's pid free; init
+// reaps a dead leader at once, so a zombie at the pid is another process's.
 const LAUNCH = "const c = require('node:child_process').spawn('/bin/sh', ['-c', process.argv[1]], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)"
 const group = (t, script, cwd) => {
   const pgid = Number(execFileSync(process.execPath, ['-e', LAUNCH, script], { encoding: 'utf8', cwd }).trim())
-  t.after(() => { try { process.kill(-pgid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pgid).token ?? null
+  t.after(() => { killGroupIfOurs(pgid, start, { zombieOurs: false }) })
   return pgid
 }
 const killGroupNow = async pgid => {
@@ -137,7 +147,9 @@ test('acquire on an empty lock takes generation 1 and records the holder by pid 
   const r = await acquire(p.P, { env: env(p, a) })
   const paths = loopPaths(p.P, { env: env(p, a) })
   assert.equal(paths.V, path.join(p.cache, 'tech-lead', paths.key))
-  assert.deepEqual(r, { state: 'acquired', generation: 1, V: paths.V, lockDir: path.join(paths.V, 'lock'), previous: null, reclaimed: null })
+  assert.deepEqual(r, { state: 'acquired', generation: 1, V: paths.V, W: path.join(paths.V, 'clone'), lockDir: path.join(paths.V, 'lock'), previous: null, reclaimed: null })
+  assert.equal(r.W, paths.W)
+  assert.equal(fs.existsSync(r.W), false, 'acquire names the clone; it creates nothing there')
   const slot = readJSON(path.join(r.lockDir, 'slots', '1.json'))
   assert.deepEqual(slot, {
     v: 1, generation: 1, holder: { pid: a, start: startToken(a).token, how: 'TECH_LEAD_HOLDER_PID' },
@@ -183,6 +195,65 @@ test('a wiped <V> never repeats a generation: ledger iteration 41 gives 42', asy
   assert.equal(r.reclaimed, null)
   assert.deepEqual(fs.readdirSync(path.join(r.lockDir, 'slots')), ['42.json'])
   assert.deepEqual(readJSON(path.join(r.V, 'identity.json')), { v: 1, R: fs.realpathSync.native(p.P) })
+})
+
+test('acquire prints W, the clone path <V>/clone, on its one JSON line (stage 0c-2)', async t => {
+  const p = project(t), a = sleeper(t), e = env(p, a)
+  const r = cli(e, 'acquire', p.P)
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(r.out.state, 'acquired')
+  assert.equal(r.out.W, path.join(r.out.V, 'clone'))
+  assert.equal(r.out.W, loopPaths(p.P, { env: e }).W)
+  assert.equal(fs.existsSync(r.out.W), false)
+  assert.deepEqual(Object.keys(r.out).sort(), ['V', 'W', 'generation', 'lockDir', 'previous', 'reclaimed', 'state'])
+})
+
+test('the generation exceeds the largest run record <V>/run/<g>.json, read from file names alone', async t => {
+  const p = project(t), a = sleeper(t), e = env(p, a)
+  const paths = loopPaths(p.P, { env: e })
+  const run = path.join(paths.V, 'run')
+  fs.mkdirSync(run, { recursive: true })
+  // A corrupt record still names a generation that existed; temp files, other names and a
+  // directory named like a record do not raise the floor beyond what their names say.
+  fs.writeFileSync(path.join(run, '7.json'), 'not json')
+  fs.writeFileSync(path.join(run, '12.json'), '{}')
+  fs.writeFileSync(path.join(run, '.tmp-1-0123456789abcdef'), '{}')
+  fs.writeFileSync(path.join(run, '99.json.bak'), '{}')
+  fs.writeFileSync(path.join(run, 'x40.json'), '{}')
+  fs.writeFileSync(path.join(run, '050.json'), '{}')
+  fs.mkdirSync(path.join(run, 'empty-template'))
+  fs.writeFileSync(path.join(p.S, 'LEDGER.jsonl'), '{"iteration":5}\n')
+  const r = await acquire(p.P, { env: e })
+  assert.equal(r.state, 'acquired')
+  assert.equal(r.generation, 13)
+  assert.deepEqual(genSlots(r.lockDir), ['13.json'])
+  // acquire reads the records; it writes none.
+  assert.deepEqual(fs.readdirSync(run).sort(), ['.tmp-1-0123456789abcdef', '050.json', '12.json', '7.json', '99.json.bak', 'empty-template', 'x40.json'])
+  await release(p.P, 13, { env: e })
+  // The slots lead again, then a record above them leads.
+  assert.equal((await acquire(p.P, { env: e })).generation, 14)
+  await release(p.P, 14, { env: e })
+  fs.writeFileSync(path.join(run, '20.json'), '{"v":1}')
+  const cliR = cli(e, 'acquire', p.P)
+  assert.equal(cliR.status, 0, cliR.stderr)
+  assert.equal(cliR.out.generation, 21)
+  // The ledger leads when it is highest.
+  await release(p.P, 21, { env: e })
+  fs.writeFileSync(path.join(p.S, 'LEDGER.jsonl'), '{"iteration":30}\n')
+  assert.equal((await acquire(p.P, { env: e })).generation, 31)
+})
+
+test('a wiped lock directory never repeats a generation that has a run record', async t => {
+  const p = project(t), a = sleeper(t), e = env(p, a)
+  const first = await acquire(p.P, { env: e })
+  assert.equal(first.generation, 1)
+  fs.mkdirSync(path.join(first.V, 'run'), { recursive: true })
+  fs.writeFileSync(path.join(first.V, 'run', '1.json'), '{}')
+  fs.writeFileSync(path.join(first.V, 'run', '3.json'), '{}')
+  fs.rmSync(first.lockDir, { recursive: true, force: true })
+  const r = await acquire(p.P, { env: e })
+  assert.equal(r.generation, 4)
+  assert.equal(r.previous, null)
 })
 
 test('a live holder makes acquire exit 3 and write nothing, in <V> or in the spine', async t => {
@@ -858,4 +929,48 @@ test('a holder whose start token cannot be read is holder-unknown: exit 2 for ev
   assert.equal(st.state, 'error')
   assert.match(st.detail, /^holder-unknown: /)
   assert.deepEqual(snapshot(first.V, p.S), before)
+})
+
+// The test harness's cleanup (review round, contracts-tests#7): a hook that runs when a test
+// ends signals a recorded pid or process group only while the id still names the process the
+// test made, since under several concurrent suites the pid counter can wrap before the hook.
+// impostorPs points TECH_LEAD_PS, for the rest of test t, at a ps that reads every live
+// process as one started in 1970: each id recorded earlier then names another process.
+const impostorPs = t => {
+  const file = fakeTool(t, 'ps', 'echo "S Thu Jan 1 00:00:00 1970"')
+  const before = process.env.TECH_LEAD_PS
+  process.env.TECH_LEAD_PS = file
+  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+}
+const darwinOnly = { skip: process.platform !== 'darwin' && 'the start token reads ps on darwin only' }
+
+test('contracts-tests#7: the sleeper cleanup kills its own process, and leaves alone a pid that names another process by then', darwinOnly, async t => {
+  let pid, start
+  await t.test('the pid reads as another process when the test ends', st => {
+    pid = sleeper(st)
+    start = startToken(pid).token
+    impostorPs(st)
+  })
+  t.after(() => { if (isAlive({ pid, start }) === true) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  assert.equal(isAlive({ pid, start }), true, `the cleanup killed pid ${pid}, which it could not prove its own`)
+  await kill(pid)
+  let own
+  await t.test('the pid still names the sleeper when the test ends', st => { own = sleeper(st) })
+  assert.ok(await waitFor(() => startToken(own).state === 'gone'), `the cleanup left its own sleeper ${own} running`)
+})
+
+test('contracts-tests#7: the group cleanup kills its own group, and leaves alone a group id whose leader is another process by then', darwinOnly, async t => {
+  let pgid, start
+  await t.test('the leader reads as another process when the test ends', st => {
+    pgid = group(st, 'exec sleep 120')
+    start = startToken(pgid).token
+    impostorPs(st)
+  })
+  t.after(() => { killGroupIfOurs(pgid, start, { zombieOurs: false }) })
+  assert.equal(groupAlive(pgid), true, `the cleanup killed group ${pgid}, which it could not prove its own`)
+  assert.equal(isAlive({ pid: pgid, start }), true)
+  await killGroupNow(pgid)
+  let own
+  await t.test('the leader is still the one recorded when the test ends', st => { own = group(st, 'exec sleep 120') })
+  assert.ok(await waitFor(() => groupAlive(own) === false), `the cleanup left its own group ${own} running`)
 })

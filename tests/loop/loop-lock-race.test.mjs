@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, execSync, spawn } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
-import { startToken } from '../../scripts/lib/loop-proc.mjs'
+import { isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
 
 const SCRIPT = path.join(ROOT, 'scripts', 'loop-lock.mjs')
 const RACERS = 8
@@ -23,10 +23,16 @@ const tmp = (t, prefix) => {
   return d
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-// A real process standing in for a holder, started through a shell that exits at once.
+// A real process standing in for a holder, started through a shell that exits at once. The
+// cleanup kills it only while its start token is still the one read here: a test may kill it
+// first, and a pid the kernel has since handed to another process is never signalled.
 const sleeper = t => {
   const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pid).token ?? null
+  t.after(() => {
+    if (isAlive({ pid, start }) !== true) return
+    try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+  })
   return pid
 }
 const project = t => {
@@ -80,4 +86,28 @@ test(`${RACERS} concurrent reclaimers of a dead holder: exactly one takes the ne
   assert.equal(won.out.reclaimed.how, 'dead-holder')
   // The reclaimed generation is marked closing (by the first reclaimer to get there).
   assert.deepEqual(fs.readdirSync(path.join(won.out.lockDir, 'slots')).sort(), ['1.closing.json', '1.json', '2.json'])
+})
+
+// The test harness's cleanup (review round, contracts-tests#7): the sleeper's hook signals its
+// pid only while the pid still names the sleeper, since under several concurrent suites the pid
+// counter can wrap before the hook. A ps (TECH_LEAD_PS) that reads every live process as one
+// started in 1970 stands in for the kernel handing the pid to another process.
+test('contracts-tests#7: the sleeper cleanup kills its own process, and leaves alone a pid that names another process by then', { skip: process.platform !== 'darwin' && 'the start token reads ps on darwin only' }, async t => {
+  let pid, start
+  await t.test('the pid reads as another process when the test ends', st => {
+    pid = sleeper(st)
+    start = startToken(pid).token
+    const file = path.join(tmp(st, 'tl-race-ps-'), 'ps')
+    fs.writeFileSync(file, '#!/bin/sh\necho "S Thu Jan 1 00:00:00 1970"\n', { mode: 0o755 })
+    const before = process.env.TECH_LEAD_PS
+    process.env.TECH_LEAD_PS = file
+    st.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+  })
+  t.after(() => { if (isAlive({ pid, start }) === true) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  assert.equal(isAlive({ pid, start }), true, `the cleanup killed pid ${pid}, which it could not prove its own`)
+  process.kill(pid, 'SIGKILL')
+  let own
+  await t.test('the pid still names the sleeper when the test ends', st => { own = sleeper(st) })
+  for (let i = 0; i < 60 && startToken(own).state !== 'gone'; i++) await sleep(50)
+  assert.equal(startToken(own).state, 'gone', `the cleanup left its own sleeper ${own} running`)
 })

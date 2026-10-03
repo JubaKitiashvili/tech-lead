@@ -11,6 +11,7 @@ import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import { acquire, release, verifyCommands } from '../../scripts/loop-lock.mjs'
 import { groupAlive, isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
+import { killGroupIfOurs } from './interrupt-fixture.mjs'
 
 const SCRIPT = path.join(ROOT, 'scripts', 'loop-lock.mjs')
 const HOOK = path.join(ROOT, 'tests', 'fixtures', 'spawn-hook.cjs')
@@ -36,9 +37,15 @@ const waitFor = async (fn, ms = 5000) => {
 }
 // A real process standing in for a holder. It is started through a shell that exits at
 // once, so the test runner is not its parent and a killed one never lingers as a zombie.
+// The cleanup kills it only while its start token is still the one read here: a test may kill
+// it first, and a pid the kernel has since handed to another process is never signalled.
 const sleeper = t => {
   const pid = Number(execSync("sh -c 'sleep 120 >/dev/null 2>&1 & echo $!'", { encoding: 'utf8' }).trim())
-  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  const start = startToken(pid).token ?? null
+  t.after(() => {
+    if (isAlive({ pid, start }) !== true) return
+    try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+  })
   return pid
 }
 const gone = pid => startToken(pid).state === 'gone'
@@ -106,12 +113,18 @@ const execAsync = (t, e, ...args) => {
   })
   return { pid: c.pid, done }
 }
-// Kills a process group (-pgid) or a process when the test ends, whatever its outcome; a
-// process only while its start token still matches, so a reused pid is left alone.
-const reap = (t, id) => {
-  const start = id > 0 ? startToken(id).token : null
+// Kills a process group (-pgid) or a process when the test ends, whatever its outcome, so a
+// reused id is left alone: a process only while its start token is still `start` (the one read
+// here by default), a group only while killGroupIfOurs finds its leader's token `start` or the
+// leader's pid free. The leader of an exec group is the wrapper's child, so a zombie at its pid
+// is a leader the wrapper has not reaped yet: the group is still ours.
+const reap = (t, id, start = startToken(Math.abs(id)).token ?? null) => {
   t.after(() => {
-    if (id > 0 ? isAlive({ pid: id, start }) !== true : groupAlive(-id) !== true) return
+    if (id < 0) {
+      killGroupIfOurs(-id, start)
+      return
+    }
+    if (isAlive({ pid: id, start }) !== true) return
     try { process.kill(id, 'SIGKILL') } catch { /* gone */ }
   })
 }
@@ -532,4 +545,49 @@ test('a release while exec runs waits for the wrapper to finish its own cleanup,
   const r = await run.done
   assert.notEqual(r.status, 0)
   assert.deepEqual(children(lockDir), [])
+})
+
+// The test harness's cleanup (review round, contracts-tests#7): a hook that runs when a test
+// ends signals a recorded pid or process group only while the id still names the process the
+// test made, since under several concurrent suites the pid counter can wrap before the hook.
+// impostorPs points TECH_LEAD_PS, for the rest of test t, at a ps that reads every live
+// process as one started in 1970: each pid recorded earlier then names another process.
+const impostorPs = t => {
+  const file = path.join(tmp(t), 'ps')
+  fs.writeFileSync(file, '#!/bin/sh\necho "S Thu Jan 1 00:00:00 1970"\n', { mode: 0o755 })
+  const before = process.env.TECH_LEAD_PS
+  process.env.TECH_LEAD_PS = file
+  t.after(() => { if (before === undefined) delete process.env.TECH_LEAD_PS; else process.env.TECH_LEAD_PS = before })
+}
+
+test('contracts-tests#7: the sleeper cleanup kills its own process, and leaves alone a pid that names another process by then', { ...T, skip: process.platform !== 'darwin' && 'the start token reads ps on darwin only' }, async t => {
+  let pid, start
+  await t.test('the pid reads as another process when the test ends', st => {
+    pid = sleeper(st)
+    start = startToken(pid).token
+    impostorPs(st)
+  })
+  t.after(() => { if (isAlive({ pid, start }) === true) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } })
+  assert.equal(isAlive({ pid, start }), true, `the cleanup killed pid ${pid}, which it could not prove its own`)
+  await kill(pid)
+  let own
+  await t.test('the pid still names the sleeper when the test ends', st => { own = sleeper(st) })
+  assert.ok(await waitFor(() => gone(own)), `the cleanup left its own sleeper ${own} running`)
+})
+
+test('contracts-tests#7: reap leaves alone a process group whose leader is not the process it recorded, and kills its own', T, async t => {
+  const s = spawn('/bin/sleep', ['120'], { detached: true, stdio: 'ignore' })
+  const token = startToken(s.pid).token
+  // Once Node has reaped s, a zombie at its pid is another process's.
+  t.after(() => { killGroupIfOurs(s.pid, token, { zombieOurs: false }) })
+  const exited = new Promise(resolve => s.on('exit', resolve))
+  // Registered for an earlier leader (another start token): the group id was reused.
+  await t.test('registered under another start token', st => { reap(st, -s.pid, 'darwin:Thu Jan 1 00:00:00 1970') })
+  // The leader is this test's child, so a killed one stays a zombie (gone) until Node reaps it.
+  assert.equal(startToken(s.pid).token, token, `the cleanup killed group ${s.pid}, which it could not prove its own`)
+  assert.equal(groupAlive(s.pid), true)
+  // Registered under the token its leader has, it is killed.
+  await t.test('registered under its own start token', st => { reap(st, -s.pid) })
+  await exited
+  assert.ok(await waitFor(() => groupAlive(s.pid) === false), `the cleanup left its own group ${s.pid} running`)
 })
