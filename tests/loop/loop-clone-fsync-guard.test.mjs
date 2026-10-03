@@ -14,9 +14,11 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import {
-  D2, PREFIX, T, appendLedger, attempt, check, commitCli, firing, prepare, prepareArgs, project, recordOf, run, tipOf, write,
+  D2, PREFIX, T, appendLedger, attempt, check, commitCli, firing, prepare, prepareArgs, project, recordOf, run, tipOf, waitGone, write,
 } from './loop-clone-fixture.mjs'
 import { sidecarPath, writeBundle } from '../../scripts/lib/delivery.mjs'
+import { deleteRecord } from '../../scripts/lib/run-record.mjs'
+import { assertHeld } from '../../scripts/loop-lock.mjs'
 
 const HOOK = path.join(ROOT, 'tests', 'fixtures', 'fsync-hook.cjs')
 const REFLEX = path.join(ROOT, 'scripts', 'reflex-bundle.mjs')
@@ -179,4 +181,44 @@ test('commit: a lock lost during the intent\'s fsync records no intent and moves
   assert.deepEqual(recordOf(fx), before, 'no intent is recorded')
   assert.equal(tipOf(fx.W), head, 'the branch did not move')
   assert.deepEqual(temps(runDir), [])
+})
+
+// close deletes each closed record with deleteRecord, after its own assertHeld; deleteRecord's
+// storage-folder check (lstat and realpath of <V>/run) runs between the two, so a holder lost in
+// that window would still unlink the record (re-check Codex f1 #4, sharpened R31). deleteRecord
+// takes the caller's guard and runs it right before the unlink. No fsync precedes that unlink (the
+// directory fsync follows it), so the fsync hook cannot open the window through the CLI: the
+// holder is killed here after the caller's check passed, in process, and the static scan
+// (record-guard-scan.test.mjs) requires close to pass its guard.
+test('deleteRecord: a lock lost after the caller\'s check, before the unlink, deletes nothing; the guard throws not-holder (re-check f1 #4)', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  prepare(fx)
+  const file = path.join(fx.V, 'run', `${fx.N}.json`)
+  const guard = () => assertHeld(fx.paths, fx.N, fx.env)
+  guard()
+  process.kill(fx.holder, 'SIGKILL')
+  await waitGone(fx.holder)
+  assert.throws(() => deleteRecord(fx.paths, fx.N, { guard }), e => e.code === 'NOT_HOLDER' || e.code === 'HOLDER_UNKNOWN')
+  assert.ok(fs.existsSync(file), 'the record is kept')
+})
+
+test('deleteRecord runs the guard after its storage-folder check: a symlinked <V>/run refuses before the guard is asked (re-check f1 #4)', T, async t => {
+  const fx = project(t)
+  await firing(fx)
+  prepare(fx)
+  const run = path.join(fx.V, 'run')
+  const moved = `${run}.real`
+  fs.renameSync(run, moved)
+  fs.symlinkSync(moved, run)
+  let asked = 0
+  assert.throws(() => deleteRecord(fx.paths, fx.N, { guard: () => { asked++ } }), e => e.code === 'CLONE_INVALID')
+  assert.equal(asked, 0, 'the guard runs only right before the unlink')
+  assert.ok(fs.existsSync(path.join(moved, `${fx.N}.json`)), 'the record is kept')
+  let calls = 0
+  fs.rmSync(run)
+  fs.renameSync(moved, run)
+  assert.equal(deleteRecord(fx.paths, fx.N, { guard: () => { calls++ } }), true)
+  assert.equal(calls, 1)
+  assert.equal(fs.existsSync(path.join(run, `${fx.N}.json`)), false)
 })
