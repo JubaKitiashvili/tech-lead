@@ -134,23 +134,32 @@ test('a test file run with GIT_DIR, GIT_INDEX_FILE and GIT_CONFIG_* aimed at a d
 })
 
 // Every test file that runs git imports tests/helpers.mjs, directly or through a fixture module
-// that does: importing it scrubs the routing variables from process.env.
-test('every test file that runs git imports tests/helpers.mjs, which scrubs the routing variables', () => {
-  const GIT_SPAWN = /spawnSync\(['"]git|execFileSync\(['"]git|execSync\(['"`]git|'git', \[/
-  const IMPORT = /(?:^|\n)\s*import\s+(?:[^'"]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]/g
-  const reaches = new Map()
-  const reachesHelpers = file => {
-    if (reaches.has(file)) return reaches.get(file)
-    reaches.set(file, false)
-    const src = fs.readFileSync(file, 'utf8')
-    let ok = false
-    for (const m of src.matchAll(IMPORT)) {
-      const dep = path.resolve(path.dirname(file), m[1])
-      if (dep === path.join(ROOT, 'tests', 'helpers.mjs') || (dep.startsWith(path.join(ROOT, 'tests')) && fs.existsSync(dep) && reachesHelpers(dep))) ok = true
+// that does: importing it scrubs the routing variables from process.env. A file runs git when it
+// or a module of tests/ it imports (a fixture: git reached only through it counts too) names git
+// as the program of a spawn or exec call (any quote, sync or not), as the program of an argv
+// array, or as a command inside a string (a shell command such as `cd x && git add -A`, `sh -c
+// "git ..."`, or the `command -v git` of a fake git that execs the real one). The scripts' own
+// git runs through scripts/lib/git-safe.mjs, which drops the routing variables itself.
+const GIT_DIRECT = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(\s*['"`]git(?:['"`]|\s)|['"`]git['"`]\s*,\s*\[/
+const GIT_SHELL = /['"`](?:[^'"`\n]*?(?:&&|\|\||[;|(]|\$\(|\bexec\b|\bcommand -v|\bsh -c))?\s*['"]?git(?:\s+-{0,2}[A-Za-z]|['"`])/
+const IMPORT = /(?:^|\n)\s*(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"](\.{1,2}\/[^'"]+)['"]|\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g
+
+// The .test.mjs files under testsDir that run git without reaching helpers (paths relative to
+// testsDir).
+function unscrubbed(testsDir, helpers) {
+  const src = file => fs.readFileSync(file, 'utf8')
+  const local = file => [...src(file).matchAll(IMPORT)].map(m => path.resolve(path.dirname(file), m[1] ?? m[2]))
+    .filter(dep => dep.startsWith(testsDir + path.sep) && fs.existsSync(dep))
+  // own(file), or the same of a module of testsDir it imports, at any depth (each file once).
+  const reach = (own, memo = new Map()) => function go(file) {
+    if (!memo.has(file)) {
+      memo.set(file, false)
+      memo.set(file, own(file) || local(file).some(go))
     }
-    reaches.set(file, ok)
-    return ok
+    return memo.get(file)
   }
+  const runsGit = reach(file => GIT_DIRECT.test(src(file)) || GIT_SHELL.test(src(file)))
+  const reachesHelpers = reach(file => local(file).includes(helpers))
   const files = []
   const walk = dir => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -159,7 +168,39 @@ test('every test file that runs git imports tests/helpers.mjs, which scrubs the 
       else if (e.name.endsWith('.test.mjs')) files.push(p)
     }
   }
-  walk(path.join(ROOT, 'tests'))
-  const missing = files.filter(f => GIT_SPAWN.test(fs.readFileSync(f, 'utf8')) && !reachesHelpers(f)).map(f => path.relative(ROOT, f))
-  assert.deepEqual(missing, [], 'test files that run git without importing tests/helpers.mjs')
+  walk(testsDir)
+  return files.filter(f => runsGit(f) && !reachesHelpers(f)).map(f => path.relative(testsDir, f)).sort()
+}
+
+test('every test file that runs git imports tests/helpers.mjs, which scrubs the routing variables', () => {
+  assert.deepEqual(unscrubbed(path.join(ROOT, 'tests'), path.join(ROOT, 'tests', 'helpers.mjs')), [], 'test files that run git without importing tests/helpers.mjs')
+})
+
+test('the scan sees every way a test runs git: spawn, double quotes, a shell string, a fake git, a fixture (Claude gap-verify P3)', t => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tl-gitscan-')))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const put = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(dir, rel), text)
+  }
+  put('helpers.mjs', 'export const ROOT = 1\n')
+  const runs = {
+    'spawn.test.mjs': "import { spawn } from 'node:child_process'\nspawn('git', ['status'])\n",
+    'double.test.mjs': 'import { spawnSync } from "node:child_process"\nspawnSync("git", ["status"])\n',
+    'shell.test.mjs': "import { execSync } from 'node:child_process'\nexecSync('cd x && git add -A')\n",
+    'sh-c.test.mjs': "import { execFileSync } from 'node:child_process'\nexecFileSync('/bin/sh', ['-c', 'git -C x commit -q -m m'])\n",
+    'fake.test.mjs': "import { execFileSync } from 'node:child_process'\nconst real = execFileSync('sh', ['-c', 'command -v git']).toString()\n",
+    'argv.test.mjs': "const cmd = ['git', ['init']]\n",
+    'via-fixture.test.mjs': "import { run } from './fx/plain.mjs'\nrun()\n",
+  }
+  for (const [rel, text] of Object.entries(runs)) put(rel, text)
+  put('fx/plain.mjs', "import { spawnSync } from 'node:child_process'\nexport const run = () => spawnSync(\"git\", ['init'])\n")
+  // Scrubbed: they reach helpers.mjs, directly or through a fixture.
+  put('ok-direct.test.mjs', "import './helpers.mjs'\nimport { spawnSync } from 'node:child_process'\nspawnSync('git', ['status'])\n")
+  put('fx/good.mjs', "import '../helpers.mjs'\nimport { spawnSync } from 'node:child_process'\nexport const run = () => spawnSync('git', ['init'])\n")
+  put('ok-fixture.test.mjs', "import { run } from './fx/good.mjs'\nrun()\n")
+  // No git: a title that only mentions it, and a file that runs another program.
+  put('none.test.mjs', "import test from 'node:test'\ntest('the passthrough never runs git inside a nested repository', () => {})\n")
+  put('other.test.mjs', "import { spawnSync } from 'node:child_process'\nspawnSync('gitk-free', [])\nspawnSync('ls', ['-la'])\n")
+  assert.deepEqual(unscrubbed(dir, path.join(dir, 'helpers.mjs')), Object.keys(runs).sort())
 })
