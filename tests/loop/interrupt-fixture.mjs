@@ -7,10 +7,18 @@
 // helper by TECH_LEAD_FAULT passed to that one call (the driver then waits to be killed, as a
 // session that died with its helper). The recovering firing runs with stop none, then a third
 // firing checks that recovery is idempotent; assertRecovered(fx, expect) checks invariants
-// I1-I8 after each.
+// I1-I9 after each.
 //
 // Real temporary repositories and real processes; the hermetic environment of
 // tests/loop/loop-clone-fixture.mjs (imported for it and for its plain-git helpers).
+//
+// Items carry ids (stage 0c-3, brief section 8): stateMd writes each item with `- id:` and
+// `- origin: human` sub-bullets, the id a fixed function of its title (idOf; the n-th item of a
+// repeated title gets idOf(title, n)), so a test can name an item's block (itemHead) before any
+// firing runs; the driver's normalize then has nothing to fill. I9 (assertRecovered): no id is
+// carried by two items, so no move left a duplicate behind. The fix pass's R27: a row's
+// done_items (pick's unledgered) is checked for shape under I4, and a project where only the
+// read-only analysis path ran is checked with `clone: false`.
 //
 // Cleanup never signals a process that only reused an id (review round, Cg4#2 and
 // contracts-tests#7): a pid is killed only while its start token is the recorded one, and a
@@ -24,6 +32,7 @@ import { ROOT } from '../helpers.mjs'
 import { git, snapshot, tmp, write } from './loop-clone-fixture.mjs'
 import { groupAlive, isAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
 import { loopPaths } from '../../scripts/lib/loop-paths.mjs'
+import { ID_RE, parseState } from '../../scripts/lib/loop-state.mjs'
 
 export { git, snapshot, tmp, write }
 export const T = { timeout: 90000 }
@@ -59,11 +68,30 @@ export const gone = pid => startToken(pid).state === 'gone'
 export const loopMd = ({ verify = VERIFY, scope = ['./'] } = {}) =>
   `---\nlevel: 1\nverify:\n${verify.map(v => `  - ${JSON.stringify(v)}`).join('\n')}\nscope:\n${scope.map(s => `  - ${s}`).join('\n')}\n---\n`
 export const itemLine = title => `- [ ] P1 ${DOT} ${title} ${DOT} class: mechanical`
-// An item is a title, or {title, sub: [its indented sub-bullet lines]}.
-const itemLines = i => (typeof i === 'string' ? [itemLine(i)] : [itemLine(i.title), ...(i.sub ?? [])])
-export const stateMd = (items = ITEMS) =>
-  ['# Proj - Loop State', '', '## Now', '(empty)', '', '## Backlog', ...(items.length ? items.flatMap(itemLines) : ['(empty)']), '',
+// The fixed id of the n-th item titled `title` (ID_RE: `tl-` and 8 Crockford base32 digits).
+const CROCKFORD = '0123456789abcdefghjkmnpqrstvwxyz'
+export const idOf = (title, n = 0) => `tl-${[...crypto.createHash('sha256').update(`${title}#${n}`).digest().subarray(0, 8)].map(b => CROCKFORD[b % 32]).join('')}`
+// An item's header and its id and origin sub-bullets, as stateMd writes them.
+export const itemHead = (title, n = 0) => [itemLine(title), `  - id: ${idOf(title, n)}`, '  - origin: human']
+// An item is a title, or {title, sub: [its other sub-bullet lines], id, origin}: id and origin
+// default to idOf(title, n) and `human`; null leaves that line out (normalize then fills it).
+export function itemLines(i, n = 0) {
+  const o = typeof i === 'string' ? { title: i } : i
+  const id = o.id === undefined ? idOf(o.title, n) : o.id
+  const origin = o.origin === undefined ? 'human' : o.origin
+  return [itemLine(o.title), ...(id === null ? [] : [`  - id: ${id}`]), ...(origin === null ? [] : [`  - origin: ${origin}`]), ...(o.sub ?? [])]
+}
+export function stateMd(items = ITEMS) {
+  const seen = new Map()
+  const lines = items.flatMap(i => {
+    const title = typeof i === 'string' ? i : i.title
+    const n = seen.get(title) ?? 0
+    seen.set(title, n + 1)
+    return itemLines(i, n)
+  })
+  return ['# Proj - Loop State', '', '## Now', '(empty)', '', '## Backlog', ...(lines.length ? lines : ['(empty)']), '',
     '## Needs decision', '(empty)', '', '## Blocked', '(empty)', '', '## Done', '(empty)', '', '## Last run', '(never run)', ''].join('\n')
+}
 
 // <P> with files committed on main, its spine (LOOP.md, STATE.md with `items` in ## Backlog), a
 // cache root and a control directory for the driver's gates.
@@ -261,15 +289,21 @@ export function sections(fx) {
   }
   return out
 }
-// The item titles a section holds (`- ` lines and `### ` entries).
+// The item titles a section holds (`- ` lines and `### ` entries, an entry's `<id> . ` dropped).
 export function titles(fx, name) {
   return (sections(fx)[name] ?? []).flatMap(l => {
-    if (l.startsWith('### ')) return [l.slice(4).trim()]
+    if (l.startsWith('### ')) {
+      const h = l.slice(4).trim()
+      const sp = h.indexOf(' ')
+      return [ID_RE.test(h.slice(0, sp < 0 ? h.length : sp)) && h.slice(sp).startsWith(` ${DOT} `) ? h.slice(sp + 3).trim() : h]
+    }
     if (!l.startsWith('- ')) return []
     const parts = l.replace(/^- \[[ x]\] /, '').split(` ${DOT} `)
     return [(parts.length > 1 && /^P[0-9]+$/.test(parts[0]) ? parts[1] : parts[0]).trim()]
   })
 }
+// The ids the items of a section carry, in order (every section when name is null).
+export const ids = (fx, name = null) => parseState(stateText(fx)).items.filter(i => name === null || i.section === name).map(i => i.id)
 export function editState(fx, fn) {
   const file = path.join(fx.S, 'STATE.md')
   fs.writeFileSync(file, fn(fs.readFileSync(file, 'utf8')))
@@ -356,12 +390,17 @@ export function loopBranches(fx) {
 
 // ---------------------------------------------------------------- the invariants
 
+const ID_OR_NULL = v => v === null || (typeof v === 'string' && ID_RE.test(v))
 const LEDGER_OUTCOMES = ['done', 'failed', 'blocked', 'flagged', 'skipped', 'report-only', 'needs-decision', 'halted']
 const SAVE_WHYS = ['clean-clone', 'delegate-flagged', 'codex', 'attempt-failed', 'pause']
 
 // expect: {records: [g...] (default []), tip, branch, sections: {name: [titles]}, rows: [iterations],
+//   idless (items with no valid id; default 0),
 //   orphans (patches named by no ledger row; default 0), work: [{snap, skip, via: 'bundle' | sha}],
-//   delegate: [shas no bundle may hold], retired: [tips no bundle may hold], bundles: false to skip I5}
+//   delegate: [shas no bundle may hold], retired: [tips no bundle may hold], bundles: false to skip I5,
+//   clone: false when no firing prepared the clone (only the read-only analysis path ran): <W>
+//   must not exist, and the checks that read it (I2, the loop commits of I4, I5, I6's refs/stash
+//   in <W>) are skipped}
 export function assertRecovered(fx, ex = {}) {
   const W = fx.W
   const label = ex.label ? `${ex.label}: ` : ''
@@ -376,10 +415,21 @@ export function assertRecovered(fx, ex = {}) {
   }
 
   // I2: <W> clean at the expected tip, no lock file left.
-  assert.equal(status(W), '', `${label}I2 <W> is not clean`)
-  if (ex.tip) assert.equal(tipOf(W), ex.tip, `${label}I2 tip`)
-  if (ex.branch) assert.equal(git(W, ['symbolic-ref', 'HEAD']), `refs/heads/${ex.branch}`, `${label}I2 branch`)
-  assert.deepEqual(lockFiles(path.join(W, '.git')), [], `${label}I2 lock files left in <W>/.git`)
+  const cloned = ex.clone !== false
+  if (!cloned) assert.equal(fs.existsSync(W), false, `${label}I2 <W> exists though no firing prepared it`)
+  if (cloned) {
+    assert.equal(status(W), '', `${label}I2 <W> is not clean`)
+    if (ex.tip) assert.equal(tipOf(W), ex.tip, `${label}I2 tip`)
+    if (ex.branch) assert.equal(git(W, ['symbolic-ref', 'HEAD']), `refs/heads/${ex.branch}`, `${label}I2 branch`)
+    assert.deepEqual(lockFiles(path.join(W, '.git')), [], `${label}I2 lock files left in <W>/.git`)
+  }
+
+  // I9: no id carried by two items (no move left a second copy), and no item without one
+  // unless the test expects it (ex.idless).
+  const items = parseState(stateText(fx)).items
+  const carried = items.map(i => i.id).filter(Boolean)
+  assert.deepEqual(carried.filter((id, k) => carried.indexOf(id) !== k), [], `${label}I9 ids carried twice`)
+  assert.equal(items.filter(i => !i.id).length, ex.idless ?? 0, `${label}I9 items without a valid id`)
 
   // I3: ## Now holds exactly (empty); each item in its expected section.
   assert.match(stateText(fx), /\n## Now\n\(empty\)\n/, `${label}I3 ## Now is not (empty)`)
@@ -394,23 +444,32 @@ export function assertRecovered(fx, ex = {}) {
   for (const r of rows) {
     assert.ok(LEDGER_OUTCOMES.includes(r.outcome), `${label}I4 row ${r.iteration}: outcome ${JSON.stringify(r.outcome)}`)
     assert.ok([null, 'pass', 'fail'].includes(r.verify), `${label}I4 row ${r.iteration}: verify ${JSON.stringify(r.verify)}`)
+    // R21: every row names its item by id (null when nothing was picked) and origin.
+    assert.ok(ID_OR_NULL(r.item_id), `${label}I4 row ${r.iteration}: item_id ${JSON.stringify(r.item_id)}`)
+    assert.ok('item_origin' in r && (r.item_id === null ? r.item_origin === null : typeof r.item_origin === 'string'), `${label}I4 row ${r.iteration}: item_origin ${JSON.stringify(r.item_origin)}`)
     if (r.recovered != null) {
       assert.ok(['finish-commit', 'requeue-now', null].includes(r.recovered.action), `${label}I4 row ${r.iteration}: recovered.action ${JSON.stringify(r.recovered.action)}`)
+      assert.ok(ID_OR_NULL(r.recovered.item_id), `${label}I4 row ${r.iteration}: recovered.item_id ${JSON.stringify(r.recovered.item_id)}`)
     }
     for (const sv of r.saves ?? []) assert.ok(SAVE_WHYS.includes(sv.why), `${label}I4 row ${r.iteration}: save why ${JSON.stringify(sv.why)}`)
+    // R27: done_items, when the firing ran pick, lists the ## Done items no row recorded done.
+    if (r.done_items != null) {
+      assert.ok(Array.isArray(r.done_items), `${label}I4 row ${r.iteration}: done_items ${JSON.stringify(r.done_items)}`)
+      for (const d of r.done_items) assert.ok(ID_RE.test(d.item_id) && (d.item_origin === null || typeof d.item_origin === 'string'), `${label}I4 row ${r.iteration}: done_items entry ${JSON.stringify(d)}`)
+    }
   }
   const its = rows.map(r => r.iteration)
   for (let i = 1; i < its.length; i++) assert.ok(its[i] > its[i - 1], `${label}I4 iterations ${its} are not strictly increasing`)
   if (ex.rows) assert.deepEqual(its, ex.rows, `${label}I4 ledger rows`)
   const names = ledgerNames(fx)
-  const loopCommits = git(W, ['rev-list', `--branches=${PREFIX}/*`, '--not', 'refs/tech-lead/base']).split('\n').filter(Boolean)
+  const loopCommits = cloned ? git(W, ['rev-list', `--branches=${PREFIX}/*`, '--not', 'refs/tech-lead/base']).split('\n').filter(Boolean) : []
   for (const c of loopCommits) assert.ok(names.commits.has(c), `${label}I4 loop commit ${c} is in no ledger row`)
   const orphans = patches(fx).filter(s => !names.saves.has(s))
   assert.equal(orphans.length, ex.orphans ?? 0, `${label}I4 bundles named by no ledger row: ${orphans}`)
 
   // I5: every branch with loop commits has a verified bundle at its tip; no bundle holds a
   // delegate commit or a retired tip.
-  if (ex.bundles !== false) {
+  if (ex.bundles !== false && cloned) {
     for (const [branch, tip] of loopBranches(fx)) {
       const file = bundleFile(fx, branch)
       assert.ok(fs.existsSync(file), `${label}I5 no bundle for ${branch}`)
@@ -435,7 +494,7 @@ export function assertRecovered(fx, ex = {}) {
   }
 
   // I6: no refs/stash; <P> byte- and time-identical apart from the spine.
-  assert.equal(spawnSync('git', ['-C', W, 'rev-parse', '-q', '--verify', 'refs/stash']).status, 1, `${label}I6 refs/stash in <W>`)
+  if (cloned) assert.equal(spawnSync('git', ['-C', W, 'rev-parse', '-q', '--verify', 'refs/stash']).status, 1, `${label}I6 refs/stash in <W>`)
   assert.equal(spawnSync('git', ['-C', fx.P, 'rev-parse', '-q', '--verify', 'refs/stash']).status, 1, `${label}I6 refs/stash in <P>`)
   if (fx.pSnap) assert.deepEqual(pSnapshot(fx), fx.pSnap, `${label}I6 <P> changed`)
 

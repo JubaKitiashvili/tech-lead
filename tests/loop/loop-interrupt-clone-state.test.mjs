@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
-  ROWS, T, assertRecovered, git, headerOf, interrupt, itemBlock, itemLine, ledger, patches, project, recordOf, run, sections, titles, workSnap,
+  ROWS, T, assertRecovered, git, headerOf, interrupt, itemBlock, itemHead, ledger, patches, project, recordOf, run, sections, titles, workSnap,
   write,
 } from './interrupt-fixture.mjs'
 
@@ -55,7 +55,7 @@ describe('section 19 matrix: STATE.md, ledger and close boundaries', ROWS, () =>
       sha = e.sha
     })
     // Loop section 6.1: the entry, and the item back in ## Backlog with status waiting-decision.
-    const flagged = [itemLine('item A'), '  - status: waiting-decision']
+    const flagged = [...itemHead('item A'), '  - status: waiting-decision']
     assert.deepEqual(titles(fx, 'Needs decision'), ['item A'])
     assert.ok(sections(fx)['Needs decision'].some(l => l.startsWith(`**Recovery:** ${sha} `)))
     assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), flagged)

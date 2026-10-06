@@ -27,7 +27,21 @@
 3. **Detect `verify:` candidates** from package.json scripts or the Makefile,
    and confirm them with the user.
 4. **Build the initial `## Backlog`** with the user, from the project's
-   existing task sources.
+   existing task sources. Write each item in the template's format, with
+   `- origin: bootstrap` as its first field line and no `id:` line: the
+   first firing gives every item an id (loop §3). Give each item its own
+   title (titles are unique among open items). Never drop a dependency the
+   sources name: when an item must wait for another, write
+   `blocked-by: <the other item's title>`, exactly as that item's title is
+   written; every other item gets `blocked-by: —`. A prerequisite whose title
+   is one of the none spellings (`—`, `-`, `--`, `none`, `n/a`, in any case)
+   would read as no blocker at all, so rename it first by appending
+   ` (task)` to its title (`None` becomes `None (task)`), then write that
+   new title in the dependent's `blocked-by:`. A blocker is an id,
+   which the items get only at the first firing, so until the owner
+   replaces the title with the id, the waiting item is parked
+   (`title-blocker`) and `## Last run` names the candidate id to write.
+   It is never picked before its prerequisite.
 5. **Update `.gitignore`.** Append `.tech-lead/worktree/`,
    `.tech-lead/briefs/` and `.tech-lead/worktree-deps.ok` to
    `<P>/.gitignore`.

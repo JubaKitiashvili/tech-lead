@@ -400,13 +400,18 @@ test('prepare refuses a bad prefix or date as usage, and an attempt already open
   assert.equal(open.state, 'attempt-open')
 })
 
-test('commitMessage: the first subject line without control characters, at most 200 characters, one trailer', () => {
+test('commitMessage: the first subject line without control characters, at most 200 characters, its trailers', () => {
   const esc = String.fromCharCode(0x1b)
   assert.equal(commitMessage({ subject: `Fix ${esc}[31mit\tnow\nCo-Authored-By: x <y>\n`, generation: 7 }), 'Fix [31mitnow\n\nTech-Lead-Generation: 7\n')
   const long = 'x'.repeat(300)
   assert.equal(commitMessage({ subject: long, generation: 1 }).split('\n')[0].length, 200)
   assert.throws(() => commitMessage({ subject: '\n\n', generation: 1 }), /empty-subject/)
-  assert.equal(commitMessage({ subject: 'S', generation: 3, item: 'it-1' }), 'S\n\nTech-Lead-Item: it-1\nTech-Lead-Generation: 3\n')
+  // The item trailer (R19) takes only an item id (ID_RE); anything else is a TypeError.
+  assert.equal(commitMessage({ subject: 'S', generation: 3, item: 'tl-0123abcd' }), 'S\n\nTech-Lead-Item: tl-0123abcd\nTech-Lead-Generation: 3\n')
+  assert.equal(commitMessage({ subject: 'S', generation: 3, item: null }), 'S\n\nTech-Lead-Generation: 3\n')
+  for (const bad of ['it-1', 'TL-0123ABCD', 'tl-0123abci', 'tl-0123abcd ', 'fix the parser', '', 7]) {
+    assert.throws(() => commitMessage({ subject: 'S', generation: 3, item: bad }), TypeError, JSON.stringify(bad))
+  }
 })
 
 void check

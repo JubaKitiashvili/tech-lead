@@ -1,7 +1,7 @@
 # System 1 layer for tech-lead: design
 
 - **Date:** 2026-09-30
-- **Status:** revision 7. Design approved section by section; revisions 1-4
+- **Status:** revision 8. Design approved section by section; revisions 1-4
   each went through a cross-family review (Claude critic lenses with
   adversarial verification, plus Codex gpt-6.1-sol). Round 4, run under a
   stopping rule (blockers and design-level majors only), found no blockers;
@@ -9,6 +9,9 @@
   stage 0c amendment set the owner approved on 2026-10-01 (§17), found by the
   stage 0c design run. Revision 7 (2026-10-03) reconciles §7.5's two ignore-rule
   statements, as the owner approved during the stage 0c-2 design (§17).
+  Revision 8 (2026-10-04) moves id and origin assignment out of the
+  interactive migration into every firing, as the owner approved during the
+  stage 0c-3 design (amendment A12, §9.1, §17).
 - **Plugin version at design time:** 0.3.3 (HEAD 642edc6); Fable was removed
   in 0.3.4
 - **Architecture chosen:** `hybrid-staged`, as amended (see §17)
@@ -1023,7 +1026,15 @@ Stage 0c:
   the dated loop branches into the clone, and retire the old worktree without
   `--force` or a recursive delete; when git refuses, the owner is asked;
 - assign stable ids and origins to items lacking them; the loop never picks an
-  item without an id;
+  item without an id. From stage 0c-3 this needs no interactive run: assigning
+  ids and origins needs no owner input, so every firing fills them for items
+  that lack them (an item with no `origin:` line gets `unknown`), before the
+  pick, through the same function this migration step calls. Anything that
+  interprets legacy text (a `blocked-by:` that holds a title, a
+  `## Needs decision` heading that holds a title) is never rewritten
+  unattended: until the owner or this migration resolves it, the item it
+  touches is not picked and `## Last run` names it with the candidate id
+  (amendment A12);
 - check `scope:`: a scope of `./` (the whole repository) is refused, and the
   owner sets a narrower one (audit loop07).
 
@@ -1267,3 +1278,4 @@ contract comes back here first.
 | 2026-09-30 | Runner-model comparison (§7.9): Opus runner by default; a Sonnet runner only after a signed, measured comparison | owner |
 | 2026-10-01 | Revision 6, the stage 0c amendment set from the stage 0c design run: `<key>` replaces `project_id` as a path segment (§3); a new spine is ignored through `.git/info/exclude` and never committed, a tracked spine is untracked by `git rm --cached` plus a committed `.gitignore` rule, and a spine copy in `<V>` guards the branch-switch hazard (§4, §9.1); migration is staged with `spine_version:`; runs start in `<P>` until stage 2's runner settings; the lock reclaims from the same process and stops a dead holder's children itself, and its generation is the ledger `iteration`; recovery bundles keep out-of-scope untracked files and the private clone starts clean (§7.5); item origins, open-title uniqueness and the item digest (§7.1); "in scope" defined and `./` refused at bootstrap and at §2; lock integrity and pre-stage-2 governance writes recorded as residual risks (§15); 0c split into 0c-1 to 0c-4 (§10); `skills/quick` added to §9.2. A verification round (a Claude find-and-refute workflow and Codex) made these exact: the canonical, bounded, collision-checked `<key>`; the ignore rule on every branch through the exclude file; the spine anchor in `<S>/SPINE.json`, lost and regressed defined by the append-only ledger, and an interactive, confirmed restore that never touches `POLICY.json`; the scope validator; same-process reclaim refused while an in-process dispatch is open; no watchdog daemons; the generation floor; safe, resumable untracking; out-of-scope bundles refused at release; the clean-clone timing; stage qualifiers for the runner checks | owner, on the tech lead's recommendation |
 | 2026-10-03 | Revision 7 (amendment A11, from the stage 0c-2 design and its review): the clean clone lists an interrupted firing's untracked files under that firing's recorded ignore rules (read back from the record, never from the working tree; recorded after dependency preparation, before any dispatch), so tool-written self-ignored directories (a venv, `.husky/_`, test caches) are not bundled and deleted at every firing; leftovers with no record use the base's rules; the restore-first sentence of §7.5 is removed | owner, on the tech lead's recommendation |
+| 2026-10-04 | Revision 8 (amendment A12, from the stage 0c-3 design and its cross-family review): ids and origins are filled at every firing, through the function the stage 0c migration step calls, because they need no owner input and the literal reading would leave every existing backlog dry between stages 0c-3 and 0c-4; title-valued `blocked-by:` values and title-keyed `## Needs decision` headings are never rewritten unattended, only reported with a candidate id (§9.1) | owner, on the tech lead's recommendation |

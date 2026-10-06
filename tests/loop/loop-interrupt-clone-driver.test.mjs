@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  BASE_FILES, DOT, ROWS, T, assertRecovered, git, go, gone, groupIsOurs, helperAs, interrupt, itemBlock, itemLine, killGroupIfOurs, ledger,
+  BASE_FILES, DOT, ROWS, T, assertRecovered, git, go, gone, groupIsOurs, helperAs, idOf, interrupt, itemBlock, itemHead, killGroupIfOurs, ledger,
   loopMd, patches, project, reap, run, sections, start, stateText, titles, tmp, waitFor, workSnap,
 } from './interrupt-fixture.mjs'
 import { groupAlive, startToken } from '../../scripts/lib/loop-proc.mjs'
@@ -22,6 +22,9 @@ const committedSha = f => {
   assert.ok(e, `the firing did not commit: ${f.describe()}`)
   return e.out.sha
 }
+// The ## Blocked block of item A after two failed attempts: the whole block kept (R14), its
+// recovery: field added.
+const blockedA = sha => [`- [ ] item A ${DOT} attempts: 2 ${DOT} attempt failed twice`, ...itemHead('item A').slice(1), `  - recovery: ${sha}`]
 const loopText = fx => fs.readFileSync(path.join(fx.S, 'LOOP.md'), 'utf8')
 const PAUSED = /^paused: true$/m
 // A firing while LOOP.md says paused: true recovers, then halts at the gate (loop section 2):
@@ -84,7 +87,7 @@ describe('the firing driver follows the prose', ROWS, () => {
     const snap = workSnap(fx.W)
     assert.ok(snap.some(([p]) => p === 'new.txt'), 'the attempt stays in <W>')
     assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].paused], ['skipped', true])
-    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A'), '  - status: waiting-infra'])
+    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [...itemHead('item A'), '  - status: waiting-infra'])
     assert.match(loopText(fx), PAUSED, 'the pause is LOOP.md\'s flag')
     // The owner ends the processes and fixes verify, but has not unpaused yet: no dispatch.
     for (const pid of alive) process.kill(pid, 'SIGKILL')
@@ -99,7 +102,7 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.deepEqual(rec.map(r => r.generation), [1])
     const ex = { work: [{ snap, via: 'bundle', sha: rec[0].sha }] }
     assertRecovered(fx, { ...ex, rows: [1, 2, 3], tip: committedSha(f2), sections: { Done: ['item B'], Backlog: ['item A', 'item C', 'item D'] } })
-    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A'), '  - status: waiting-infra'], 'a waiting-infra item is never picked')
+    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [...itemHead('item A'), '  - status: waiting-infra'], 'a waiting-infra item is never picked')
   })
 
   // The verify events in order: [event, K, restarted] for a verify run, [event, attempt] else.
@@ -118,7 +121,7 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.deepEqual([row.outcome, row.verify], ['failed', 'fail'])
     assert.equal(row.notes.split('; ').filter(n => n === 'verify changed the work twice').length, 2, row.notes)
     const sha = row.saves[0].sha
-    assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), [`- [ ] item A ${DOT} attempts: 2 ${DOT} attempt failed twice`, `  - recovery: ${sha}`])
+    assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), blockedA(sha))
     assert.match(fs.readFileSync(path.join(fx.V, 'patches', `${sha}.patch`), 'utf8'), /\+edited\n(\+more\n){4}(?!\+more)/)
     assert.doesNotMatch(loopText(fx), PAUSED, 'an attempt failure is no pause')
     fs.writeFileSync(path.join(fx.S, 'LOOP.md'), loopMd())
@@ -172,16 +175,16 @@ describe('the firing driver follows the prose', ROWS, () => {
     const sha = f1.get('saved').out.sha
     assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].verify], ['flagged', null])
     assert.ok(sections(fx)['Needs decision'].some(l => l.startsWith(`**Recovery:** ${sha} `)))
-    const want = [itemLine('item A'), `  - blocked-by: ${DASH}`, '  - status: waiting-decision', '  - notes: keep this note']
+    const want = [...itemHead('item A'), `  - blocked-by: ${DASH}`, '  - status: waiting-decision', '  - notes: keep this note']
     assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), want)
     assert.deepEqual(titles(fx, 'Backlog'), ['item A', 'item B', 'item C'])
     const f2 = await run(fx, work('two'))
-    assert.deepEqual(f2.get('picked').item, [itemLine('item B')])
+    assert.deepEqual(f2.get('picked').item, itemHead('item B'))
     assertRecovered(fx, { rows: [1, 2], tip: committedSha(f2), sections: { 'Needs decision': ['item A'], Done: ['item B'], Backlog: ['item A', 'item C'] } })
     assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), want)
   })
 
-  test('Cg4#6: an empty save on a flagged item writes the Recovery line with none and the base and scope the empty answer carries', T, async t => {
+  test('Cg4#6: an empty save on a flagged item writes the Recovery line with none and the base, scope and item digest the empty answer carries', T, async t => {
     const fx = project(t)
     const f1 = await run(fx, { path: 'flag', attempts: [{ ops: [] }] })
     const e = f1.events.find(x => x.event === 'saved-state')
@@ -189,8 +192,11 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.equal(e.empty.state, 'empty')
     assert.match(e.empty.scope.digest, /^[0-9a-f]{64}$/)
     const line = sections(fx)['Needs decision'].find(l => l.startsWith('**Recovery:** '))
-    assert.equal(line, `**Recovery:** none ${DOT} base ${e.empty.base} ${DOT} item-digest none ${DOT} scope ${e.empty.scope.digest}`)
-    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A'), '  - status: waiting-decision'])
+    // R18: the Recovery line writes the item digest instead of none.
+    assert.match(e.empty.item_digest, /^[0-9a-f]{64}$/)
+    assert.equal(e.empty.item_id, idOf('item A'))
+    assert.equal(line, `**Recovery:** none ${DOT} base ${e.empty.base} ${DOT} item-digest ${e.empty.item_digest} ${DOT} scope ${e.empty.scope.digest}`)
+    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [...itemHead('item A'), '  - status: waiting-decision'])
     assert.deepEqual([ledger(fx)[0].outcome, ledger(fx)[0].saves], ['flagged', null])
     assert.deepEqual(patches(fx), [])
     assert.equal(f1.events.some(x => x.event === 'reset'), false, 'an empty save skips the reset')
@@ -269,7 +275,7 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.deepEqual([row.outcome, row.verify, row.paused], ['failed', 'fail', undefined])
     const sha = row.saves[0].sha
     assert.equal(row.saves[0].why, 'attempt-failed')
-    assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), [`- [ ] item A ${DOT} attempts: 2 ${DOT} attempt failed twice`, `  - recovery: ${sha}`])
+    assert.deepEqual(itemBlock(fx, 'Blocked', 'item A'), blockedA(sha))
     assert.doesNotMatch(loopText(fx), PAUSED, 'an attempt failure is no pause')
   })
 
@@ -295,7 +301,7 @@ describe('the firing driver follows the prose', ROWS, () => {
     assert.deepEqual(workSnap(fx.W), snap, '<W> untouched')
     const row = ledger(fx)[0]
     assert.deepEqual([row.outcome, row.paused, row.verify, row.commits], ['skipped', true, null, []])
-    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), [itemLine('item A')], 'the item back with its status unchanged')
+    assert.deepEqual(itemBlock(fx, 'Backlog', 'item A'), itemHead('item A'), 'the item back with its status unchanged')
     assert.match(loopText(fx), PAUSED)
   })
 })

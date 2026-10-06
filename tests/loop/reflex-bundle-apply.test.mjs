@@ -2,23 +2,31 @@
 // `reflex-bundle.mjs apply` (ruling R6; brief section 11): the minimal same-base apply that the
 // spec's section 11 stage 0c contract needs. A bundle holding an out-of-scope file is refused
 // before anything is applied; scope-changed, digest-mismatch, moved-base and dirty refuse with
-// the work tree untouched; on the same base the bundle reproduces the saved work tree.
+// the work tree untouched; on the same base the bundle reproduces the saved work tree. The save
+// names its item with --item (stage 0c-3 R18), so the bundle's item digest is that item's.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { T, fixture, git, gitState, recordOf, run, save, snapshot, write } from './reflex-bundle-fixture.mjs'
+import { itemDigest, parseState } from '../../scripts/lib/loop-state.mjs'
+import { open, state } from '../lib/loop-state-fixture.mjs'
 
 const SCOPED = '---\nverify:\n  - "true"\nscope:\n  - src\n---\n'
-const D = 'a'.repeat(64)
+const ITEM = 'tl-aaaaaaaa'
+const STATE = state({ now: open('Add the feature', { id: ITEM, notes: 'in src' }) })
+const D = itemDigest(parseState(STATE).items[0])
 const N_ = f => String(f.N)
 const FILES = { 'src/a.txt': 'a\n', 'src/b.txt': 'b\n', 'src/run.sh': 'echo\n', 'docs/d.md': 'd\n' }
 
-// Saves the clone's edits (why delegate-flagged, item digest D) and resets it: {sha, pre}.
+// Saves the clone's edits (why delegate-flagged, the STATE.md item ITEM, whose digest is D) and
+// resets it: {sha, pre}.
 function saveAndReset(f) {
   const pre = snapshot(f.W, { dirs: false })
-  const s = save(f, 'delegate-flagged', ['--item-digest', D])
+  fs.writeFileSync(path.join(f.S, 'STATE.md'), STATE)
+  const s = save(f, 'delegate-flagged', ['--item', ITEM, '--item-digest', D])
   assert.equal(s.state, 'saved')
+  assert.equal(s.item_digest, D)
   assert.equal(run(f.env, 0, 'reset', f.P, '--generation', N_(f), '--sha', s.sha).state, 'reset')
   return { sha: s.sha, pre, saved: s }
 }
