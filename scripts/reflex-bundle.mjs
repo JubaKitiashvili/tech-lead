@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // scripts/reflex-bundle.mjs
 // Owner of recovery bundles (stage 0c-2, brief section 11; spec 7.5 as amended by A11; rulings
-// R4-R6, R16, R17, R19-R21). A recovery bundle holds what the loop's clone <W> has against a base
-// commit (the tracked diff and the untracked files listed under recorded ignore rules, in scope
-// or not) as one file the loop can replay. It never uses git stash, and a save never writes the
-// real index, HEAD, a ref, refs/stash or the work tree.
+// R4-R6, R16, R17, R19-R21; stage 0c-3 ruling R18 adds the item fields). A recovery bundle
+// holds what the loop's clone <W> has against a base commit (the tracked diff and the untracked
+// files listed under recorded ignore rules, in scope or not) as one file the loop can replay. It
+// never uses git stash, and a save never writes the real index, HEAD, a ref, refs/stash or the
+// work tree.
 //
 // Bundle file <V>/patches/<sha>.patch, sha = sha256 of the whole file. Line 1 is
 //   TECH-LEAD-RECOVERY v1 <canonicalJson(header)>
@@ -15,19 +16,23 @@
 // and with the plumbing config that would otherwise change its bytes pinned to git's defaults
 // (diff.suppressBlankEmpty, diff.indentHeuristic, core.bigFileThreshold, the zlib level of binary
 // patches), so one change set always gives one sha whatever the owner's or a delegate's config.
-// Header: {v:1, why, generation, source:{generation}, base, head, tree, item_digest, item_id:null,
+// Header: {v:1, why, generation, source:{generation}, base, head, tree, item_digest, item_id,
 // rules:{mode, sha}, scope:{state, entries, digest}, files:[{path, kind, old_mode, mode, oid,
-// size, binary, in_scope, hidden, obstructed}]}; no timestamps. rules.sha = sha256 of the
-// canonical rules object, which is kept next to the bundles as <V>/patches/rules-<sha>.json
-// (content-addressed, so a reset after a kill lists untracked files under exactly the rules the
-// save used, whatever mode they had).
+// size, binary, in_scope, hidden, obstructed}]}; no timestamps. item_id is an item id (loop-state
+// ID_RE) or null, item_digest 64 hex or null, and the two are both set or both null (R18): a save
+// with --item records the item it holds work for and that item's itemDigest. rules.sha = sha256
+// of the canonical rules object, which is kept next to the bundles as
+// <V>/patches/rules-<sha>.json (content-addressed, so a reset after a kill lists untracked files
+// under exactly the rules the save used, whatever mode they had).
 //
 // Library:
-//   saveFor(paths, {saver, source, base, rules, why, itemDigest, also, requireHeadAtBase, env})
-//     -> {state:'saved', ...} | {state:'empty', base, head, indexDirty, scope:{state, entries,
-//     digest}}; refusals throw code REFUSED with `state` (clone-invalid, infra (git-too-old),
-//     head-moved (requireHeadAtBase only), index-only, unsavable, too-large, tampered,
-//     base-unknown).
+//   saveFor(paths, {saver, source, base, rules, why, itemId, itemDigest, also, requireHeadAtBase,
+//     env}) -> {state:'saved', ..., item_id, item_digest} | {state:'empty', base, head,
+//     indexDirty, scope:{state, entries, digest}, item_id, item_digest}; itemId (an ID_RE id) and
+//     itemDigest (64 hex) are given together or not at all (TypeError), and are written as given
+//     (the CLI resolves them from STATE.md); refusals throw code REFUSED with `state`
+//     (clone-invalid, infra (git-too-old), head-moved (requireHeadAtBase only), index-only,
+//     unsavable, too-large, tampered, base-unknown).
 //   resetFor(paths, {holder, record, sha, relaxed, also, rules, env}) -> {state:'reset', removed,
 //     restored, more}; refusals: no-record, not-anchored, clone-invalid, infra, tampered,
 //     base-unknown, head-moved, index-locked, busy, index-only, unsaved; a reset that began and
@@ -46,9 +51,18 @@
 // or rename, so a lock lost during that fsync publishes nothing.
 // Every entry needs a git that honours GIT_ATTR_SOURCE (R24): else REFUSED infra git-too-old.
 // CLI (one JSON line on stdout; exit 0 ok, 2 {state:'error', detail[, partial]}, 3 refused):
-//   save <P> --generation <N> --why <why> [--item-digest <64hex>]   (refuses head-moved when
-//     HEAD is not the record's base: the reset that follows a save needs HEAD there)
-//   verify <P> --sha <64hex>
+//   save <P> --generation <N> --why <why> [--item <id> [--item-digest <64hex>]]   (refuses
+//     head-moved when HEAD is not the record's base: the reset that follows a save needs HEAD
+//     there). --item <id> (an ID_RE id; anything else is a usage error) reads <S>/STATE.md with
+//     loop-state's parseState before anything is collected: exactly one item, in any section and
+//     eligible or not (a save must keep working while a person edits the backlog), carries the
+//     id, else exit 3 {state:'bad-item', detail, carriers} with nothing written (no STATE.md, a
+//     STATE.md holding a carriage return, no carrier, several, or a carrier whose id line is
+//     invalid-id). The header gets item_id and that item's itemDigest; both outputs, an empty
+//     save's included, carry item_id and item_digest (the Recovery line writes the digest).
+//     --item-digest is accepted only with --item (alone it is a usage error) and must equal the
+//     computed digest, else exit 3 {state:'digest-mismatch'} with nothing written.
+//   verify <P> --sha <64hex>   (reports item_id and item_digest)
 //   reset <P> --generation <N> --sha <64hex>
 //   apply <P> --generation <N> --sha <64hex> [--item-digest <64hex>]   (same base only; no 0c-2
 //     prose calls it; stage 3 adds spec 7.5's moved-base allowance). It writes the bundle's bytes
@@ -75,6 +89,7 @@ import { markScope } from './lib/loop-scope.mjs'
 import { sweepOthers } from './lib/loop-proc.mjs'
 import { assertHeld, openPaths } from './loop-lock.mjs'
 import { fault } from './lib/fault.mjs'
+import { ID_RE, itemDigest as digestOfItem, parseState } from './lib/loop-state.mjs'
 
 const MAGIC = 'TECH-LEAD-RECOVERY v1 '
 const SHA = /^[0-9a-f]{64}$/
@@ -343,7 +358,8 @@ function headerProblem(h) {
   for (const k of ['base', 'tree']) if (typeof h[k] !== 'string' || !OID.test(h[k])) return `${k} is not an object id`
   if (!(h.head === null || (typeof h.head === 'string' && OID.test(h.head)))) return 'head is not an object id'
   if (!(h.item_digest === null || (typeof h.item_digest === 'string' && SHA.test(h.item_digest)))) return 'item_digest is malformed'
-  if (h.item_id !== null && typeof h.item_id !== 'string') return 'item_id is malformed'
+  if (!(h.item_id === null || (typeof h.item_id === 'string' && ID_RE.test(h.item_id)))) return 'item_id is not an item id or null'
+  if ((h.item_id === null) !== (h.item_digest === null)) return 'item_id and item_digest are not both set or both null'
   if (!isPlain(h.rules) || !RULE_MODES.has(h.rules.mode) || typeof h.rules.sha !== 'string' || !SHA.test(h.rules.sha)) return 'rules is malformed'
   const s = h.scope
   if (!isPlain(s) || !SCOPE_STATES.has(s.state) || !Array.isArray(s.entries) || !s.entries.every(e => typeof e === 'string')
@@ -487,11 +503,13 @@ function maxBytes(env) {
 
 // ---------------------------------------------------------------- save
 
-export function saveFor(paths, { saver, source = null, base, rules, why, itemDigest = null, also = [], requireHeadAtBase = false, env = process.env } = {}) {
+export function saveFor(paths, { saver, source = null, base, rules, why, itemId = null, itemDigest = null, also = [], requireHeadAtBase = false, env = process.env } = {}) {
   if (!isGeneration(saver)) throw new TypeError(`saveFor: saver must be a generation, got ${saver}`)
   if (!(source === null || isGeneration(source))) throw new TypeError(`saveFor: source must be a generation or null, got ${source}`)
   if (!WHYS.includes(why)) throw new TypeError(`saveFor: why must be one of ${WHYS.join(', ')}`)
   if (!(itemDigest === null || (typeof itemDigest === 'string' && SHA.test(itemDigest)))) throw new TypeError('saveFor: itemDigest must be 64 hex or null')
+  if (!(itemId === null || (typeof itemId === 'string' && ID_RE.test(itemId)))) throw new TypeError('saveFor: itemId must be an item id or null')
+  if ((itemId === null) !== (itemDigest === null)) throw new TypeError('saveFor: itemId and itemDigest go together')
   if (!isPlain(rules)) throw new TypeError('saveFor: rules must be a rules object')
   assertHeld(paths, saver, env)
   const wt = openClone(paths, env)
@@ -507,7 +525,10 @@ export function saveFor(paths, { saver, source = null, base, rules, why, itemDig
   // An empty save carries the scope it was judged under, so the caller can write its entry.
   const empty = () => {
     const sc = scopeOf(wt, [], readLoopMd(paths))
-    return { state: 'empty', base: c.base, head: c.head, indexDirty: c.indexDirty, scope: { state: sc.state, entries: sc.entries, digest: sc.digest } }
+    return {
+      state: 'empty', base: c.base, head: c.head, indexDirty: c.indexDirty, scope: { state: sc.state, entries: sc.entries, digest: sc.digest },
+      item_id: itemId, item_digest: itemDigest,
+    }
   }
   if (!changed.length) return empty()
   let tree
@@ -532,7 +553,7 @@ export function saveFor(paths, { saver, source = null, base, rules, why, itemDig
   const rsha = rulesSha(rules)
   const header = {
     v: 1, why, generation: saver, source: { generation: source }, base: c.base, head: c.head, tree,
-    item_digest: itemDigest, item_id: null, rules: { mode: rules.mode, sha: rsha },
+    item_digest: itemDigest, item_id: itemId, rules: { mode: rules.mode, sha: rsha },
     scope: { state: scope.state, entries: scope.entries, digest: scope.digest }, files,
   }
   const { path: tmp, fd } = tempFile(wt.store, '.patch')
@@ -581,7 +602,7 @@ export function saveFor(paths, { saver, source = null, base, rules, why, itemDig
     const hid = files.filter(f => f.hidden).map(f => f.path)
     const shown = capList(all)
     return {
-      state: 'saved', sha, file, base: c.base, head: c.head, tree, item_digest: itemDigest,
+      state: 'saved', sha, file, base: c.base, head: c.head, tree, item_id: itemId, item_digest: itemDigest,
       scope: header.scope, files: files.length, out_of_scope: out.slice(0, LIST_MAX), hidden: hid.slice(0, LIST_MAX),
       paths: shown.shown, more: shown.more, counts: { files: files.length, out_of_scope: out.length, hidden: hid.length },
       bytes, reused: !created, warnings: scope.warnings,
@@ -923,11 +944,11 @@ function applyBundle(paths, generation, sha, itemDigest, env) {
 
 // ---------------------------------------------------------------- CLI
 
-const USAGE = 'usage: reflex-bundle.mjs save <P> --generation <N> --why <why> [--item-digest <64hex>] | verify <P> --sha <64hex> | '
+const USAGE = 'usage: reflex-bundle.mjs save <P> --generation <N> --why <why> [--item <id> [--item-digest <64hex>]] | verify <P> --sha <64hex> | '
   + 'reset <P> --generation <N> --sha <64hex> | apply <P> --generation <N> --sha <64hex> [--item-digest <64hex>]'
 
 const COMMANDS = {
-  save: { flags: ['generation', 'why'], optional: ['item-digest'] },
+  save: { flags: ['generation', 'why'], optional: ['item', 'item-digest'] },
   verify: { flags: ['sha'], optional: [] },
   reset: { flags: ['generation', 'sha'], optional: [] },
   apply: { flags: ['generation', 'sha'], optional: ['item-digest'] },
@@ -956,8 +977,44 @@ function parseArgs(argv) {
   }
   if ('sha' in opts && !SHA.test(opts.sha)) return null
   if ('item-digest' in opts && !SHA.test(opts['item-digest'])) return null
+  if ('item' in opts && !ID_RE.test(opts.item)) return null
+  // On save the digest is checked against the item's (R18): it means nothing without one.
+  if (argv[0] === 'save' && 'item-digest' in opts && !('item' in opts)) return null
   if ('why' in opts && !WHYS.includes(opts.why)) return null
   return { cmd: argv[0], P: pos[0], ...opts }
+}
+
+// The item `save --item <id>` holds work for (R18): {id, digest}, read from <S>/STATE.md
+// through loop-state.mjs. Exactly one item, in any section, carries the id; eligibility does not
+// matter. A carrier is an item with an `id:` line naming the id (compared case-insensitively, R2),
+// so an item with two id lines (invalid-id, its id null) still counts, and is refused: its digest
+// would not name the id. want, when given, must equal the digest (digest-mismatch).
+function savedItem(paths, id, want) {
+  const file = path.join(paths.S, 'STATE.md')
+  let text
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch (e) {
+    if (e.code === 'ENOENT') throw refused('bad-item', `${file} does not exist, so no item carries ${id}`, { carriers: 0 })
+    throw e
+  }
+  const st = parseState(text)
+  if (st.problems.some(p => p.kind === 'crlf')) {
+    throw refused('bad-item', `${file} holds a carriage return (crlf): convert it to LF line endings`, { carriers: 0 })
+  }
+  const carriers = st.items.filter(it => it.fields.some(fl => fl.label === 'id' && fl.value.trim().toLowerCase() === id))
+  if (carriers.length !== 1) {
+    const where = carriers.map(it => `${it.section} line ${it.line}`).join(', ')
+    throw refused('bad-item', carriers.length ? `${carriers.length} items carry ${id} (${where})` : `no item in ${file} carries ${id}`,
+      { carriers: carriers.length })
+  }
+  const it = carriers[0]
+  if (it.id !== id) throw refused('bad-item', `the item at ${it.section} line ${it.line} has an invalid id (two id lines)`, { carriers: 1 })
+  const digest = digestOfItem(it)
+  if (want !== undefined && want !== digest) {
+    throw refused('digest-mismatch', `item digest ${want} was given, the item ${id} has ${digest}`, { item_id: id, item_digest: digest })
+  }
+  return { id, digest }
 }
 
 function saveCli(a, env) {
@@ -968,11 +1025,12 @@ function saveCli(a, env) {
   if (!rec || !['prepared', 'saved'].includes(rec.phase) || !rec.rules) {
     throw refused('no-record', rec ? `the run record of generation ${a.generation} is in phase ${rec.phase}${rec.rules ? '' : ' without recorded rules'}` : `generation ${a.generation} has no run record`)
   }
+  const item = a.item === undefined ? null : savedItem(paths, a.item, a['item-digest'])
   // HEAD away from the base (a delegate's amend or reset) is refused: the reset that follows a
   // save needs HEAD at the base, and the next prepare judges that tip (data-safety#3).
   const r = saveFor(paths, {
     saver: a.generation, source: a.generation, base: rec.base, rules: rec.rules, why: a.why,
-    itemDigest: a['item-digest'] ?? null, also: knownCommits(rec), requireHeadAtBase: true, env,
+    itemId: item && item.id, itemDigest: item && item.digest, also: knownCommits(rec), requireHeadAtBase: true, env,
   })
   if (r.state !== 'saved') return r
   const held = () => assertHeld(paths, a.generation, env)
@@ -993,7 +1051,7 @@ function verifyCli(a, env) {
   const h = b.header
   return {
     state: 'verified', sha: b.sha, file: b.file, bytes: b.bytes, why: h.why, generation: h.generation, source: h.source,
-    base: h.base, tree: h.tree, item_digest: h.item_digest, scope: h.scope, files: h.files.length,
+    base: h.base, tree: h.tree, item_id: h.item_id, item_digest: h.item_digest, scope: h.scope, files: h.files.length,
   }
 }
 

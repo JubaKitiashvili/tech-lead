@@ -220,7 +220,7 @@ test('resetEmpty sets a dirty index back to the base, refusing index-only conten
   const f = await fixture(t, { 'a.txt': 'a\n', 'u.txt': 'u\n' })
   git(f.W, ['rm', '--cached', '-q', 'u.txt'])
   const e = run(f.env, 0, 'save', f.P, '--generation', N_(f), '--why', 'pause')
-  assert.deepEqual(e, { state: 'empty', base: f.base, head: f.base, indexDirty: true, scope: e.scope })
+  assert.deepEqual(e, { state: 'empty', base: f.base, head: f.base, indexDirty: true, scope: e.scope, item_id: null, item_digest: null })
   const snap = snapshot(f.W)
   assert.deepEqual(resetEmpty(f.paths, { holder: f.N, record: f.N, base: f.base, env: f.env }), { state: 'index-reset', base: f.base })
   assert.equal(gitCode(f.W, ['diff-index', '--cached', '--quiet', f.base]), 0)
