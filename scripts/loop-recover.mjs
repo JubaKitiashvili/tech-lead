@@ -2,7 +2,8 @@
 // scripts/loop-recover.mjs
 // The single recovery planner (stage 0c-2 brief section 14; stage 0c-3 R19-R21 bind the ## Now
 // item by id and digest and add clear-now; the fix pass's R29 limits clear-now to identical copies
-// of one item and adds now-conflict; fix round 2's R29a widens identical past the digest). Run at
+// of one item and adds now-conflict; fix round 2's R29a widens identical past the digest; the
+// closing fix pass's F5 compares whole blocks and F4 never finishes an item with problems). Run at
 // loop section 1 step 5, after acquire and before any write-capable dispatch, it reports what
 // interrupted firings left behind and which governance-side recovery actions the main session
 // takes, in a fixed order. It carries out none
@@ -30,16 +31,20 @@
 //   clear-now         ## Now holds exactly one block, the item, and its id is also carried by
 //                     exactly one item in another section, the same item: the same itemDigest
 //                     and the same blocked-by:, decided: and no-change-ok: lines and origin-like
-//                     lines (as written), whatever its status:, class:, recovery: line and
-//                     header form (a move rewrites those) (R29a); and by no raw carrier (an id
+//                     lines (as written, loop-state's originLikeLine) (R29a), and every other
+//                     line of the two blocks the same as written (fix manifest F5), but for
+//                     what a move rewrites: the header form, a status: the other copy holds as
+//                     waiting-* where the ## Now copy reads none or has no status: line, and
+//                     the recovery: lines when the other copy holds one; and by no raw carrier (an id
 //                     line that does not parse to it): a move (pick, finish, requeue, block) was
 //                     interrupted between its insertion and its deletion (R14), and the other
 //                     copy is the item (R29). The main session applies `clear.edits`, the
 //                     anchored deletion of that one block (## Now is left (empty)), and checks
 //                     `clear.expect_sha256`. Neither finish-commit nor requeue-now is then due.
 //   now-conflict      the ## Now item's id is carried elsewhere but clear-now does not hold: the
-//                     copies differ (a person amended one: its title, notes or decision, or a
-//                     field of the R29a identity), ## Now holds another block too, the id has
+//                     copies differ (a person amended one: its title, notes or decision, a
+//                     field of the R29a identity, or any other line of its block), ## Now
+//                     holds another block too, the id has
 //                     several other carriers, or a raw one (R29). The main session treats it as
 //                     the item-edit incident (pause, both copies kept); `conflict` names why.
 //                     Neither finish-commit nor requeue-now is then due.
@@ -47,7 +52,10 @@
 //                     SHA-256 is the record's now_sha256, and, for a v:2 record, whose id and
 //                     itemDigest are the record's item_id and item_digest (a v:2 record that
 //                     bound no item never finishes; a v:1 record, written by 0.5.0, binds the
-//                     line alone, R20); and no ## Done header names the commit in its sha slot
+//                     line alone, R20); the item has no item problems (duplicate-field,
+//                     malformed-field, invalid-id and the rest of parseState's: an amendment the
+//                     digest does not read, fix manifest F4); and no ## Done header names the
+//                     commit in its sha slot
 //                     (the full sha or a 7+ hex prefix; the header is split from the right)
 //                     and no ledger row names it. The main session moves the Now item to
 //                     ## Done with the sha in one Edit (no title search). A STATE.md holding a
@@ -75,7 +83,8 @@
 //     conflict: null | {id, reasons, now: {line, digest}, now_items, carriers: [{section, line,
 //       digest, raw}]} (reasons: several-now-items, several-carriers, raw-carrier,
 //       digest-differs, blocked-by-differs, origin-differs, decided-differs,
-//       no-change-ok-differs, each `-differs` naming what the one other copy differs in;
+//       no-change-ok-differs, block-differs (any other line, given none of the others), each
+//       `-differs` naming what the one other copy differs in;
 //       now_items the number of blocks in ## Now; a raw carrier's line is its id line and its
 //       digest null),
 //     finish: null | {generation, sha, item_id, item_digest} (the ## Now item's id and
@@ -99,7 +108,9 @@ import { fileURLToPath } from 'node:url'
 import { loopPaths } from './lib/loop-paths.mjs'
 import { safeGit, workGitRun } from './lib/git-safe.mjs'
 import { sha256Hex } from './lib/canonical.mjs'
-import { PLACEHOLDER as STATE_PLACEHOLDER, fold, idCarriers, itemDigest, nowLine, parseState, planDeleteBlock } from './lib/loop-state.mjs'
+import {
+  PLACEHOLDER as STATE_PLACEHOLDER, idCarriers, itemDigest, nowLine, originLikeLine, parseState, planDeleteBlock,
+} from './lib/loop-state.mjs'
 import { ledgerShas } from './lib/ledger.mjs'
 import { checkClone } from './lib/clone-check.mjs'
 import {
@@ -205,41 +216,63 @@ function doneNames(state, sha) {
   return false
 }
 
-// An origin-like line (fix manifest R28): `origin` in any case, after any indent and an optional
-// list marker, then a colon, read through fold. The same test as loop-state.mjs's (not exported).
-const ORIGIN_LIKE = /^\s*(?:[-*+]\s*)?origin\s*:/i
-
 // What decides an item's behaviour beyond its itemDigest (fix round 2, R29a), as
 // [[reason, value]]: the values of its blocked-by:, decided: and no-change-ok: lines and every
-// origin-like line of its block as written (a malformed `Origin:` included). Two copies of one
-// item moved halfway agree on each; what a move itself rewrites (status:, class:, a recovery:
-// line, the header form) is left out.
+// origin-like line of its block as written (a malformed `Origin:`, a colon-less or marked-up
+// origin line included: loop-state's originLikeLine, fix manifest F2). Two copies of one item
+// moved halfway agree on each; what a move itself rewrites is left out (blockLines).
 function identity(item) {
   const values = label => item.fields.filter(f => f.label === label).map(f => f.value)
   return [
     ['blocked-by-differs', values('blocked-by')],
-    ['origin-differs', item.lines.filter(l => ORIGIN_LIKE.test(fold(l)))],
+    ['origin-differs', item.lines.filter(l => originLikeLine(l))],
     ['decided-differs', values('decided')],
     ['no-change-ok-differs', values('no-change-ok')],
   ]
 }
 
-// The reasons two copies of one id are not one item moved halfway: digest-differs (title,
-// notes or decision), then each identity field on which they differ.
-function differences(a, b) {
-  const ib = new Map(identity(b))
-  return [
-    ...(itemDigest(a) === itemDigest(b) ? [] : ['digest-differs']),
-    ...identity(a).filter(([why, v]) => JSON.stringify(v) !== JSON.stringify(ib.get(why))).map(([why]) => why),
-  ]
+// The lines of a block two copies of one item are compared on (fix manifest F5): every line but
+// the header, as written (fields known or unknown, malformed and unparsed lines, continuations),
+// less what a move itself rewrites. That is the header form (title, priority and class live in
+// the header; the title is in the digest), the `status:` line when the other copy holds one
+// waiting-* status and the ## Now copy one status of none or no status line at all (a
+// waiting-level pick rewrote it to the dash; a return set it, adding the line when there was
+// none), and the `recovery:` lines when the other copy holds one (a move into ## Blocked or
+// ## Backlog writes its recovery: line in place of any older one, adding it when there was none).
+// The ## Now copy is `now`, the other copy `other`; which of the two to read is `which`.
+function blockLines(now, other, which) {
+  const it = which === 'now' ? now : other
+  const of = (item, label) => item.fields.filter(f => f.label === label)
+  const sNow = of(now, 'status'), sOther = of(other, 'status')
+  const waiting = sOther.length === 1 && /^waiting-/.test(other.status ?? '') && sNow.length <= 1 && now.status === null
+  const skip = new Set([
+    ...(waiting ? of(it, 'status') : []),
+    ...(of(other, 'recovery').length ? of(it, 'recovery') : []),
+  ].map(f => f.at - it.start))
+  return it.lines.filter((l, k) => k > 0 && !skip.has(k))
 }
 
-// clear-now and now-conflict (R20, R29, R29a): {clear, conflict}, at most one of them set, both
-// null when the ## Now item has no valid id or no other block carries it. Every carrier counts:
-// the parsed items with the id (a second one in ## Now included) and the raw id lines
+// The reasons two copies of one id are not one item moved halfway (now the ## Now copy, other
+// the one other carrier): digest-differs (title, notes or decision), then each identity field on
+// which they differ; with none of those, block-differs when any other line of the two blocks
+// differs (blockLines, fix manifest F5), so no amendment a named field does not cover is lost.
+function differences(now, other) {
+  const io = new Map(identity(other))
+  const named = [
+    ...(itemDigest(now) === itemDigest(other) ? [] : ['digest-differs']),
+    ...identity(now).filter(([why, v]) => JSON.stringify(v) !== JSON.stringify(io.get(why))).map(([why]) => why),
+  ]
+  if (named.length) return named
+  return JSON.stringify(blockLines(now, other, 'now')) === JSON.stringify(blockLines(now, other, 'other')) ? [] : ['block-differs']
+}
+
+// clear-now and now-conflict (R20, R29, R29a, F5): {clear, conflict}, at most one of them set,
+// both null when the ## Now item has no valid id or no other block carries it. Every carrier
+// counts: the parsed items with the id (a second one in ## Now included) and the raw id lines
 // idCarriers reports. clear-now needs ## Now to hold this one block and exactly one other
-// carrier, parsed, that is the same item: the same itemDigest and the same identity (blocked-by:,
-// origin-like lines, decided:, no-change-ok:); anything else is a conflict, with its reasons.
+// carrier, parsed, that is the same item: the same itemDigest, the same identity (blocked-by:,
+// origin-like lines, decided:, no-change-ok:) and the same block but for a move's own changes;
+// anything else is a conflict, with its reasons.
 function interruptedMove(text, state, item) {
   if (item === null || item.id === null) return { clear: null, conflict: null }
   const { parsed, raw } = idCarriers(state, item.id)
@@ -275,6 +308,7 @@ const CONFLICT_WHY = {
   'origin-differs': 'the copies\' origin lines differ: one was edited after the interruption',
   'decided-differs': 'the copies\' decided: lines differ: one was edited after the interruption',
   'no-change-ok-differs': 'the copies\' no-change-ok: lines differ: one was edited after the interruption',
+  'block-differs': 'the copies\' blocks differ in another line (a field added or changed, a status or recovery: line no move explains, a malformed or unparsed line): one was edited after the interruption',
 }
 
 // ---------------------------------------------------------------- run records and bundles
@@ -647,6 +681,10 @@ export function recoverPlan(P, { generation, reclaimed = null, env = process.env
     else if (owner.v !== 1 && (item === null || item.id !== bound.item_id)) why = `the ## Now item is not ${bound.item_id}, the item it recorded: ${stays}`
     else if (owner.v !== 1 && itemDigest(item) !== bound.item_digest) {
       why = `the ## Now item ${bound.item_id} changed since it was recorded (its title, notes or decision): ${stays}`
+    } else if (item !== null && item.problems.length) {
+      // An amendment the digest does not read (a second notes: line, a `Notes:` line) is a
+      // problem of the item: it goes back intact for correction, never to ## Done unread (F4).
+      why = `the ## Now item has problems (${unique(item.problems.map(p => p.kind)).join(', ')}), so it may hold an amendment the recorded digest does not cover: ${stays}`
     } else if (doneNames(state, c)) why = '## Done already names it: requeue the item'
     else if (ledger.commits.has(c) || ledger.tips.has(c)) why = 'a ledger row already names it: requeue the item'
     if (why === null) {

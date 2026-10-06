@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { DOT, SCRIPTS, idOf, itemLines, project, stateMd } from './interrupt-fixture.mjs'
 import { parseState } from '../../scripts/lib/loop-state.mjs'
 import {
-  blockedBlock, carriers, doneBlock, editOnce, findItem, insertTop, nowBlock, removeItem, upsertEntry, withField,
+  blockedBlock, carriers, deleteAsRead, doneBlock, editOnce, findItem, insertTop, nowBlock, upsertEntry, withField,
 } from '../fixtures/firing-moves.mjs'
 
 const T = { timeout: 60000 }
@@ -57,8 +57,10 @@ function nextFiring(fx) {
     if (a === 'clear-now') applyPlan(fx, plan.out.clear)
     else if (a === 'now-conflict') assert.fail(`now-conflict: ${JSON.stringify(plan.out.conflict)}`)
     else if (a === 'requeue-now') {
+      // The deletion is taken from the block as read, before the insertion (F6).
+      const del = deleteAsRead(read(fx), nowBlock(read(fx)))
       edit(fx, insertTop(read(fx), 'Backlog', nowBlock(read(fx)).lines))
-      edit(fx, removeItem(read(fx), nowBlock(read(fx))))
+      edit(fx, del)
     }
   }
   const nz = items(fx, 'normalize')
@@ -205,24 +207,23 @@ describe('interruption: the next firing neither loses nor duplicates the item', 
     })
   })
 
-  // The prose moves start from item A picked into ## Now.
+  // The prose moves start from item A picked into ## Now. Each move is two edits, as the prose
+  // makes them (loop "Item edits", Moving an item; F6): the deletion is taken from the ## Now
+  // block as read before the insertion, and applied after it.
+  const move = insert => {
+    let del = null
+    return [tx => {
+      del = deleteAsRead(tx, nowBlock(tx))
+      return insert(tx)
+    }, () => del]
+  }
   const moves = {
-    'Now to Done': () => [
-      tx => insertTop(tx, 'Done', doneBlock(nowBlock(tx), SHA, '2026-10-02')),
-      tx => removeItem(tx, nowBlock(tx)),
-    ],
-    'Now to Blocked': () => [
-      tx => insertTop(tx, 'Blocked', blockedBlock(nowBlock(tx), { reason: 'attempt failed twice', recovery: 'b'.repeat(64) })),
-      tx => removeItem(tx, nowBlock(tx)),
-    ],
-    'the requeue (Now back to the top of Backlog)': () => [
-      tx => insertTop(tx, 'Backlog', nowBlock(tx).lines),
-      tx => removeItem(tx, nowBlock(tx)),
-    ],
+    'Now to Done': () => move(tx => insertTop(tx, 'Done', doneBlock(nowBlock(tx), SHA, '2026-10-02'))),
+    'Now to Blocked': () => move(tx => insertTop(tx, 'Blocked', blockedBlock(nowBlock(tx), { reason: 'attempt failed twice', recovery: 'b'.repeat(64) }))),
+    'the requeue (Now back to the top of Backlog)': () => move(tx => insertTop(tx, 'Backlog', nowBlock(tx).lines)),
     'the delegate-flagged move (entry, Now to Backlog as waiting-decision)': () => [
       tx => upsertEntry(tx, A, flagEntry(A, 'item A')),
-      tx => insertTop(tx, 'Backlog', withField(nowBlock(tx).lines, 'status', 'waiting-decision')),
-      tx => removeItem(tx, nowBlock(tx)),
+      ...move(tx => insertTop(tx, 'Backlog', withField(nowBlock(tx).lines, 'status', 'waiting-decision'))),
     ],
   }
   // By the number of edits applied: the planner's actions, where item A is after the next

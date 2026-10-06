@@ -2,7 +2,9 @@
 // The blocker test (stage 0c-3 brief R10, R11, R12): a blocker id is finished only when no
 // open item has it, `## Done` or the ledger records it done, and no open item descends from it
 // through `loop from` origins (open items', Done items' and the ledger's). Title, unknown and
-// self blockers park their item with a note. cx-lr07 and cx-lp11 are the audit cases.
+// self blockers park their item with a note. cx-lr07 and cx-lp11 are the audit cases. Closing
+// fix F8: for a dependent's own blocker, the walk leaves out the dependent and what descends from
+// it through the dependent alone.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -193,4 +195,27 @@ test('title, unknown and self blockers park the item with a note and the candida
   // An upper-case copy of an id is read as the id.
   st = parseState(state({ backlog: dep(B.toUpperCase()), done: doneItem('b', { id: B }) }))
   assert.equal(reason(st), null)
+})
+
+// Closing fix F8 (code-review #1): a follow-up blocked by its own parent (or a grandchild blocked
+// by its grandparent) is not an open descendant holding that blocker against itself.
+test('F8: a follow-up blocked by its own ancestor runs once the ancestor is done', () => {
+  const L = ledger({ done: [B] })
+  const ok = st => eligibility(st, { ledger: L, level: 3 }).find(r => r.id === F)
+  const P = doneItem('analysis', { id: B, sha: null })
+  const own = parseState(state({ backlog: open('follow-up', { id: F, origin: `loop from ${B}`, blockedBy: B }), done: P }))
+  assert.equal(ok(own).ok, true)
+  // The ancestor itself still reads unfinished while the follow-up is open.
+  assert.equal(blockerStatus(own, B, L), 'unfinished')
+  // A grandchild blocked by its grandparent, the child done.
+  const grand = parseState(state({ backlog: open('grandchild', { id: F, origin: `loop from ${C}`, blockedBy: B }), done: [...doneItem('child', { id: C, origin: `loop from ${B}` }), ...P] }))
+  assert.equal(ok(grand).ok, true)
+  // The follow-up's own open child does not hold it; another open child of the ancestor does,
+  // and so does an open block that names the ancestor directly as well as the follow-up.
+  const sub = open('sub', { id: E, origin: `loop from ${F}` })
+  assert.equal(ok(parseState(state({ backlog: [...open('follow-up', { id: F, origin: `loop from ${B}`, blockedBy: B }), ...sub], done: P }))).ok, true)
+  const sibling = open('sibling', { id: C, origin: `loop from ${B}` })
+  assert.equal(ok(parseState(state({ backlog: [...open('follow-up', { id: F, origin: `loop from ${B}`, blockedBy: B }), ...sibling], done: P }))).reason, 'blocked')
+  const both = open('both', { id: E, origin: `loop from ${F}`, extra: [`  - origin: loop from ${B}`] })
+  assert.equal(ok(parseState(state({ backlog: [...open('follow-up', { id: F, origin: `loop from ${B}`, blockedBy: B }), ...both], done: P }))).reason, 'blocked')
 })

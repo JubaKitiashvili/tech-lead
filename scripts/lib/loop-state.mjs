@@ -6,10 +6,13 @@
 //
 // The grammar (R3, R5, R7, R15). A section is `## <Name>` up to the next `#`/`##` heading,
 // except that a column-0 `# ` heading inside an item section is a `stray-heading` problem and
-// the section goes on (fix manifest R31). Items live in `## Now`, `## Backlog`, `## Blocked`
-// and `## Done`: a column-0 header line, then its indented lines up to the next column-0 line;
-// a column-0 text line right after them (no blank line between; not a list line, a heading or
-// `(empty)`) joins the item as a malformed line, with the indented lines under it (R31).
+// the section goes on (fix manifest R31); nowLine ends `## Now` by the same rule (closing fix
+// F9). Items live in `## Now`, `## Backlog`, `## Blocked` and `## Done`: a column-0 header
+// line, then its indented lines up to the next column-0 line; a column-0 text line right after
+// them (no blank line between; not a list line, a heading or `(empty)`) joins the item as a
+// malformed line, with the indented lines under it (R31), and so does a column-0 line that
+// looks like a field (`- <label>:` or `<label>:` with a known label, or an id-like or
+// origin-like line, closing fix F2), so an outdented field parks its item.
 // Header forms:
 //   Now, Backlog  `- [ ] (P<n> <DOT> )?<title> <DOT> class: <class>( <DOT> <reason>)?`, split at the
 //                 first ` <DOT> class: `; without one, the whole text is the title, class
@@ -26,19 +29,24 @@
 // heading to the next one: `### <id> <DOT> <title>`.
 //
 // Raw carriers (fix manifest R28). An id-like line is any line labelled `id` (any case,
-// indent or list marker, read through fold); an origin-like line the same with `origin`. Every
-// id token on an id-like line in an item block (a parsed item's or an unparsed block's) that is
-// not the item's own valid `id:` field is a raw carrier of that id, and every token on an
-// origin-like line is a parent of the block. A raw carrier in `## Now`, `## Backlog` or
-// `## Blocked` keeps its id unfinished, and the walk takes the raw parents; normalize never
-// mints an id (or an origin) for an item holding an id-like (origin-like) line (R31); a
-// release refuses an id with a raw carrier (R30a); and the Done trim keeps a block whose
-// origin-like lines are not exactly one well-formed `origin:` field (R27a).
+// indent or list marker, inline markup around the label, then a colon or `=`, or `-` or a
+// space before an id token; read through fold, closing fix F2); an origin-like line the same
+// with `origin`. Every id token on an id-like line in a block (a parsed item's, an unparsed
+// block's in an item section, or a block of a `##` section outside the six) that is not the
+// item's own valid `id:` field is a raw carrier of that id, and every token on an origin-like
+// line is a parent of the block. A raw carrier in an open block keeps its id unfinished, and
+// the walk takes the raw parents. Open blocks: those in `## Now`, `## Backlog` and
+// `## Blocked`, an unparsed `- [ ]` block in `## Done` (an item unticked in place, F14) and
+// every block of a section outside the six (F13). Normalize never mints an id (or an origin)
+// for an item holding an id-like (origin-like) line (R31); a release refuses an id with a raw
+// carrier (R30a); and the Done trim keeps a block whose origin-like lines are not exactly one
+// well-formed `origin:` field (R27a), or whose origin the ledger does not hold as written (F1).
 //
 // Exports:
 //   PLACEHOLDER          what an empty section holds; a firing leaves exactly this in `## Now`
 //   nowLine(text)        the first non-blank line of `## Now`, trimmed; null when empty
 //   FIELD_LABELS         the item field labels (R22); loop-text.mjs defangs each of them
+//   idLikeLine(line), originLikeLine(line)  the id-like and origin-like tests (R28, F2)
 //   ID_RE                an item id: `tl-` and 8 lowercase Crockford base32 characters (R2)
 //   mintId(known, rng)   a fresh id not in `known` (redrawn while it is)
 //   parseOrigin(s)       {kind, parent} for `bootstrap|human|unknown|loop from <id>`, else null
@@ -64,16 +72,23 @@ export const PLACEHOLDER = '(empty)'
 
 const SECTION_END = /^#{1,2}(?:[ \t]|$)/
 const LEVEL1 = /^#(?:[ \t]|$)/
+const ITEM_SECTIONS = new Set(['Now', 'Backlog', 'Blocked', 'Done'])
+
+// Does `line` end section `name`? The one rule nowLine and parseState share (closing fix F9):
+// the next level-2 heading ends any section; a level-1 heading ends one that holds no items,
+// and inside an item section it is a `stray-heading` problem and the section goes on (R31).
+const endsSection = (name, line) => SECTION_END.test(line) && !(ITEM_SECTIONS.has(name) && LEVEL1.test(line))
 
 // The first non-blank line of the `## Now` section, trimmed; null when the section is
-// missing, blank or holds only the template's `(empty)`. The section ends at the next
-// level-1 or level-2 heading.
+// missing, blank or holds only the template's `(empty)`. The section ends where parseState's
+// does (endsSection): at the next level-2 heading, not at a level-1 one, which is then the
+// line returned when nothing comes before it.
 export function nowLine(text) {
   const lines = String(text).split(/\r?\n/)
   const at = lines.findIndex(l => /^## Now[ \t]*$/.test(l))
   if (at < 0) return null
   for (const l of lines.slice(at + 1)) {
-    if (SECTION_END.test(l)) return null
+    if (endsSection('Now', l)) return null
     const s = l.trim()
     if (s && s !== PLACEHOLDER) return s
   }
@@ -101,8 +116,9 @@ const ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
 const ID_TOKEN = /(?<![0-9a-z-])tl-[0-9a-hjkmnp-tv-z]{8}(?![0-9a-z-])/gi
 
 const SECTIONS = ['Now', 'Backlog', 'Needs decision', 'Blocked', 'Done', 'Last run']
-const ITEM_SECTIONS = new Set(['Now', 'Backlog', 'Blocked', 'Done'])
 const OPEN = new Set(['Now', 'Backlog', 'Blocked'])
+// The header of an item unticked in place: inside `## Done` its block is open (closing fix F14).
+const UNTICKED = /^[-*+] \[ \]/
 const ORIGIN_WORDS = new Set(['bootstrap', 'human', 'unknown'])
 // Values of blocked-by and status that mean none (R5), compared in lower case.
 const NONE = new Set(['', DASH, '-', '--', 'none', 'n/a'])
@@ -113,9 +129,25 @@ const FIELD = /^( {2,4})- ([a-z][a-z-]*):(?:[ \t](.*))?$/
 // A list line naming a known label at any depth: never read as a continuation (it would hide
 // a field), so it is malformed there.
 const LOOKALIKE = /^\s*[-*+]\s*([a-z][a-z-]*)\s*:/i
-// An id-like or origin-like line (R28, R31): the label in any case, after any indent and an
-// optional list marker, then a colon; read through fold, so a fullwidth colon counts.
-const LIKE = /^\s*(?:[-*+]\s*)?(id|origin)\s*:/i
+// An id-like or origin-like line (R28, R31, closing fix F2): the label in any case, after any
+// indent and an optional list marker, with inline markup around it (`**id:**`, `*id*:`,
+// `` `id`: ``), then a colon or `=`, or `-` or whitespace when an id token follows on the line
+// (`id tl-...`, `origin - loop from tl-...`); read through fold, so a fullwidth colon counts.
+const LIKE = /^\s*(?:[-*+]\s*)?[*_`]*\s*(id|origin)[*_`]*(?:\s*([:=])|\s*-|\s)/i
+const HAS_TOKEN = new RegExp(ID_TOKEN.source, 'i')
+
+// 'id', 'origin' or null: the label of an id-like or origin-like line.
+function likeLabel(line) {
+  const f = fold(line)
+  const m = LIKE.exec(f)
+  if (!m || (!m[2] && !HAS_TOKEN.test(f.slice(m[0].length)))) return null
+  return m[1].toLowerCase()
+}
+
+// idLikeLine(line), originLikeLine(line) -> boolean: the near-miss tests above, shared with
+// loop-recover.mjs (its identity check reads a block's origin-like lines the same way).
+export const idLikeLine = line => likeLabel(line) === 'id'
+export const originLikeLine = line => likeLabel(line) === 'origin'
 
 const isNone = v => NONE.has(v.toLowerCase())
 const textValue = v => (v === '' || v === DASH ? '' : v)
@@ -173,10 +205,10 @@ export function normTitle(t) {
 
 // ---------------------------------------------------------------- parsing
 
-// parseState(text) -> {sections, items, entries, problems}.
+// parseState(text) -> {sections, items, entries, problems, others}.
 //   sections  {<name>: {at, start, end}} for the first heading of each of the six names, in
 //             file order (0-based line indexes: the heading, the first body line, one past
-//             the last); other `## ` sections are not reported
+//             the last); other `## ` sections are not reported here (see `others`)
 //   items     Item = {section, line, header, title, priority, class, reason, attempts, sha,
 //             date, id, origin, originParents, status, blockedBy, notes, decision, recovery,
 //             decided, noChangeOk, fields, problems, start, end, lines}. `line` is the 1-based
@@ -195,31 +227,36 @@ export function normTitle(t) {
 //             {section, line, text} (in an item section also `end` and `lines`, its block),
 //             stray-heading {section, line, text} (a `# ` heading inside an item section, R31),
 //             missing-section {name}, duplicate-section {name, line}.
+//   others    the blocks of every `##` section that is not one of the six (closing fix F13):
+//             {section, line, end, lines}, each column-0 line with the indented lines under
+//             it; the blocker test reads their id and origin lines as open (cautious).
 export function parseState(text) {
   text = String(text)
-  if (text.includes('\r')) return { sections: {}, items: [], entries: [], problems: [{ kind: 'crlf' }] }
+  if (text.includes('\r')) return { sections: {}, items: [], entries: [], problems: [{ kind: 'crlf' }], others: [] }
   const lines = text.split('\n')
-  const sections = {}, items = [], entries = [], problems = []
+  const sections = {}, items = [], entries = [], problems = [], others = []
   const spans = []
   let cur = null
   for (let i = 0; i < lines.length; i++) {
-    if (!SECTION_END.test(lines[i])) continue
     // A level-1 heading inside an item section does not end it (parseItems reports it, R31).
-    if (cur && ITEM_SECTIONS.has(cur.name) && LEVEL1.test(lines[i])) continue
+    if (cur ? !endsSection(cur.name, lines[i]) : !SECTION_END.test(lines[i])) continue
     if (cur) cur.end = i
     const m = /^## (.*?)[ \t]*$/.exec(lines[i])
     cur = m && m[1] ? { name: m[1], at: i, start: i + 1, end: lines.length } : null
     if (cur) spans.push(cur)
   }
   for (const s of spans) {
-    if (!SECTIONS.includes(s.name)) continue
+    if (!SECTIONS.includes(s.name)) {
+      otherBlocks(lines, s, others)
+      continue
+    }
     if (sections[s.name]) problems.push({ kind: 'duplicate-section', name: s.name, line: s.at + 1 })
     else sections[s.name] = { at: s.at, start: s.start, end: s.end }
     if (ITEM_SECTIONS.has(s.name)) parseItems(lines, s, items, problems)
     else if (s.name === 'Needs decision') parseEntries(lines, s, entries, problems)
   }
   for (const name of SECTIONS) if (!sections[name]) problems.push({ kind: 'missing-section', name })
-  return { sections, items, entries, problems }
+  return { sections, items, entries, problems, others }
 }
 
 // The block [start, end) of lines from `from`: the indented and blank lines up to the next
@@ -238,6 +275,32 @@ function blockEnd(lines, from, limit) {
 // A column-0 line that continues the item block right above it (R31): text, not a list line,
 // a heading or `(empty)`.
 const lazyLine = l => l.trim() !== '' && !/^[ \t]/.test(l) && l.trim() !== PLACEHOLDER && !/^(?:[-*+]|\d+[.)])(?:[ \t]|$)/.test(l) && !l.startsWith('#')
+// A column-0 line that looks like a field (closing fix F2): an id-like or origin-like line, or
+// a known label (any case, inline markup around it, an optional list marker) before a colon or
+// `=`. Right after an item block it joins that block, as a malformed line (parseFields), so an
+// outdented `- blocked-by:` parks its item and an outdented origin still names its parents.
+const FIELDISH = /^(?:[-*+]\s*)?[*_`]*([a-z][a-z-]*)[*_`]*\s*[:=]/i
+const fieldLine = l => {
+  if (l.trim() === '' || /^[ \t]/.test(l)) return false
+  const m = FIELDISH.exec(fold(l))
+  return (m !== null && KNOWN.has(m[1].toLowerCase())) || likeLabel(l) !== null
+}
+
+// The blocks of a `##` section outside the six (closing fix F13): each column-0 line with the
+// indented lines under it, as {section, line, end, lines}; the blocker test reads their id and
+// origin lines as open carriers and parents.
+function otherBlocks(lines, span, out) {
+  let i = span.start
+  while (i < span.end) {
+    if (lines[i].trim() === '') {
+      i++
+      continue
+    }
+    const end = blockEnd(lines, i, span.end)
+    out.push({ section: span.name, line: i + 1, end, lines: lines.slice(i, end) })
+    i = end
+  }
+}
 
 function parseItems(lines, span, items, problems) {
   let i = span.start
@@ -256,7 +319,7 @@ function parseItems(lines, span, items, problems) {
     const head = /^[ \t]/.test(l) ? null : parseHeader(span.name, l.trimEnd())
     if (!head) problems.push({ kind: 'unparsed-line', section: span.name, line: i + 1, text: l, end, lines: lines.slice(i, end) })
     else {
-      while (end < span.end && lazyLine(lines[end])) end = blockEnd(lines, end, span.end)
+      while (end < span.end && (lazyLine(lines[end]) || fieldLine(lines[end]))) end = blockEnd(lines, end, span.end)
       items.push(buildItem(span.name, lines, i, end, head))
     }
     i = end
@@ -365,7 +428,7 @@ function parseFields(lines, start, end, problems) {
       if (indent >= text.dash + 2) {
         const look = LOOKALIKE.exec(l)
         if (look && KNOWN.has(look[1].toLowerCase())) malformed(i, 'a field inside a text field\'s continuation')
-        else if (LIKE.test(fold(l))) malformed(i, 'an id or origin line inside a text field\'s continuation')
+        else if (likeLabel(l) !== null) malformed(i, 'an id or origin line inside a text field\'s continuation')
         else {
           text.parts.push(l.trim())
           text.field.end = i + 1
@@ -488,9 +551,8 @@ const nameOf = it => it.id ?? where(it)
 function likeRows(lines, start) {
   const rows = []
   lines.forEach((l, k) => {
-    const f = fold(l)
-    const m = LIKE.exec(f)
-    if (m) rows.push({ label: m[1].toLowerCase(), at: start + k, tokens: [...new Set([...f.matchAll(ID_TOKEN)].map(x => x[0].toLowerCase()))] })
+    const label = likeLabel(l)
+    if (label) rows.push({ label, at: start + k, tokens: [...new Set([...fold(l).matchAll(ID_TOKEN)].map(x => x[0].toLowerCase()))] })
   })
   return rows
 }
@@ -510,10 +572,14 @@ function context(state, ledger) {
     const c = it.section === 'Now' && it.id ? carriers.get(it.id) : null
     if (c && c.length === 2 && c.every(x => x === it || x.section !== 'Now')) for (const x of c) moved.add(x)
   }
-  const blocks = state.items.map(it => ({ section: it.section, item: it, start: it.start, lines: it.lines }))
+  const blocks = state.items.map(it => ({ section: it.section, item: it, start: it.start, lines: it.lines, open: OPEN.has(it.section) }))
   for (const p of state.problems) {
-    if (p.kind === 'unparsed-line' && ITEM_SECTIONS.has(p.section) && p.lines) blocks.push({ section: p.section, item: null, start: p.line - 1, lines: p.lines })
+    if (p.kind !== 'unparsed-line' || !ITEM_SECTIONS.has(p.section) || !p.lines) continue
+    // An item unticked in place in `## Done` is open again (closing fix F14).
+    blocks.push({ section: p.section, item: null, start: p.line - 1, lines: p.lines, open: OPEN.has(p.section) || UNTICKED.test(p.lines[0]) })
   }
+  // A block under a `##` section outside the six is open (closing fix F13, cautious).
+  for (const o of state.others ?? []) blocks.push({ section: o.section, item: null, start: o.line - 1, lines: o.lines, open: true })
   const raw = new Map(), likes = new Map()
   for (const b of blocks) {
     b.ids = new Set(b.item?.id ? [b.item.id] : [])
@@ -525,13 +591,13 @@ function context(state, ledger) {
       else if (!(b.item?.id && b.item.fields.some(f => f.label === 'id' && f.at === r.at))) {
         for (const t of r.tokens) {
           b.ids.add(t)
-          raw.set(t, [...(raw.get(t) ?? []), { section: b.section, line: r.at + 1, block: b }])
+          raw.set(t, [...(raw.get(t) ?? []), { section: b.section, line: r.at + 1, block: b, open: b.open }])
         }
       }
     }
   }
   for (const rows of raw.values()) rows.sort((x, y) => x.line - y.line)
-  const openBlocks = blocks.filter(b => OPEN.has(b.section))
+  const openBlocks = blocks.filter(b => b.open)
   const parentsOf = id => {
     const out = new Set()
     for (const b of blocks) if (b.ids.has(id)) for (const p of b.parents) out.add(p)
@@ -539,13 +605,14 @@ function context(state, ledger) {
     if (typeof o === 'string') for (const p of originParents(o)) out.add(p)
     return out
   }
-  // Does a walk up the loop-from chain from `parents` reach `target`? Cycle-safe.
-  const reaches = (parents, target) => {
+  // Does a walk up the loop-from chain from `parents` reach `target`, never going up through
+  // `avoid` (an id, or null)? Cycle-safe.
+  const reaches = (parents, target, avoid = null) => {
     const stack = [...parents], seen = new Set()
     while (stack.length) {
       const p = stack.pop()
       if (p === target) return true
-      if (seen.has(p)) continue
+      if (seen.has(p) || p === avoid) continue
       seen.add(p)
       stack.push(...parentsOf(p))
     }
@@ -554,31 +621,39 @@ function context(state, ledger) {
   return { L, carriers, raw, likes, moved, openBlocks, parentsOf, reaches }
 }
 
-function status(state, ctx, id) {
+// The blocker test for `id`; with `dependent` (the item whose blocker it is), the descendant walk
+// leaves out the dependent's own block and never goes up through the dependent's id, so its own
+// descendants do not hold its blocker against it (closing fix F8): a follow-up blocked by its own
+// parent runs once the parent is done. A block naming the blocker by another path still counts.
+function status(state, ctx, id, dependent = null) {
   if (!ID_RE.test(id)) return 'unknown'
   const carriers = ctx.carriers.get(id) ?? []
   const raw = ctx.raw.get(id) ?? []
   if (!carriers.length && !raw.length && !ctx.L.ids.has(id)) return 'unknown'
-  if (carriers.some(i => OPEN.has(i.section)) || raw.some(r => OPEN.has(r.section))) return 'unfinished'
+  if (carriers.some(i => OPEN.has(i.section)) || raw.some(r => r.open)) return 'unfinished'
   if (!carriers.some(i => i.section === 'Done') && !ctx.L.doneIds.has(id)) return 'unfinished'
-  for (const b of ctx.openBlocks) if (ctx.reaches(b.parents, id)) return 'unfinished'
+  for (const b of ctx.openBlocks) {
+    if (dependent && b.item === dependent) continue
+    if (ctx.reaches(b.parents, id, dependent?.id ?? null)) return 'unfinished'
+  }
   return 'finished'
 }
 
 // blockerStatus(state, id, ledger) -> 'finished' | 'unfinished' | 'unknown' (R11, R28).
 // `unknown`: not an id, or an id no item, no raw line and no ledger row carries. `finished`:
-// no open item and no raw line in an open section carries the id; a parsed `## Done` item has
+// no open item and no raw line in an open block carries the id; a parsed `## Done` item has
 // it or the ledger records it done; and no open block descends from it through `loop from`
 // origins and origin-like lines (open blocks', Done blocks' and the ledger's, a cycle stops the
-// walk). Anything else is `unfinished`.
+// walk). Anything else is `unfinished`. eligibility asks the same for each item's blocker with
+// that item's own descendants left out (status, F8).
 export function blockerStatus(state, id, ledger) {
   return status(state, context(state, ledger), String(id ?? '').toLowerCase())
 }
 
 // idCarriers(state, id) -> {parsed: Item[], raw: [{section, line}]} (R28): the items whose id
 // is `id` (any section, file order) and every raw carrier of it (an id-like line in an item
-// section holding its token that is not an item's own valid `id:` field; 1-based lines, in
-// order). loop-items.mjs refuses an id with more than one carrier, raw ones included. Not an
+// section, or in a section outside the six, holding its token that is not an item's own valid
+// `id:` field; 1-based lines, in order). loop-items.mjs refuses an id with more than one carrier, raw ones included. Not an
 // id: both empty.
 export function idCarriers(state, id) {
   const v = String(id ?? '').toLowerCase()
@@ -684,12 +759,18 @@ const REASONS = ['no-id', 'invalid-id', 'duplicate-id', 'malformed-field', 'dupl
 // eligibility(state, {ledger, level}) -> [{id, title, section, line, ok, reason, detail}], one
 // row per `## Backlog` item and per unparsed `## Backlog` line, in file order (R13). An item is
 // eligible when it has a valid id no other item carries, a unique open title, no problem
-// (REASONS), a status of none (or `waiting-level` once `level`, 1 to 3 from LOOP.md, permits
-// its class; anything else reads as 1) and a finished blocker. `reason` is null when ok, else
-// one of REASONS, `status`, `blocked` or `unparsed-line`.
+// (REASONS), no unresolved legacy heading naming its title, a status of none (or
+// `waiting-level` once `level`, 1 to 3 from LOOP.md, permits its class; anything else reads as
+// 1) and a finished blocker. `reason` is null when ok, else one of REASONS, `legacy-entry`,
+// `status`, `blocked` or `unparsed-line`. `legacy-entry` (closing fix F3): a `panel` or
+// `delegate-flagged` `## Needs decision` heading without an id whose title has the item's
+// normTitle holds a decision the release never reads, so the item waits until a person
+// rewrites the heading as `### <id> <DOT> <title>`.
 export function eligibility(state, { ledger = null, level = 1 } = {}) {
   const ctx = context(state, ledger)
   const problems = analyze(state, ctx)
+  const legacy = new Map()
+  for (const e of state.entries) if (e.legacy && e.variant !== 'other' && !legacy.has(normTitle(e.title))) legacy.set(normTitle(e.title), e)
   const rows = []
   for (const p of state.problems) {
     if (p.kind === 'unparsed-line' && p.section === 'Backlog') {
@@ -702,9 +783,11 @@ export function eligibility(state, { ledger = null, level = 1 } = {}) {
     const ps = problems.get(it)
     const first = REASONS.map(r => ps.find(p => p.kind === r)).find(Boolean)
     if (first) Object.assign(row, { reason: first.kind, detail: first.detail })
-    else if (it.status !== null && !(it.status === 'waiting-level' && permits(it.class, level))) {
+    else if (legacy.has(normTitle(it.title))) {
+      Object.assign(row, { reason: 'legacy-entry', detail: `the ## Needs decision heading on line ${legacy.get(normTitle(it.title)).line} names this title without an id; rewrite it as "### ${it.id} ${DOT} <title>"` })
+    } else if (it.status !== null && !(it.status === 'waiting-level' && permits(it.class, level))) {
       Object.assign(row, { reason: 'status', detail: `status: ${it.status}${it.status === 'waiting-level' ? ` (level ${levelOf(level)} does not permit class ${it.class})` : ''}` })
-    } else if (it.blockedBy !== null && status(state, ctx, it.blockedBy.toLowerCase()) !== 'finished') {
+    } else if (it.blockedBy !== null && status(state, ctx, it.blockedBy.toLowerCase(), it) !== 'finished') {
       Object.assign(row, { reason: 'blocked', detail: `blocker ${it.blockedBy.toLowerCase()} is unfinished` })
     } else row.ok = true
     rows.push(row)
@@ -874,7 +957,8 @@ function knownIds(text, known, ledger) {
 // no id-like line gets a minted id (first under the header), an item with no origin-like line
 // gets `origin: <missingOrigin>` (second, or under its id line), and an id written in upper case
 // is rewritten to lowercase (R2). An id-like or origin-like line that is not a well-formed
-// field (a tab indent, `* id:`, `- ID:`, `- id :`) is a person's lookalike: it is reported
+// field (a tab indent, `* id:`, `- ID:`, `- id :`, `- **id:**`, `- id tl-...`, a column-0
+// `- id:` joined to the item, F2) is a person's lookalike: it is reported
 // (malformed-field) and never minted over (R31). Nothing else a person wrote (an id, origin,
 // title, blocker) is rewritten; `problems` (itemProblems of the result) reports it. `known` (ids from the ledger)
 // joins knownIds; `missingOrigin` is bootstrap, human or unknown. `minted` lists the new ids in
@@ -1009,15 +1093,23 @@ export function releasedItem(state, entryId) {
 
 // ---------------------------------------------------------------- pick
 
-// The `## Done` items the ledger does not record as done (R27), as [{item_id, item_origin}] in
-// file order, once per id: the firing's ledger row carries them as `done_items`, so their ids
-// and origins outlive the trim. An id-less Done item has nothing to record. `ledger` is
-// ledgerItems' object, done_items already counted in its doneIds.
+// Does the ledger hold this Done item's origin as written (closing fix F1)? The trim drops a
+// ledgered item only then: its recorded origin is what the walk reads once the block is gone.
+// No origin on either side matches (null === null).
+const originHeld = (L, it) => (L.origins.get(it.id) ?? null) === it.origin
+
+// The `## Done` items the ledger does not record as done (R27), and those it records done
+// without their origin as written (F1; only for an item the trim could otherwise drop, R27a),
+// as [{item_id, item_origin}] in file order, once per id: the firing's ledger row carries them
+// as `done_items`, so their ids and origins outlive the trim. An id-less Done item has nothing
+// to record. `ledger` is ledgerItems' object, done_items already counted in its doneIds and
+// origins.
 function unledgeredOf(st, ledger) {
   const L = asLedger(ledger)
   const out = [], seen = new Set()
   for (const it of st.items) {
-    if (it.section !== 'Done' || !it.id || L.doneIds.has(it.id) || seen.has(it.id)) continue
+    if (it.section !== 'Done' || !it.id || seen.has(it.id)) continue
+    if (L.doneIds.has(it.id) && (originHeld(L, it) || !lineageWhole(it))) continue
     seen.add(it.id)
     out.push({ item_id: it.id, item_origin: it.origin })
   }
@@ -1025,7 +1117,7 @@ function unledgeredOf(st, ledger) {
 }
 
 // planPick(text, {ledger, level}) -> the section 3 pick as edits (R13, R16):
-//   {state: 'picked', id, title, from: 'decision'|'backlog', digest, released, edits,
+//   {state: 'picked', id, title, origin, from: 'decision'|'backlog', digest, released, edits,
 //    expect_sha256, skipped, unledgered}  or  {state: 'dry', released, edits, expect_sha256,
 //    skipped, unledgered}
 // First the release: for each id (in file order) with a filled `panel` or `delegate-flagged`
@@ -1038,8 +1130,9 @@ function unledgeredOf(st, ledger) {
 // cleared): inserted there first, then deleted from `## Backlog`. `skipped` lists each release
 // refusal (legacy-entry, ambiguous-decision, orphan-entry, entry-item-done, ambiguous-carrier, ...)
 // and each ineligible item passed over before the pick (all of them when dry), as {id, title,
-// reason, detail}. `digest` is the picked item's itemDigest. `unledgered` (every answer, the
-// refusals included) lists the `## Done` items the ledger lacks (R27, unledgeredOf). Refused,
+// reason, detail}. `digest` is the picked item's itemDigest; `origin` its `origin:` value as
+// written, or null (the section 8 row's item_origin, closing fix F1). `unledgered` (every
+// answer, the refusals included) lists the `## Done` items the ledger lacks (R27, unledgeredOf). Refused,
 // with no edits: `crlf`, `bad-sections` (no `## Now` or `## Backlog`, or a repeated section),
 // `now-occupied` (a `## Now` line, or an item parsed in `## Now` below a stray heading).
 export function planPick(text, { ledger = null, level = 1 } = {}) {
@@ -1100,6 +1193,7 @@ export function planPick(text, { ledger = null, level = 1 } = {}) {
     state: 'picked',
     id: it.id,
     title: it.title,
+    origin: it.origin,
     from: released.includes(it.id) ? 'decision' : 'backlog',
     digest: itemDigest(it),
     released,
@@ -1129,7 +1223,10 @@ function lineageWhole(it) {
 // id-less one included, is never dropped, so its id and `loop from` origin survive until a
 // ledger row carries them. Nor is an item whose origin-like lines are not exactly one
 // well-formed `origin:` field (none at all is fine): the block stays the only full record of
-// its parents (R27a, lineageWhole). Unparsed lines are kept and not counted. `dropped` lists
+// its parents (R27a, lineageWhole). Nor is an item whose origin the ledger does not hold as
+// written (`ledger.origins` for its id equals its `origin:` value, both none counting as
+// equal; closing fix F1): it stays, and `unledgered` lists it so the next ledger row records
+// its current origin. Unparsed lines are kept and not counted. `dropped` lists
 // the deleted ids in file order; `unledgered` is planPick's. Refused, with no edits: `crlf`,
 // `bad-sections` (no `## Done`, or a repeated section). A `max` that is not a non-negative
 // integer throws.
@@ -1140,7 +1237,7 @@ export function planDoneTrim(text, { ledger = null, max = 20 } = {}) {
   const bad = structural(st, ['Done'])
   if (bad) return refusal(...bad, { dropped: [], unledgered: [] })
   const L = asLedger(ledger)
-  const drop = st.items.filter(i => i.section === 'Done').slice(max).filter(i => i.id && L.doneIds.has(i.id) && lineageWhole(i))
+  const drop = st.items.filter(i => i.section === 'Done').slice(max).filter(i => i.id && L.doneIds.has(i.id) && lineageWhole(i) && originHeld(L, i))
   const plan = new Plan(text)
   // Bottom-up, so the blocks above each deletion keep their indexes.
   for (const it of [...drop].reverse()) deleteBlock(plan, 'Done', it.start, it.end)

@@ -19,8 +19,10 @@
 // Header: {v:1, why, generation, source:{generation}, base, head, tree, item_digest, item_id,
 // rules:{mode, sha}, scope:{state, entries, digest}, files:[{path, kind, old_mode, mode, oid,
 // size, binary, in_scope, hidden, obstructed}]}; no timestamps. item_id is an item id (loop-state
-// ID_RE) or null, item_digest 64 hex or null, and the two are both set or both null (R18): a save
-// with --item records the item it holds work for and that item's itemDigest. rules.sha = sha256
+// ID_RE) or null, item_digest 64 hex or null, and a save writes the two both set or both null
+// (R18): a save with --item records the item it holds work for and that item's itemDigest. A
+// header with item_digest set and item_id null, which 0.5.0's `save --item-digest` wrote, reads as
+// a digest-only binding (fix manifest F10); an item_id without an item_digest never reads. rules.sha = sha256
 // of the canonical rules object, which is kept next to the bundles as
 // <V>/patches/rules-<sha>.json (content-addressed, so a reset after a kill lists untracked files
 // under exactly the rules the save used, whatever mode they had).
@@ -56,9 +58,10 @@
 //     there). --item <id> (an ID_RE id; anything else is a usage error) reads <S>/STATE.md with
 //     loop-state's parseState before anything is collected: exactly one item, in any section and
 //     eligible or not (a save must keep working while a person edits the backlog), carries the
-//     id, else exit 3 {state:'bad-item', detail, carriers} with nothing written (no STATE.md, a
-//     STATE.md holding a carriage return, no carrier, several, or a carrier whose id line is
-//     invalid-id). The header gets item_id and that item's itemDigest; both outputs, an empty
+//     id and no other line does (loop-state's idCarriers, raw carriers included: F11), else exit
+//     3 {state:'bad-item', detail, carriers} with nothing written (no STATE.md, a STATE.md
+//     holding a carriage return, no carrier, several, or only a raw one, such as an item's two
+//     id lines). The header gets item_id and that item's itemDigest; both outputs, an empty
 //     save's included, carry item_id and item_digest (the Recovery line writes the digest).
 //     --item-digest is accepted only with --item (alone it is a usage error) and must equal the
 //     computed digest, else exit 3 {state:'digest-mismatch'} with nothing written.
@@ -89,7 +92,7 @@ import { markScope } from './lib/loop-scope.mjs'
 import { sweepOthers } from './lib/loop-proc.mjs'
 import { assertHeld, openPaths } from './loop-lock.mjs'
 import { fault } from './lib/fault.mjs'
-import { ID_RE, itemDigest as digestOfItem, parseState } from './lib/loop-state.mjs'
+import { ID_RE, idCarriers, itemDigest as digestOfItem, parseState } from './lib/loop-state.mjs'
 
 const MAGIC = 'TECH-LEAD-RECOVERY v1 '
 const SHA = /^[0-9a-f]{64}$/
@@ -359,7 +362,9 @@ function headerProblem(h) {
   if (!(h.head === null || (typeof h.head === 'string' && OID.test(h.head)))) return 'head is not an object id'
   if (!(h.item_digest === null || (typeof h.item_digest === 'string' && SHA.test(h.item_digest)))) return 'item_digest is malformed'
   if (!(h.item_id === null || (typeof h.item_id === 'string' && ID_RE.test(h.item_id)))) return 'item_id is not an item id or null'
-  if ((h.item_id === null) !== (h.item_digest === null)) return 'item_id and item_digest are not both set or both null'
+  // An item_id needs its item_digest; an item_digest alone is a 0.5.0 save's digest-only binding
+  // (`save --item-digest`), still read, verified and reset (fix manifest F10).
+  if (h.item_id !== null && h.item_digest === null) return 'item_id is set and item_digest is null'
   if (!isPlain(h.rules) || !RULE_MODES.has(h.rules.mode) || typeof h.rules.sha !== 'string' || !SHA.test(h.rules.sha)) return 'rules is malformed'
   const s = h.scope
   if (!isPlain(s) || !SCOPE_STATES.has(s.state) || !Array.isArray(s.entries) || !s.entries.every(e => typeof e === 'string')
@@ -985,10 +990,12 @@ function parseArgs(argv) {
 }
 
 // The item `save --item <id>` holds work for (R18): {id, digest}, read from <S>/STATE.md
-// through loop-state.mjs. Exactly one item, in any section, carries the id; eligibility does not
-// matter. A carrier is an item with an `id:` line naming the id (compared case-insensitively, R2),
-// so an item with two id lines (invalid-id, its id null) still counts, and is refused: its digest
-// would not name the id. want, when given, must equal the digest (digest-mismatch).
+// through loop-state.mjs. The id has exactly one carrier, counted by loop-state's idCarriers as
+// loop-items digest and check count them (fix manifest F11: raw carriers included, R28), and it
+// is an item; eligibility does not matter. A raw carrier (an id line that does not parse to the
+// id: an unparsed block's, a `- ID:` line, an item with two id lines) is refused, alone or
+// beside an item: no digest would name the id. want, when given, must equal the digest
+// (digest-mismatch).
 function savedItem(paths, id, want) {
   const file = path.join(paths.S, 'STATE.md')
   let text
@@ -1002,14 +1009,18 @@ function savedItem(paths, id, want) {
   if (st.problems.some(p => p.kind === 'crlf')) {
     throw refused('bad-item', `${file} holds a carriage return (crlf): convert it to LF line endings`, { carriers: 0 })
   }
-  const carriers = st.items.filter(it => it.fields.some(fl => fl.label === 'id' && fl.value.trim().toLowerCase() === id))
+  const { parsed, raw } = idCarriers(st, id)
+  const carriers = [
+    ...parsed.map(it => ({ section: it.section, line: it.line, raw: false })),
+    ...raw.map(r => ({ section: r.section, line: r.line, raw: true })),
+  ].sort((a, b) => a.line - b.line)
+  const where = carriers.map(c => `${c.section} line ${c.line}${c.raw ? ' (an id line that does not parse to it)' : ''}`).join(', ')
   if (carriers.length !== 1) {
-    const where = carriers.map(it => `${it.section} line ${it.line}`).join(', ')
-    throw refused('bad-item', carriers.length ? `${carriers.length} items carry ${id} (${where})` : `no item in ${file} carries ${id}`,
+    throw refused('bad-item', carriers.length ? `${id} is carried ${carriers.length} times (${where})` : `no item in ${file} carries ${id}`,
       { carriers: carriers.length })
   }
-  const it = carriers[0]
-  if (it.id !== id) throw refused('bad-item', `the item at ${it.section} line ${it.line} has an invalid id (two id lines)`, { carriers: 1 })
+  if (!parsed.length) throw refused('bad-item', `no item carries ${id}; only ${where} holds it`, { carriers: 1 })
+  const it = parsed[0]
   const digest = digestOfItem(it)
   if (want !== undefined && want !== digest) {
     throw refused('digest-mismatch', `item digest ${want} was given, the item ${id} has ${digest}`, { item_id: id, item_digest: digest })

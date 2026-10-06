@@ -4,7 +4,8 @@
 // object, is skipped, and a missing file reads as an empty ledger. Any other read error
 // throws. Stage 1 moves the ledger into <V> and changes this module for every reader.
 // Stage 0c-3 (brief R21) adds ledgerItems, the item ids, done ids and origins rows record;
-// R27 adds a row's done_items, the ## Done entries a firing recorded because no row had.
+// R27 adds a row's done_items, the ## Done entries a firing recorded because no row had; the
+// fix manifest's F12 lowercases every item_id.
 import fs from 'node:fs'
 import path from 'node:path'
 import { ID_RE } from './loop-state.mjs'
@@ -64,7 +65,9 @@ export function ledgerShas(S) {
   return { commits, saves, tips }
 }
 
-// ledgerItems(S) -> {ids, doneIds, origins}, what the ledger records about items (R21):
+// ledgerItems(S) -> {ids, doneIds, origins}, what the ledger records about items (R21). Every
+// `item_id` is lowercased before it is tested or stored (fix manifest F12: an upper-case copy
+// is the same id, as parseState reads an `id:` line):
 //   ids      a Set of every non-empty string `item_id` of a row, of its `recovered` and of
 //            its `done_items` entries (the ledger's part of the known set mintId redraws on,
 //            R2), whatever its shape
@@ -89,9 +92,10 @@ export function ledgerItems(S) {
   const ids = new Set(), doneIds = new Set(), origins = new Map()
   const note = (rec, done) => {
     if (!filled(rec.item_id)) return
-    ids.add(rec.item_id)
-    if (done && ID_RE.test(rec.item_id)) doneIds.add(rec.item_id)
-    if (filled(rec.item_origin)) origins.set(rec.item_id, rec.item_origin)
+    const id = rec.item_id.toLowerCase()
+    ids.add(id)
+    if (done && ID_RE.test(id)) doneIds.add(id)
+    if (filled(rec.item_origin)) origins.set(id, rec.item_origin)
   }
   for (const row of rows(S)) {
     if (isObject(row.recovered)) note(row.recovered, row.recovered.action === 'finish-commit')

@@ -161,9 +161,10 @@ This skill executes exactly one iteration of the backlog executor.
    listed, and it comes first:
    - `clear-now`: `## Now` holds one item, and an identical copy of it
      (same id, title, notes and decision, the same `blocked-by:`,
-     `decided:` and `no-change-ok:` lines, and the same origin lines as
-     written; only its `status:`, `class:`, a `recovery:` line and the
-     header form, which a move rewrites, may differ) is in
+     `decided:` and `no-change-ok:` lines, the same origin lines as
+     written, and every other line under the header the same; only the
+     header form and the line a move writes, such as a `status:` or
+     `recovery:` line, may differ) is in
      `clear.section`, so an interrupted firing stopped inside a move,
      after the insertion and before the deletion (Item edits). The other copy is the item. Apply
      `clear.edits` in order, one Edit each (Item edits, Applying edits):
@@ -172,15 +173,17 @@ This skill executes exactly one iteration of the backlog executor.
      `node <T>/scripts/loop-items.mjs check <P> --expect <clear.expect_sha256>`,
      and note "cleared interrupted move of <clear.id>" in `## Last run`.
      Then confirm the other copy as a move is confirmed (Item edits, steps
-     1 and 4): `node <T>/scripts/loop-items.mjs digest <P> --item <clear.id>`,
+     1 and 5): `node <T>/scripts/loop-items.mjs digest <P> --item <clear.id>`,
      then
      `node <T>/scripts/loop-items.mjs check <P> --item <clear.id>@<clear.section>:<item_digest>`.
    - `now-conflict`: the `## Now` item's id is carried elsewhere too, but
      the copies are not one item moved halfway: they differ (a person
      amended one: its title, notes or decision, `digest-differs`; its
      `blocked-by:`, `blocked-by-differs`; an origin line,
-     `origin-differs`; or its `decided:` or `no-change-ok:` line,
-     `decided-differs`, `no-change-ok-differs`), `## Now` holds another
+     `origin-differs`; its `decided:` or `no-change-ok:` line,
+     `decided-differs`, `no-change-ok-differs`; or, with none of those,
+     any other line under the header, such as a field added or changed,
+     `block-differs`), `## Now` holds another
      block as well (`several-now-items`), the id has more than one other
      carrier (`several-carriers`), or a line that does not read as that
      item carries it (an `id:` line of an unparsed block, `raw-carrier`).
@@ -195,7 +198,10 @@ This skill executes exactly one iteration of the backlog executor.
    - `finish-commit`: an interrupted firing committed the `## Now` item but
      stopped before its bookkeeping (the planner matched the run record's
      item id and digest, and its `## Now` line; for a record an older
-     release wrote, the line alone). Move that item to the top
+     release wrote, the line alone), and the item has no item problem (a
+     `## Now` item with one, such as a second `notes:` line the digest does
+     not read, gets `requeue-now` instead, so a person can correct it).
+     Move that item to the top
      of `## Done` (Item edits), in its format, with `finish.sha` in the sha
      slot (no title search); the check takes `finish.item_id` and
      `finish.item_digest`.
@@ -288,6 +294,8 @@ them, and what to do when the helper refuses or a check does not match.
    - `"state": "picked"`: the item `id` (`title`) now sits in `## Now`. It
      is this firing's item, and the rest of the firing names it by `<id>`.
      Keep its `digest`: every move of this item checks it (Item edits).
+     Keep its `origin` too (the item's `origin:` value as written, or null
+     without one): §8's ledger entry copies it from this answer.
      `from: "decision"` means a decision released it (§3.1).
    - `"state": "dry"`: no item is eligible. Write "backlog dry" to
      `## Last run`, record outcome `skipped`, and stop the runner.
@@ -297,9 +305,10 @@ them, and what to do when the helper refuses or a check does not match.
    - Keep `unledgered` (also printed with an exit 3 refusal): the
      `## Done` items, each `{item_id, item_origin}`, that no ledger entry
      records done yet, such as an item an interrupted firing moved there
-     before its ledger append. §8's ledger entry records them, and the
-     `## Done` trim keeps them until then (Item edits, Trimming
-     `## Done`).
+     before its ledger append, or whose origin the ledger does not hold
+     as written (a person edited its `origin:` line in `## Done`). §8's
+     ledger entry records them, and the `## Done` trim keeps them until
+     then (Item edits, Trimming `## Done`).
 
 **3.1 · A decided item comes first.** A `## Needs decision` entry is decided
 when its own line that begins with `**Decision:**` holds something other
@@ -323,7 +332,8 @@ For each decided panel or delegate-flagged entry, by the id in its heading:
   that move. So does an entry with two `**Decision:**` lines (`ambiguous-decision`), or an item the release
   cannot read (its own problem, such as `malformed-field`) or whose title
   its `## Backlog` header would change (`ambiguous-title`). A heading
-  without an id is skipped as `legacy-entry`, with the candidate id.
+  without an id is skipped as `legacy-entry`, with the candidate id, and
+  the open item its title names waits until a person adds the id (§3.2).
 - A released item is the pick, if it is eligible (§3.2). Otherwise it waits
   in `## Backlog` with its status cleared, and the pick goes on with §3.2.
 - **Lower the class only by hand.** `hard` may become `mechanical` only if
@@ -339,6 +349,10 @@ item is eligible when all of these hold:
 - it has no item problem: a malformed or doubled field, an invalid origin,
   an ambiguous title, an origin cycle, or a `blocked-by:` that is not one
   known id (`references/loop-templates.md`, Items);
+- no panel or delegate-flagged `## Needs decision` heading without an id
+  names its title (`legacy-entry`): that entry's decision is never
+  released, so the item waits until a person rewrites the heading as
+  `### <id> · <title>`;
 - its `status:` is `—`, or `waiting-level` and the current `level` now
   permits its class (`mechanical` needs `level: 2`, `hard` needs
   `level: 3`); the pick clears that status;
@@ -350,8 +364,12 @@ that `item_id`, or a `recovered` `finish-commit` with that `item_id`); and
 no open item descends from it, following `origin: loop from` links up the
 chain through open items, `## Done` items and the origins the ledger
 recorded (`## Done` is trimmed). So a done analysis item holds its
-dependents while its follow-up is open. A ledger entry without `item_id`
-never finishes a blocker.
+dependents while its follow-up is open. The waiting item itself, and the
+items that descend from it, are left out of that walk: a follow-up
+blocked by its own parent runs once the parent is done. Open, for this
+test, also means an `id:` or `origin:` line under a `##` section that is
+not one of the six, and a `- [ ]` line inside `## Done` (an item unticked
+in place). A ledger entry without `item_id` never finishes a blocker.
 
 `waiting-decision` and `waiting-infra` items are never picked. A human
 clears `waiting-infra`.
@@ -763,7 +781,8 @@ refused with `tampered` or `work-changed`).
      outcome `halted`, note "save failed", and stop the runner. The next
      clone preparation saves the work.
 2. **Write the sha.** One Edit of `STATE.md` writes the full `sha` at the
-   caller's place, and is the first Edit of the item's move (Item edits):
+   caller's place, and is the first Edit of the item's move (Item edits;
+   take the move's deletion, its step 2, before this Edit):
    the `## Needs decision` entry's `**Recovery:**` line, with the save's
    `item_digest` (`delegate-flagged`; the entry goes in before the item
    moves), the `recovery:` sub-bullet of the item's block as it is inserted
@@ -817,8 +836,9 @@ Record outcome `failed`, `verify: "fail"`.
    `## Now` as it is.
 2. Append exactly one ledger entry, even for failed or halted firings. Its
    `iteration` is `<N>`. Its `task`, `item_id` and `item_origin` are the
-   picked item's title, id and `origin:` value, or null when nothing was
-   picked. Its `done_items` is the `unledgered` list `pick` printed (§3
+   `title`, `id` and `origin` that `pick` printed for the picked item (§3
+   step 2), copied from that answer and never from `STATE.md` by hand, or
+   null when nothing was picked. Its `done_items` is the `unledgered` list `pick` printed (§3
    step 2), whatever the outcome, a refusal's included (`[]` when it was
    empty; null when the firing never ran `pick`, or `pick` printed none,
    as with an exit 2): from then on the ledger
@@ -928,7 +948,7 @@ every edit is applied in order.
   inserts before it deletes:
   1. If the item has an id, take its digest first. For this firing's item,
      it is the `digest` that `pick` printed, so a change made to the item's
-     title, notes or decision during the firing fails step 4; for
+     title, notes or decision during the firing fails step 5; for
      `finish-commit` it is `finish.item_digest`. For any other item (one an
      interrupted firing left in `## Now`, the other copy after `clear-now`),
      read it with `node <T>/scripts/loop-items.mjs digest <P> --item <id>`,
@@ -937,25 +957,36 @@ every edit is applied in order.
      item, a recovery move after a planner exit 2) it is the value of the
      `## Now` item's `id:` line, written in lower case, as the helpers
      print ids (`digest` refuses an upper-case copy).
-  2. One Edit inserts the whole block at its destination: the header line
+  2. Take the deletion before the insertion. Copy the source block exactly
+     as you read it, from its header line through its last line, with the
+     lines after it up to and including the next non-blank line (the
+     anchor, such as the next section's heading). That text is the
+     deletion's `old`; its `new` is the anchor alone, with `(empty)` on the
+     line before it when the section holds nothing else. Never write the
+     deletion from a later read of the source.
+  3. One Edit inserts the whole block at its destination: the header line
      in that section's form (`references/loop-templates.md`) with the title
      unchanged, and every field line under it as it was (`id:`, `origin:`,
      `notes:`, `decision:`, the reserved labels and any other). A change
      the move makes (a `status:`, a `recovery:` line) goes into this
      insertion.
-  3. A second Edit deletes the block from its source. An interruption
-     between the two leaves two copies, never none, and the next firing's
-     recovery planner clears the `## Now` copy (§1 step 5, `clear-now`);
-     when the copies no longer match, it reports `now-conflict` and the
-     loop pauses with both kept.
-  4. Confirm it:
+  4. A second Edit deletes the block from its source with the `old` and
+     `new` of step 2. When that Edit fails, because its `old` is no longer
+     in the file (the source changed after step 2 read it: a person
+     amended it), it is an item-edit incident (Incident): both copies
+     stay, never the deletion of the changed source. An interruption
+     between the two edits leaves two copies, never none, and the next
+     firing's recovery planner clears the `## Now` copy (§1 step 5,
+     `clear-now`); when the copies no longer match, it reports
+     `now-conflict` and the loop pauses with both kept.
+  5. Confirm it:
      `node <T>/scripts/loop-items.mjs check <P> --item <id>@<section>:<digest>`,
      with the digest from step 1 and `<section>` one of `Now`, `Backlog`,
      `Blocked` or `Done`. Exit 0 means the item sits in that section, once
      in the whole file, with that digest.
 
   An item with no valid id (one an older release left in `## Now`) moves
-  without steps 1 and 4.
+  without steps 1 and 5.
 - **Trimming `## Done`,** after a move to `## Done` (§5 analysis, §6 step
   4), before §8's ledger append. Run
   `node <T>/scripts/loop-items.mjs trim <P>`, apply its `edits` in the
@@ -971,14 +1002,20 @@ every edit is applied in order.
   field (a capitalized `Origin:`, a second origin line, a value that is
   not `bootstrap`, `human`, `unknown` or `loop from <id>`): the ledger
   records one parsed origin, so the block stays the only full record of
-  its parents. An item with no origin line at all may go.
+  its parents. And it keeps every item whose origin the ledger does not
+  hold as written (the `item_origin` it recorded for that id is not the
+  block's `origin:` value, no origin on both sides counting as equal):
+  `unledgered` lists that item too, so §8's entry records its current
+  origin before it goes.
 - **Incident.** An exit 3 from `check` (`mismatch`: the file is not what the
   edits or the move should have left), and any other exit 3 or exit 2 from
   `loop-items.mjs` (`crlf`: `STATE.md` holds a carriage return;
   `now-occupied`, `bad-sections`, `bad-parent`, `bad-input`, `no-item`, or
-  `"state": "error"`), and the recovery planner's `now-conflict` (§1 step
-  5), is an incident. Write the printed `detail` (for `now-conflict`, the
-  `conflict`), and any `mismatches` and `problems`, as an incident in
+  `"state": "error"`), the recovery planner's `now-conflict` (§1 step 5),
+  and a move's deletion that fails (Moving an item, step 4), is an
+  incident. Write the printed `detail` (for `now-conflict`, the
+  `conflict`; for a failed deletion, the Edit's error and the item's id),
+  and any `mismatches` and `problems`, as an incident in
   `## Last run`. Set
   `paused: true`, dispatch nothing more, change nothing in `<W>`, record
   outcome `halted`, note "item edits", and go on to §8; then stop the

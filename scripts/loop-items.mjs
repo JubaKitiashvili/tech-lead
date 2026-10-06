@@ -16,12 +16,14 @@
 //   normalize <P>   -> {state:'ok', edits, expect_sha256, minted:[id], origins:[id], problems}
 //                      (R1: ids minted for items without one, `origin: unknown` filled in;
 //                      the ledger's ids are known, so a minted id never repeats one)
-//   pick <P>        -> {state:'picked', id, title, from:'decision'|'backlog', digest,
+//   pick <P>        -> {state:'picked', id, title, origin, from:'decision'|'backlog', digest,
 //                      released:[id], edits, expect_sha256, skipped:[{id, title, reason,
 //                      detail}], unledgered:[{item_id, item_origin}]} or {state:'dry', released,
-//                      edits, expect_sha256, skipped, unledgered} (R13, R16; R27: unledgered,
-//                      the ## Done entries the ledger does not record done, for the firing's
-//                      ledger row's done_items); planPick's answer printed as it is; exit 3
+//                      edits, expect_sha256, skipped, unledgered} (R13, R16; origin the picked
+//                      item's `origin:` value as written, or null, which the firing's ledger row
+//                      copies as item_origin, fix manifest F1; R27: unledgered, the ## Done
+//                      entries the ledger does not record done, for the firing's ledger row's
+//                      done_items); planPick's answer printed as it is; exit 3
 //                      `now-occupied` or `bad-sections`, with `unledgered` too
 //   followup <P> --parent <id> --input <file>
 //                   -> {state:'ok', id, reused, edits, expect_sha256} (R17); <file> holds the

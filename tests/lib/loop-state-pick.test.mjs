@@ -1,7 +1,9 @@
 // tests/lib/loop-state-pick.test.mjs
 // planPick (stage 0c-3 brief R13, R14, R16): decided entries first, then `## Backlog`
 // top-down; every park reason; waiting-level by level; the section 3.1 release; dry; the
-// refusals; and insert-before-delete moves that never lose the item.
+// refusals; and insert-before-delete moves that never lose the item. Closing fixes: the picked
+// answer carries the item's origin (F1, for the section 8 row's item_origin), and an unresolved
+// legacy heading parks the item whose title it names (F3).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyEdits, itemDigest, nowLine, parseState, planDeleteBlock, planPick } from '../../scripts/lib/loop-state.mjs'
@@ -34,6 +36,33 @@ test('the first eligible Backlog item is picked and moved to ## Now in place of 
   // Picking the last Backlog item leaves (empty) behind.
   const one = state({ backlog: open('only', { id: A }) })
   assert.deepEqual(linesOf(applyEdits(one, pick(one).edits), 'Backlog'), ['(empty)'])
+})
+
+// Closing fix F1 (Opus I2): the section 8 row's item_origin comes from pick's answer, never from a
+// hand copy of STATE.md.
+test('F1: the picked answer carries the item\'s origin as written, or null', () => {
+  assert.equal(pick(state({ backlog: open('child', { id: A, origin: `loop from ${B}` }), done: doneItem('parent', { id: B }) })).origin, `loop from ${B}`)
+  assert.equal(pick(state({ backlog: open('plain', { id: A }) })).origin, 'human')
+  assert.equal(pick(state({ backlog: open('none', { id: A, origin: null }) })).origin, null)
+})
+
+// Closing fix F3 (Codex g1#4): a legacy `### <title>` heading holds a decision the release never
+// reads, so the item with that title waits until a person rewrites the heading with its id.
+test('F3: an unresolved legacy heading parks the open item whose title it names', () => {
+  const text = state({
+    backlog: [...open('Cache', { id: A }), ...open('other', { id: B })],
+    decisions: entry('cache', { decision: 'use Redis' }),
+  })
+  const plan = pick(text)
+  assert.equal(plan.id, B)
+  assert.deepEqual(plan.skipped.map(s => [s.id, s.reason]), [[null, 'legacy-entry'], [A, 'legacy-entry']])
+  // Unfilled, or delegate-flagged, it parks the item too; an `other` entry does not.
+  assert.equal(pick(state({ backlog: open('cache', { id: A }), decisions: entry('cache') })).state, 'dry')
+  assert.equal(pick(state({ backlog: open('cache', { id: A }), decisions: entry('cache', { variant: 'delegate-flagged' }) })).state, 'dry')
+  assert.equal(pick(state({ backlog: open('cache', { id: A }), decisions: entry('cache', { variant: 'other' }) })).id, A)
+  // Rewritten with the id, the decision is released and the item picked with it.
+  const fixed = pick(state({ backlog: open('cache', { id: A }), decisions: entry(`${A}${SEP}cache`, { decision: 'use Redis' }) }))
+  assert.deepEqual([fixed.id, fixed.from], [A, 'decision'])
 })
 
 test('every park reason is skipped, top-down, until the first eligible item', () => {
@@ -281,8 +310,10 @@ test('EP1: a line appended to a planned deletion\'s block makes that edit fail',
 // the firing's ledger row can carry them before a trim drops them.
 test('R27: picked and dry answers carry unledgered, the Done entries the ledger lacks', () => {
   const done = [...doneItem('follow-up', { id: F, origin: `loop from ${C}`, sha: null }), ...doneItem('ledgered', { id: C }), ...doneItem('old', { id: E, origin: 'unknown' })]
-  const L = ledger({ done: [C] })
+  const L = ledger({ done: [C], origins: { [C]: 'human' } })
   const want = [{ item_id: F, item_origin: `loop from ${C}` }, { item_id: E, item_origin: 'unknown' }]
+  // F1: an entry recorded done without its origin as written is listed too, with its origin.
+  assert.deepEqual(planPick(state({ done }), { ledger: ledger({ done: [C] }), level: 3 }).unledgered, [want[0], { item_id: C, item_origin: 'human' }, want[1]])
   const picked = planPick(state({ backlog: open('a', { id: A }), done }), { ledger: L, level: 3 })
   assert.equal(picked.state, 'picked')
   assert.deepEqual(picked.unledgered, want)
@@ -290,7 +321,8 @@ test('R27: picked and dry answers carry unledgered, the Done entries the ledger 
   assert.equal(dry.state, 'dry')
   assert.deepEqual(dry.unledgered, want)
   // The ledger's done_items count once ledgerItems has read them: nothing is left.
-  assert.deepEqual(planPick(state({ done }), { ledger: ledger({ done: [C, F, E] }), level: 3 }).unledgered, [])
+  const all = ledger({ done: [C, F, E], origins: { [C]: 'human', [F]: `loop from ${C}`, [E]: 'unknown' } })
+  assert.deepEqual(planPick(state({ done }), { ledger: all, level: 3 }).unledgered, [])
   // An occupied ## Now still reports them; an id-less Done entry has no id to record.
   assert.deepEqual(planPick(state({ now: open('x', { id: G }), done }), { ledger: L }).unledgered, want)
   assert.deepEqual(planPick(state({ done: doneItem('no id', {}) }), { ledger: L }).unledgered, [])

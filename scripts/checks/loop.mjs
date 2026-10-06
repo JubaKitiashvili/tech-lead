@@ -38,7 +38,12 @@
 // as a success, with only a refusal or an error as the incident (Codex fix1-g2#5); section 1
 // step 5 names every now-conflict reason loop-recover.mjs prints and every field clear-now
 // compares (R29a); and README's skip table and section 3.1 name every release refusal pick can
-// report, ambiguous-carrier included (R30a).
+// report, ambiguous-carrier included (R30a). The closing fix pass: an item move takes its
+// deletion from the source block as read (anchored through the next non-blank line) before the
+// insertion, and a failed deletion is the item-edit incident (F6); section 8 copies the ledger
+// entry's task, item_id and item_origin from pick's answer, which section 3 keeps (F1); and
+// README's invalid-id fix never deletes a valid id, reminting only an id no other line names
+// (F7).
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -907,6 +912,65 @@ export async function checkLoop(ctx, r) {
     const incident = rule.filter(s => /\bincident\b/.test(s))
     if (!incident.some(s => /\brefusal \(exit 3\)/.test(s) && /\berror \(exit 2\)/.test(s))) bad.push(`${SKILL} section 5: no incident sentence names a refusal (exit 3) and an error (exit 2)`)
     for (const s of incident) if (OK.test(s) || /\b(?:any|every) other answer\b/i.test(s)) bad.push(`${SKILL} section 5: an incident sentence names an ok answer, or every other answer: ${s.trim()}`)
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: SKILL.md\'s item move takes its deletion from the source block as read, before the insertion, and a failed deletion is the item-edit incident (F6)', () => {
+    // F6 (Codex closing g3#1): a deletion written when it was made, from the file as it read
+    // then, deleted a person's amendment made between the insertion and the deletion, while the
+    // destination kept the original, whose digest check --item still accepted. The deletion is
+    // the source block as read before the insertion, anchored through the next non-blank line
+    // (so a line added under the block also fails it), and its failure is the incident.
+    const items = part(rd(SKILL), '## Item edits', SKILL)
+    const at = items.indexOf('- **Moving an item.**')
+    if (at < 0) throw new Error(`${SKILL} Item edits has no "Moving an item" bullet`)
+    const end = items.indexOf('\n- **', at + 1)
+    const text = items.slice(at, end < 0 ? items.length : end)
+    const where = `${SKILL} Item edits: Moving an item`
+    // Its numbered steps, each with its continuation lines (indented past the number).
+    const steps = [...text.matchAll(/^ {2}(\d+)\. (.*(?:\n {5,}\S.*)*)/gm)].map(m => ({ n: Number(m[1]), s: flat(m[2]) }))
+    const take = steps.find(x => /\bdeletion\b/.test(x.s) && /\bexactly as you read it\b/.test(x.s))
+    const insert = steps.find(x => /^One Edit inserts the whole block\b/.test(x.s))
+    const del = steps.find(x => /^A second Edit deletes the block\b/.test(x.s))
+    const bad = []
+    if (!insert) bad.push(`${where} has no step "One Edit inserts the whole block"`)
+    if (!del) bad.push(`${where} has no step "A second Edit deletes the block"`)
+    if (!take) bad.push(`${where} never takes the deletion from the source block exactly as read (a step on the deletion's \`old\`, "exactly as you read it")`)
+    else {
+      if (!/\bbefore the insertion\b/.test(take.s) || (insert && take.n > insert.n)) bad.push(`${where} never takes the deletion before the insertion (step ${take.n})`)
+      if (!/\bup to and including the next non-blank line\b/.test(take.s)) bad.push(`${where} never anchors the deletion through the next non-blank line after the block (step ${take.n})`)
+      if (del && !del.s.includes(`with the \`old\` and \`new\` of step ${take.n}`)) bad.push(`${where}: the deletion never uses the \`old\` and \`new\` of step ${take.n}`)
+    }
+    if (del && !sentences(del.s).some(x => /\bfails\b/.test(x.s) && /\bitem-edit incident\b/.test(x.s))) bad.push(`${where} never calls a failed deletion an item-edit incident (step ${del.n})`)
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: section 8\'s ledger entry copies task, item_id and item_origin from pick\'s answer (F1)', () => {
+    // F1 (Codex closing g1#1, Opus I2): after a ## Done trim, the ledger's item_origin is the
+    // only record of a completed item's parent, and the trim drops a block only when the ledger
+    // records its origin as written; a hand-copied origin could erase a loop from link. pick
+    // prints the picked item's origin, and the entry copies it from that answer.
+    const skill = rd(SKILL), bad = []
+    const s8 = flat(section(skill, 8, SKILL).text)
+    if (!/`task`, `item_id` and `item_origin` are the `title`, `id` and `origin` that `pick` printed\b/.test(s8) || /`item_origin`[^.]*`origin:` value/.test(s8)) {
+      bad.push(`${SKILL} section 8 never copies \`item_origin\` from the \`origin\` \`pick\` printed (with \`task\` and \`item_id\` from its \`title\` and \`id\`)`)
+    }
+    const picked = bullets(section(skill, 3, SKILL).text).map(flat).find(b => b.startsWith('- `"state": "picked"`'))
+    if (!picked || !/\bKeep its `origin`[^.]*:[^.]*\bledger entry\b/.test(picked)) bad.push(`${SKILL} section 3 never keeps the \`origin\` \`pick\` printed for the ledger entry (the \`"state": "picked"\` bullet)`)
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: README\'s invalid-id fix never deletes a valid id (F7)', () => {
+    // F7 (Codex closing g3#2): deleting both of two identical id: lines and letting the next
+    // firing mint a fresh id cut every link that named the old one (a follow-up's loop from, a
+    // blocker), so an ancestor read as finished while its follow-up was open.
+    const row = rd('README.md').split('\n').find(l => l.startsWith('| `invalid-id` |'))
+    if (!row) throw new Error('README.md: Why the loop skips an item has no `invalid-id` row')
+    const fix = flat(row.split(' | ').at(-1))
+    const bad = []
+    if (/\bDelete the `id:` lines\b/.test(fix) || !/\bNever delete a valid id\b/.test(fix)) bad.push('README.md: the `invalid-id` fix tells the owner to delete both `id:` lines, or never says to keep a valid id')
+    if (!/\bthe same id, delete only one of them\b/.test(fix)) bad.push('README.md: the `invalid-id` fix never deletes only one of two identical `id:` lines')
+    if (!/\bfresh id, only when no other line names its id\b/.test(fix)) bad.push('README.md: the `invalid-id` fix never limits a fresh id to an id no other line names')
     assert.deepEqual(bad, [])
   })
 }
