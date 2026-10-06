@@ -1,10 +1,11 @@
 // tests/lib/loop-md.test.mjs
 // LOOP.md front-matter block lists (stage 0c-2 brief section 5): frontList(text, key) is
 // stage 0c-1's verify: grammar for any key, and loop-lock's verifyCommands is
-// frontList(text, 'verify') with the same messages.
+// frontList(text, 'verify') with the same messages. Stage 0c-3 (brief R26): frontScalar(text,
+// key), a top-level scalar under the same key and front-matter rules.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { frontList } from '../../scripts/lib/loop-md.mjs'
+import { frontList, frontScalar } from '../../scripts/lib/loop-md.mjs'
 import { verifyCommands } from '../../scripts/loop-lock.mjs'
 
 const md = body => `---\n${body}---\n`
@@ -96,4 +97,80 @@ test('frontList for another key names that key in every message and calls its it
   const text = md('verify: npm test\nscope:\n  - src\n')
   assert.deepEqual(frontList(text, 'scope'), ['src'])
   assert.equal(messageOf(text, 'verify'), 'bad-verify: line 2: verify: must be a block list of "  - <command>" lines')
+})
+
+// The exact message frontScalar throws for text, or null when it returns.
+const scalarMessageOf = (text, key) => {
+  try {
+    frontScalar(text, key)
+    return null
+  } catch (e) {
+    return e.message
+  }
+}
+
+test('frontScalar reads a top-level scalar as a string: plain with a trailing comment, quoted, and null when the key is absent', () => {
+  const text = md([
+    'pattern: backlog-executor',
+    'level: 3                 # 1 report-only | 2 mechanical-only | 3 full execution',
+    'paused: false            # any runner must exit immediately when true',
+    'base: <default branch>   # each day\'s branch starts here',
+    "quoted: 'a: b # not a comment'",
+    'double: "x \\"y\\""',
+    'hash: a#b',
+    'verify:',
+    '  - npm test',
+    'scope:',
+    '  - ./',
+    'push: never',
+  ].join('\n') + '\n')
+  assert.equal(frontScalar(text, 'level'), '3')
+  assert.equal(frontScalar(text, 'paused'), 'false')
+  assert.equal(frontScalar(text, 'pattern'), 'backlog-executor')
+  assert.equal(frontScalar(text, 'base'), '<default branch>')
+  assert.equal(frontScalar(text, 'quoted'), 'a: b # not a comment')
+  assert.equal(frontScalar(text, 'double'), 'x "y"')
+  assert.equal(frontScalar(text, 'hash'), 'a#b')
+  assert.equal(frontScalar(text, 'push'), 'never')
+  // Absent, or only below the front matter, or a longer key: null.
+  assert.equal(frontScalar(text, 'triage'), null)
+  assert.equal(frontScalar(`---\npush: never\n---\nlevel: 3\n`, 'level'), null)
+  assert.equal(frontScalar(md('levels: 3\n'), 'level'), null)
+  // Spaces before the colon, CRLF line ends, and comment or blank lines after the value.
+  assert.equal(frontScalar(md('level : 2\n'), 'level'), '2')
+  assert.equal(frontScalar('---\r\nlevel: 2\r\n---\r\n', 'level'), '2')
+  assert.equal(frontScalar(md('level: 2\n\n  # a note\npaused: true\n'), 'level'), '2')
+  // The same key validation as frontList: a caller bug, never a pattern.
+  for (const key of ['', 'a.b', 'a b', '.*', 'level:', 7, undefined]) {
+    assert.throws(() => frontScalar(md('level: 1\n'), key), /^TypeError: frontScalar: bad key/, String(key))
+  }
+})
+
+test('frontScalar refuses every shape that is not one scalar on its line, with exact messages', () => {
+  const key = 'level'
+  const cases = [
+    ['no front matter', `${key}: 1\n`, 'bad-loop-md: LOOP.md has no front matter'],
+    ['unterminated front matter', `---\n${key}: 1\n`, 'bad-loop-md: the front matter is not closed'],
+    ['key twice', md(`${key}: 1\n${key}: 3\n`), `bad-${key}: ${key}: appears 2 times`],
+    ['no space after the colon', md(`${key}:3\n`), `bad-${key}: line 2: ${key}: needs a space after the colon`],
+    ['empty value', md(`${key}:\npaused: false\n`), `bad-${key}: line 2: empty value`],
+    ['comment-only value', md(`${key}:   # later\n`), `bad-${key}: line 2: empty value`],
+    ['blank quoted value', md(`${key}: "  "\n`), `bad-${key}: line 2: empty value`],
+    ['block list', md(`${key}:\n  - 3\n`), `bad-${key}: unsupported ${key}: syntax at line 3 (a continuation line or other text under the value)`],
+    ['continuation line', md(`${key}: 3\n  and more\n`), `bad-${key}: unsupported ${key}: syntax at line 3 (a continuation line or other text under the value)`],
+    ['column-0 text', md(`${key}: 3\n- x\n`), `bad-${key}: unsupported ${key}: syntax at line 3 (a continuation line or other text under the value)`],
+    ['flow sequence', md(`${key}: [3]\n`), `bad-${key}: line 2: a YAML indicator starts the value; quote it`],
+    ['block scalar', md(`${key}: |\n`), `bad-${key}: line 2: a YAML indicator starts the value; quote it`],
+    ['anchor', md(`${key}: &a 3\n`), `bad-${key}: line 2: a YAML indicator starts the value; quote it`],
+    ['mapping value', md(`${key}: a: b\n`), `bad-${key}: line 2: ": " makes the item a mapping; quote the value`],
+    ['unterminated double quote', md(`${key}: "3\n`), `bad-${key}: line 2: unterminated double-quoted value`],
+    ['unterminated single quote', md(`${key}: '3\n`), `bad-${key}: line 2: unterminated single-quoted value`],
+    ['text after a quote', md(`${key}: "3" x\n`), `bad-${key}: line 2: text after the closing quote`],
+    ['yaml-only escape', md(`${key}: "\\x33"\n`), `bad-${key}: line 2: an escape JSON does not share with YAML; use single quotes`],
+  ]
+  for (const [why, text, message] of cases) assert.equal(scalarMessageOf(text, key), message, why)
+  // A malformed key elsewhere does not affect reading this one, and the reverse.
+  const text = md('verify: npm test\nlevel: 2\n')
+  assert.equal(frontScalar(text, 'level'), '2')
+  assert.deepEqual(frontList(md('level: [2]\nscope:\n  - src\n'), 'scope'), ['src'])
 })
