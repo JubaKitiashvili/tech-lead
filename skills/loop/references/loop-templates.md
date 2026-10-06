@@ -132,9 +132,12 @@ the header, in any order (the loop writes `id:` first and `origin:` second).
 Values are trimmed. Only `notes:` and `decision:` take more lines: each
 continuation line is indented at least two spaces deeper than the field's
 dash, and a blank line ends the field. Any other line under an item (a tab
-indent, a `*` or `+` marker, a capitalized label, a line under a one-line
-field, a line before the first field) is `malformed-field`, and a field
-given twice is `duplicate-field`. Either keeps the item from being picked
+indent, a `*` or `+` marker, a capitalized label, markup around the label
+such as `- **id:**`, a label without its colon such as `- id tl-…`, a line
+under a one-line field, a line before the first field) is
+`malformed-field`, and so is a field line at column 0 right below the item
+(an outdented `- blocked-by:`), which joins the item; a field given twice
+is `duplicate-field`. Either keeps the item from being picked
 until a person fixes it. A lowercase label not listed below is kept and
 never read.
 
@@ -146,7 +149,9 @@ never read.
   case-insensitively, and `normalize` rewrites an upper-case id in lower
   case. A value of another shape (an empty or `—` one
   included), or two `id:` lines, is `invalid-id`; the same id on two items,
-  in any sections (`## Done` included), is `duplicate-id`. Either parks
+  in any sections (`## Done` included), or on an `id:` line of a block the
+  loop cannot read or of a `##` section outside the six, is
+  `duplicate-id`. Either parks
   every item concerned, and the loop never mints over an id.
 - `origin:` ∈ `bootstrap | human | unknown | loop from <id>`: where the item
   came from. Bootstrap writes `bootstrap`, and a person may write `human`.
@@ -244,7 +249,9 @@ display. Entries are keyed by id: the loop replaces an entry with the same
 id and never appends a second one, and the release (loop §3) finds the item
 by it. A heading whose first token is not an id is a legacy entry: the
 release skips it, `## Last run` names the candidate id, and a person
-rewrites the heading as `### <id> · <title>`. The decision is the text
+rewrites the heading as `### <id> · <title>`. Until then the open item
+whose title the heading names is parked as `legacy-entry` too, so it never
+runs without that decision. The decision is the text
 after `**Decision:**` on its line, plus the entry's following lines up to
 the next line that starts with `**`.
 
@@ -308,8 +315,9 @@ generation over while it ran). Those are the only exceptions:
   apply. Older
   entries without them remain valid.
 - `task` is the picked item's title, for people. `item_id` and
-  `item_origin` are its id and its `origin:` value as written, when the
-  entry is written; all three are null when nothing was picked. Older
+  `item_origin` are its id and its `origin:` value as written: the
+  `title`, `id` and `origin` that `pick` printed (loop §3 step 2, §8);
+  all three are null when nothing was picked. Older
   entries without `item_id` remain valid, but only an entry with one can
   finish a blocker (loop §3).
 - `commits` holds only this firing's own commits. A commit an interrupted
@@ -334,7 +342,10 @@ generation over while it ran). Those are the only exceptions:
   done (`pick`'s `unledgered`, loop §3 step 2), each with its id and its
   `origin:` value as written: an item an interrupted firing moved to
   `## Done` before its append (one that `clear-now` left there included),
-  or an item that a release before 0c-3 completed. It is written
+  or an item that a release before 0c-3 completed, and an item an earlier
+  entry records done with another origin than its block holds now (a
+  person edited the `origin:` line; the trim keeps the block until an
+  entry records the origin as written). It is written
   whatever the outcome. Each entry counts as done for blockers, and its
   origin feeds the blocker walk, so the item may then leave `## Done`.
 - `iteration` is the firing's lock generation `<N>` (loop §1 step 3). It

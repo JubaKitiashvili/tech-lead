@@ -2,7 +2,9 @@
 // The read-only recovery planner (stage 0c-2 brief section 14; stage 0c-3 R19, R20: the item
 // binding of finish-commit, clear-now, the Done sha slot, recovered's item; R29: clear-now only for
 // identical copies of one item, with its anchored deletion, else now-conflict; R29a: identical
-// also in blocked-by:, origin-like, decided: and no-change-ok: lines) against real temporary git
+// also in blocked-by:, origin-like, decided: and no-change-ok: lines; fix manifest F5: identical in
+// every line of the block but the move's own changes, F2: origin-like lines through loop-state's
+// originLikeLine, F4: no finish-commit over an item with problems) against real temporary git
 // repositories: a project <P> with its spine <S>, a real clone <W> = <V>/clone under a
 // temporary TECH_LEAD_CACHE, real run records (run-record.mjs), real recovery-bundle files in
 // <V>/patches and real delivery bundles (delivery.mjs). Every case runs the CLI as a child
@@ -956,6 +958,41 @@ test('R20: a v:1 record (an interrupted 0.5.0 firing) finishes on now_sha256 alo
   })
 })
 
+// Fix manifest F4 (Codex g2#1): finish-commit needs the ## Now item to have no item problems. An
+// amendment a person appended after an interrupted commit (a second `notes:` line, a capitalized
+// `Notes:` line) leaves the digest as recorded, because the digest reads the first notes: value;
+// the item is requeued intact for correction instead of moving to ## Done unread.
+test('F4: finish-commit refuses a ## Now item with item problems (an appended notes: or Notes: amendment) -> requeue-now', TIMEOUT, async t => {
+  const fx = project(t, { now: NOW })
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  record(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+  assert.deepEqual(ok(fx, 4).actions, ['finish-commit', 'ledger-recovered', 'write-bundle'], 'the control finishes')
+  for (const [label, line, kind] of [
+    ['a second notes: line', '  - notes: also cover the empty header', 'duplicate-field'],
+    ['a capitalized Notes: line', '  - Notes: also cover the empty header', 'malformed-field'],
+  ]) {
+    await t.test(`${label} -> requeue-now, the commit stays`, () => {
+      const amended = `${NOW}\n${line}`
+      setState(fx, { now: amended })
+      const it = nowItem(state({ now: amended }))
+      assert.equal(itemDigest(it), DIGEST, 'the digest is the recorded one')
+      assert.ok(it.problems.some(p => p.kind === kind), JSON.stringify(it.problems))
+      const out = ok(fx, 4)
+      assert.equal(out.finish, null, JSON.stringify(out.notes))
+      assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+      assert.ok(out.notes.some(n => n.includes(c.sha.slice(0, 12)) && n.includes(kind)), JSON.stringify(out.notes))
+    })
+  }
+  await t.test('a v:1 record finishes on the line alone, but not over an item with problems either', () => {
+    fs.rmSync(recordFile(fx.paths, 3))
+    recordV1(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+    setState(fx, { now: `${NOW}\n  - notes: also cover the empty header` })
+    const out = ok(fx, 4)
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+  })
+})
+
 // The clear-now edits, applied as the prose applies them: they delete the ## Now item's block
 // alone (R29), leave the other copy, and replay to expect_sha256.
 const clearApplied = (fx, out) => {
@@ -1113,18 +1150,71 @@ test('now-conflict: an amended ## Now copy, a second ## Now item, a raw carrier'
     })
   }
 
-  // What a move itself rewrites is no difference: the status (a pick clears waiting-level, a
-  // block may set one), the class, the header form, and a recovery: line the block move adds.
-  await t.test('copies that differ only in status, class, header form and a recovery line still clear', () => {
+  // What a move itself rewrites is no difference (fix manifest F5): the header form (the class and
+  // priority live there), a status: the other copy holds as waiting-* where the ## Now copy reads
+  // the dash (a waiting-level pick rewrote it to the dash, a return set it), and the recovery:
+  // line the move into ## Blocked or ## Backlog writes in place of any older one.
+  await t.test('copies that differ only in header form, a waiting status and a recovery line still clear', () => {
     const moved = withLines(
       NOW.replace(ITEM, `- [ ] fix the parser ${DOT} attempts: 2 ${DOT} verify failed`).replace(`  - status: ${DASH}`, '  - status: waiting-level'),
-      '  - class: hard', `  - recovery: ${'a'.repeat(64)}`)
+      `  - recovery: ${'a'.repeat(64)}`)
     setState(fx, { now: NOW, blocked: moved })
     const out = ok(fx, 4)
     assert.equal(out.conflict, null, JSON.stringify(out.conflict))
     assert.deepEqual(out.actions, ['clear-now'])
     assert.equal(out.clear.section, 'Blocked')
   })
+
+  await t.test('an interrupted return (Backlog copy waiting-infra, a newer recovery line) still clears', () => {
+    const before = withLines(NOW, `  - recovery: ${'a'.repeat(64)}`)
+    const returned = withLines(NOW.replace(`  - status: ${DASH}`, '  - status: waiting-infra').replace(ITEM, `- [ ] P1 ${DOT} fix the parser ${DOT} class: high-stakes`), `  - recovery: ${'b'.repeat(64)}`)
+    setState(fx, { now: before, backlog: returned })
+    const out = ok(fx, 4)
+    assert.equal(out.conflict, null, JSON.stringify(out.conflict))
+    assert.deepEqual(out.actions, ['clear-now'])
+  })
+
+  await t.test('an interrupted delegate-flagged return that added the status line (none on the ## Now copy) still clears', () => {
+    const bare = NOW.replace(`\n  - status: ${DASH}`, '')
+    setState(fx, { now: bare, backlog: withLines(bare, '  - status: waiting-decision') })
+    const out = ok(fx, 4)
+    assert.equal(out.conflict, null, JSON.stringify(out.conflict))
+    assert.deepEqual(out.actions, ['clear-now'])
+  })
+
+  // Fix manifest F5 (Codex g2#2, Opus M1): every other line of the two blocks is compared as
+  // written, so an amendment no named field covers is never discarded: block-differs.
+  for (const [label, now, backlog] of [
+    ['the ## Now copy gained an unknown field', withLines(NOW, '  - acceptance: also cover the new endpoint'), NOW],
+    ['the ## Now copy gained a malformed Blocked-by: line', withLines(NOW, '  - Blocked-by: tl-22222222'), NOW],
+    ['the ## Now copy gained a second notes: line', withLines(NOW, '  - notes: and the empty case'), NOW],
+    ['the ## Now copy gained an unparsed line', withLines(NOW, '    an indented remark from the owner'), NOW],
+    ['the ## Now copy was marked waiting-infra (do not run this)', NOW.replace(`  - status: ${DASH}`, '  - status: waiting-infra'), NOW],
+    ['the ## Now copy holds a recovery line the other copy lacks', withLines(NOW, `  - recovery: ${'a'.repeat(64)}`), NOW],
+    ['the other copy holds a class: field line', NOW, withLines(NOW, '  - class: high-stakes')],
+    ['the ## Now copy\'s notes continue on a second line', NOW.replace('  - notes: parse every header form', '  - notes: parse every header form\n      and the dates'), NOW],
+  ]) {
+    await t.test(`${label} -> now-conflict (block-differs)`, () => {
+      setState(fx, { now, backlog })
+      const out = ok(fx, 4)
+      const c = conflictOf(out)
+      const st = parseState(fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8'))
+      const [nowIt, other] = [st.items.find(i => i.section === 'Now'), st.items.find(i => i.section === 'Backlog' && i.id === ID)]
+      if (itemDigest(nowIt) === itemDigest(other)) assert.deepEqual(c.reasons, ['block-differs'])
+      else assert.deepEqual(c.reasons, ['digest-differs'])
+      assert.ok(out.notes.some(n => /block/.test(n) || /title, notes or decision/.test(n)), JSON.stringify(out.notes))
+    })
+  }
+
+  // Fix manifest F2 (Codex g1#2, Opus I1, M5): the origin comparison uses loop-state's exported
+  // originLikeLine, so an origin line that lost its colon or wears inline markup is still an
+  // origin line, and a copy that gained one differs in its origin.
+  for (const line of ['  - origin loop from tl-22222222', '  - **origin:** loop from tl-22222222', '  - `origin`: loop from tl-22222222', '  - origin = loop from tl-22222222']) {
+    await t.test(`the ## Now copy gained ${JSON.stringify(line.trim())} -> now-conflict (origin-differs)`, () => {
+      setState(fx, { now: withLines(NOW, line), backlog: NOW })
+      assert.deepEqual(conflictOf(ok(fx, 4)).reasons, ['origin-differs'])
+    })
+  }
 })
 
 test('R20: the Done check reads only the sha slot of a Done header, split from the right', TIMEOUT, async t => {

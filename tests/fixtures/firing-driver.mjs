@@ -25,8 +25,9 @@
 //   the main session changes it (tests/fixtures/firing-moves.mjs): one Edit at a time, items
 //   found by id; a plan of loop-items.mjs (normalize, pick, followup) applied edit by edit and
 //   confirmed with `loop-items check --expect`; every move of an item inserts its whole block
-//   at the destination first, deletes the source second, and is confirmed with `loop-items
-//   check --item <id>@<section>:<digest>` (the digest pick printed for this firing's item,
+//   at the destination first, deletes the source second with the deletion taken before the
+//   insertion from the source block as read (F6: an amendment in between makes it fail, the
+//   incident below), and is confirmed with `loop-items check --item <id>@<section>:<digest>` (the digest pick printed for this firing's item,
 //   finish.item_digest for finish-commit, `loop-items digest` read before the move for any
 //   other item: loop "Item edits", step 1). An edit that does not apply, or a check that does
 //   not match, is R14's incident: {"event":"incident"}, ## Last run, `paused: true`, outcome
@@ -85,7 +86,8 @@
 //   (as in the prose, not after section 1's finish-commit move; a later trim reaches that item):
 //   `loop-items trim` (the 20 newest kept; below them only items the ledger records done
 //   deleted, whole blocks; nothing pick's unledgered listed is ever dropped, nor a block whose
-//   origin-like lines are not exactly one well-formed origin: field, R27a), its edits applied
+//   origin-like lines are not exactly one well-formed origin: field, R27a, nor one whose
+//   origin the ledger does not hold as written, F1), its edits applied
 //   edit by edit and checked with check --expect; an exit 2 or 3 from either is the item-edit
 //   incident. The trimmed event carries trim's answer ({"event":"trimmed","dropped","out"}).
 //   The follow-up (R17): its JSON written to <S>/briefs/<id>-followup.json, loop-items
@@ -141,9 +143,10 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { scrubGitRouting } from '../helpers.mjs'
-import { fold, parseOrigin } from '../../scripts/lib/loop-state.mjs'
+import { originLikeLine, parseOrigin } from '../../scripts/lib/loop-state.mjs'
+import { ledgerItems } from '../../scripts/lib/ledger.mjs'
 import {
-  DASH, DOT, blockedBlock, doneBlock, editOnce, findItem, insertTop, nowBlock, removeItem, replaceItem, setSection, upsertEntry, withField,
+  DASH, DOT, blockedBlock, deleteAsRead, doneBlock, editOnce, findItem, insertTop, nowBlock, replaceItem, setSection, upsertEntry, withField,
 } from './firing-moves.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -226,7 +229,8 @@ async function lockFiring() {
 // found through scripts/lib/loop-state.mjs's parseState, by id, and every change is one Edit
 // whose `old` occurs once (tests/fixtures/firing-moves.mjs); the item CLI's plans are applied
 // edit by edit and confirmed with `loop-items check --expect`, and every move inserts the whole
-// block first, deletes the source second, and is confirmed with `loop-items check --item`.
+// block first, deletes the source second (with the deletion taken from the block as read before
+// the insertion), and is confirmed with `loop-items check --item`.
 const ARROW = String.fromCharCode(0x2192)
 
 function cloneFiring(sc) {
@@ -368,13 +372,18 @@ function cloneFiring(sc) {
   }
   // A prose move of the ## Now item to the top of `to`: the block `make(item)` inserted first
   // (stop <kind>-inserted), then the ## Now block deleted, `(empty)` left (stop <kind>-moved),
-  // then check --item with `digest` (or digest(item), read before the move).
+  // then check --item with `digest` (or digest(item), read before the move). The deletion is
+  // taken before the insertion, from the block as read (loop "Item edits", Moving an item; F6,
+  // Codex closing g3#1): when a person amended the ## Now copy in between, it does not apply,
+  // and that is the item-edit incident, with both copies kept.
   const moveNow = (kind, to, make, digest) => {
-    const src = nowBlock(readState())
+    const text = readState()
+    const src = nowBlock(text)
     if (!src) return null
     const d = typeof digest === 'function' ? digest(src) : digest
+    const del = deleteAsRead(text, src)
     edit(insertTop(readState(), to, make(src)), `${kind}-inserted`)
-    edit(removeItem(readState(), nowBlock(readState())), `${kind}-moved`)
+    edit(del, `${kind}-moved`)
     checkMove(src.id, to, d, kind)
     return src
   }
@@ -442,17 +451,26 @@ function cloneFiring(sc) {
     const kept = new Set((row.done_items ?? []).map(d => d.item_id))
     if (tr.out.dropped.some(id => kept.has(id))) fail('trim', `loop-items trim drops an item pick listed as unledgered: ${tr.out.dropped}`)
     // R27a as the prose states it: a block whose origin lines are not exactly one well-formed
-    // `origin:` field (a capitalized `Origin:`, a second origin line, an invalid value) is the
-    // only full record of its parents, so it is never dropped; one with no origin line may go.
+    // `origin:` field (a capitalized `Origin:`, a second origin line, an invalid value, a
+    // marked-up or colon-less origin line: loop-state's originLikeLine, F2) is the only full
+    // record of its parents, so it is never dropped; one with no origin line may go.
     const before = readState()
     const torn = tr.out.dropped.filter(id => {
       const it = findItem(before, id, 'Done')
       if (!it) return false
-      const like = it.lines.filter(l => /^\s*(?:[-*+]\s*)?origin\s*:/i.test(fold(l)))
+      const like = it.lines.filter(l => originLikeLine(l))
       const own = it.fields.filter(f => f.label === 'origin')
       return like.length > 1 || (like.length === 1 && (own.length !== 1 || parseOrigin(own[0].value) === null))
     })
     if (torn.length) fail('trim', `loop-items trim drops a block whose lineage the ledger cannot carry whole: ${torn}`)
+    // F1 as the prose states it: a block goes only when the ledger holds its origin as written
+    // (the item_origin recorded for its id is its origin: value, none on both sides equal).
+    const L = ledgerItems(S)
+    const drift = tr.out.dropped.filter(id => {
+      const it = findItem(before, id, 'Done')
+      return it && (L.origins.get(id) ?? null) !== it.origin
+    })
+    if (drift.length) fail('trim', `loop-items trim drops a block whose origin the ledger does not hold as written: ${drift}`)
     applyPlan('trim', tr.out)
     at('trimmed', { dropped: tr.out.dropped, out: tr.out })
   }
@@ -469,7 +487,8 @@ function cloneFiring(sc) {
     } catch (err) {
       notes.push(`## Last run not written: ${err.message}`)
     }
-    // R21: the row names the item by id and origin (null when nothing was picked).
+    // R21: the row names the item by id and origin (null when nothing was picked), as pick
+    // printed them (F1).
     const r = {
       ts: new Date().toISOString(), iteration: N, task: item ? item.title : null, item_id: item ? item.id : null,
       item_origin: item ? item.origin : null, outcome,
@@ -703,7 +722,10 @@ function cloneFiring(sc) {
   }
   const picked = findItem(readState(), pk.out.id, 'Now')
   if (!picked) incident(`pick: ${pk.out.id} is not in ## Now`)
-  item = { id: pk.out.id, title: pk.out.title, origin: picked.origin ?? null, digest: pk.out.digest }
+  // F1: the ledger row's task, item_id and item_origin come from pick's answer (loop section 8),
+  // never from a read of STATE.md.
+  if (!Object.hasOwn(pk.out, 'origin')) fail('pick', `pick printed no origin for ${pk.out.id}: ${JSON.stringify(pk.out).slice(0, 300)}`)
+  item = { id: pk.out.id, title: pk.out.title, origin: pk.out.origin, digest: pk.out.digest }
   at('picked', { item: picked.lines, pick: pk.out })
 
   // ---- section 5, L3 analysis-shaped (path 'analysis'): the read-only deep-reasoner, bracketed

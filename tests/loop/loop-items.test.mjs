@@ -246,6 +246,20 @@ test('pick moves the first eligible Backlog item to ## Now and lists the skipped
   assert.equal(run(fx, ['check', fx.P, '--item', `${C}@Now:${out.digest}`]).code, 0)
 })
 
+// Fix manifest F1: pick prints the picked item's origin as written (planPick's `origin`, passed
+// through), so the firing's ledger row copies `item_origin` from the helper, not from STATE.md by hand.
+test('pick prints the picked item\'s origin as written (F1)', t => {
+  for (const [origin, want] of [[`loop from ${E}`, `loop from ${E}`], ['human', 'human'], ['bootstrap', 'bootstrap']]) {
+    const fx = project(t, { text: state({ backlog: open('ready', { id: C, origin }) }), ledger: [LEDGER_DONE(E)] })
+    const { code, out } = run(fx, ['pick', fx.P])
+    assert.equal(code, 0, JSON.stringify(out))
+    assert.equal(out.state, 'picked', JSON.stringify(out))
+    assert.equal(out.id, C)
+    assert.ok(Object.hasOwn(out, 'origin'), `pick prints origin: ${JSON.stringify(out)}`)
+    assert.equal(out.origin, want)
+  }
+})
+
 test('pick reads LEDGER.jsonl: a blocker the ledger records done is finished', t => {
   const text = state({ backlog: open('waits on E', { id: A, blockedBy: E }) })
   const without = project(t, { text })

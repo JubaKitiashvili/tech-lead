@@ -4,8 +4,10 @@
 // section, eligibility aside) and writes item_id and itemDigest(item) into the header; no
 // carrier, or several, refuse bad-item with nothing written. On save, --item-digest is accepted
 // only with --item and must equal the computed digest. The header check reads item_id as an id
-// or null, and item_id and item_digest as both set or both null. Real repositories and processes
-// through the shared fixture (reflex-bundle-fixture.mjs, which imports tests/helpers.mjs).
+// or null, and refuses an item_id without an item_digest; an item_digest without an item_id is
+// the 0.5.0 digest-only binding, still read (fix manifest F10). A save's carrier is counted by
+// loop-state's idCarriers, raw carriers included (F11). Real repositories and processes through
+// the shared fixture (reflex-bundle-fixture.mjs, which imports tests/helpers.mjs).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -15,6 +17,7 @@ import {
 } from './reflex-bundle-fixture.mjs'
 import { readBundle, saveFor, verifyBundle } from '../../scripts/reflex-bundle.mjs'
 import { canonicalJson } from '../../scripts/lib/canonical.mjs'
+import { updateRecord } from '../../scripts/lib/run-record.mjs'
 import { baseRules } from '../../scripts/lib/changes.mjs'
 import { itemDigest, parseState } from '../../scripts/lib/loop-state.mjs'
 import { A, B, C, blockedItem, doneItem, open, state } from '../lib/loop-state-fixture.mjs'
@@ -188,7 +191,7 @@ test('saveFor takes itemId and itemDigest together or neither', T, async t => {
   assert.deepEqual([header(f, none.sha).item_id, header(f, none.sha).item_digest], [null, null])
 })
 
-test('the header check: item_id is an id or null, and item_id and item_digest are both set or both null', T, async t => {
+test('the header check: item_id is an id or null, and an item_id needs an item_digest', T, async t => {
   const f = await fixture(t, FILES)
   putState(f, STATE)
   write(f.W, 'a.txt', 'edited\n')
@@ -208,8 +211,7 @@ test('the header check: item_id is an id or null, and item_id and item_digest ar
     [{ item_id: 'Ship the queue' }, /item_id/],
     [{ item_id: A.toUpperCase() }, /item_id/],
     [{ item_id: 7 }, /item_id/],
-    [{ item_id: null }, /item_id and item_digest/],
-    [{ item_digest: null }, /item_id and item_digest/],
+    [{ item_digest: null }, /item_id is set and item_digest is null/],
   ]) {
     const sha = forge(change)
     assert.throws(() => readBundle(f.paths, sha), e => e.code === 'REFUSED' && e.state === 'tampered' && why.test(e.detail), JSON.stringify(change))
@@ -220,4 +222,56 @@ test('the header check: item_id is an id or null, and item_id and item_digest ar
   const both = forge({ item_id: null, item_digest: null })
   assert.equal(verifyBundle(f.paths, both, { env: f.env }).header.item_id, null)
   assert.equal(cli(f.env, 'verify', f.P, '--sha', both).status, 0)
+})
+
+// Fix manifest F10 (code-review #3): 0.5.0's `save --item-digest <hex>` wrote item_digest with
+// item_id null. Such a bundle, still anchored by a run record after the upgrade, reads, verifies
+// and resets as a digest-only binding instead of stopping recovery as tampered.
+test('a 0.5.0 digest-only header (item_digest set, item_id null) reads, verifies and resets (F10)', T, async t => {
+  const f = await fixture(t, FILES)
+  putState(f, STATE)
+  write(f.W, 'a.txt', 'edited\n')
+  const s = save(f, 'pause', ['--item', A])
+  const text = fs.readFileSync(patchFile(f, s.sha))
+  const nl = text.indexOf(0x0a)
+  const h = JSON.parse(text.subarray('TECH-LEAD-RECOVERY v1 '.length, nl).toString('utf8'))
+  const bytes = Buffer.concat([Buffer.from(`TECH-LEAD-RECOVERY v1 ${canonicalJson({ ...h, item_id: null })}`), text.subarray(nl)])
+  const sha = sha256(bytes)
+  fs.writeFileSync(patchFile(f, sha), bytes)
+  assert.deepEqual([readBundle(f.paths, sha).header.item_id, readBundle(f.paths, sha).header.item_digest], [null, h.item_digest])
+  assert.equal(verifyBundle(f.paths, sha, { env: f.env }).header.item_digest, h.item_digest)
+  const v = run(f.env, 0, 'verify', f.P, '--sha', sha)
+  assert.deepEqual([v.item_id, v.item_digest], [null, h.item_digest])
+  // The record anchors it, as a 0.5.0 firing's save did; the reset takes the clone back to the base.
+  updateRecord(f.paths, f.N, cur => ({ ...cur, saves: [{ sha, why: 'pause' }] }))
+  const r = run(f.env, 0, 'reset', f.P, '--generation', N_(f), '--sha', sha)
+  assert.equal(r.state, 'reset', JSON.stringify(r))
+  assert.equal(fs.readFileSync(path.join(f.W, 'a.txt'), 'utf8'), 'a\n')
+})
+
+// Fix manifest F11 (code-review #4): savedItem counts carriers through loop-state's idCarriers, so
+// a raw carrier (an unparsed block, a `- ID:` line) makes the id ambiguous for the save as it
+// does for `loop-items digest/check` and the release: bad-item, nothing written.
+test('save --item refuses bad-item when the id also has a raw carrier (F11)', T, async t => {
+  const f = await fixture(t, FILES)
+  write(f.W, 'a.txt', 'edited\n')
+  const expectBad = (text, why) => {
+    putState(f, text)
+    const before = store(f)
+    const r = run(f.env, 3, 'save', f.P, '--generation', N_(f), '--why', 'pause', '--item', A)
+    assert.equal(r.state, 'bad-item', `${why}: ${JSON.stringify(r)}`)
+    assert.equal(r.carriers, 2, `${why}: ${JSON.stringify(r)}`)
+    assert.deepEqual(store(f), before, `${why}: nothing written`)
+    assert.deepEqual(temps(f), [])
+  }
+  // An unparsed block in ## Blocked (its header lost the checkbox) still carries A.
+  expectBad(STATE.replace('## Blocked\n', `## Blocked\nFix the parser\n  - id: ${A}\n`), 'an unparsed block carries the id')
+  // A capitalized `- ID:` line under another item carries A too.
+  expectBad(state({
+    now: open('Ship the queue', { id: A }),
+    backlog: open('Write the docs', { id: B, extra: [`  - ID: ${A}`] }),
+  }), 'an ID: line under another item')
+  // The control: the same STATE without the raw carrier saves.
+  putState(f, STATE)
+  assert.equal(save(f, 'pause', ['--item', A]).state, 'saved')
 })

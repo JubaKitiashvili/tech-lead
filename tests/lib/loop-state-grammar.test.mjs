@@ -227,7 +227,7 @@ test('unparsed-line: any other column-0 line in an item section, with its indent
 
 test('crlf: a text holding a carriage return is refused and nothing else is parsed', () => {
   const text = state({ backlog: open('t', { id: A }) }).replace(/\n/g, '\r\n')
-  assert.deepEqual(parseState(text), { sections: {}, items: [], entries: [], problems: [{ kind: 'crlf' }] })
+  assert.deepEqual(parseState(text), { sections: {}, items: [], entries: [], problems: [{ kind: 'crlf' }], others: [] })
   assert.deepEqual(parseState('## Now\r(empty)\n').problems, [{ kind: 'crlf' }])
   assert.equal(nowItem(text), null)
 })

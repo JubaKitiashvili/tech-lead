@@ -898,7 +898,7 @@ test('fails when bootstrap.md writes a prerequisite whose title is a none spelli
 test('fails when SKILL.md section 1 step 5 drops a now-conflict reason loop-recover.mjs prints, or a field clear-now compares (R29a)', t => {
   const name = 'loop: SKILL.md section 1 step 5 names every now-conflict reason loop-recover.mjs prints and every field clear-now compares (R29a)'
   for (const [label, from, to, want] of [
-    ['reason dropped', '     `origin-differs`; or its', '     an origin line; or its', /never names the reason `origin-differs`/],
+    ['reason dropped', '     `origin-differs`; its', '     an origin line; its', /never names the reason `origin-differs`/],
     ['field dropped', '(same id, title, notes and decision, the same `blocked-by:`,\n     `decided:`', '(same id, title, notes and decision, the same\n     `decided:`', /the `clear-now` bullet never names `blocked-by:`/],
   ]) {
     const dir = copyRepo(t)
@@ -926,4 +926,55 @@ test('fails when README\'s skip table or SKILL.md section 3.1 drops a release re
   const block = failBlock(r.stdout, name) ?? ''
   assert.match(block, /section 3\.1 never names `ambiguous-carrier`/)
   assert.doesNotMatch(block, /README/)
+})
+
+test('fails when an item move writes its deletion from a later read of the source, or a failed deletion is no incident (Codex closing g3#1, F6)', t => {
+  const name = 'loop: SKILL.md\'s item move takes its deletion from the source block as read, before the insertion, and a failed deletion is the item-edit incident (F6)'
+  const TAKE = '  2. Take the deletion before the insertion. Copy the source block exactly\n     as you read it, from its header line through its last line, with the\n     lines after it up to and including the next non-blank line (the\n     anchor, such as the next section\'s heading). That text is the\n     deletion\'s `old`; its `new` is the anchor alone, with `(empty)` on the\n     line before it when the section holds nothing else. Never write the\n     deletion from a later read of the source.\n  3. One Edit inserts'
+  for (const [label, from, to, want] of [
+    // The prose before the fix: the deletion was written when it was made, from the file as it
+    // read then, so an amendment between the two edits was deleted unseen.
+    ['original', TAKE, '  2. One Edit inserts', /never takes the deletion from the source block exactly as read/],
+    ['after the insertion', 'Take the deletion before the insertion.', 'Take the deletion after the insertion.', /never takes the deletion before the insertion/],
+    ['no anchor', ' with the\n     lines after it up to and including the next non-blank line (the\n     anchor, such as the next section\'s heading)', '', /never anchors the deletion through the next non-blank line/],
+    ['re-read', 'with the `old` and\n     `new` of step 2', 'as the source reads then', /the deletion never uses the `old` and `new` of step 2/],
+    ['no incident', 'it is an item-edit incident (Incident): both copies\n     stay', 'read the source again and delete that: both copies\n     stay', /never calls a failed deletion an item-edit incident/],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, LOOP_SKILL, from, to)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`)
+    assert.match(failBlock(r.stdout, name) ?? '', want, label)
+  }
+})
+
+test('fails when section 8 copies item_origin from STATE.md instead of pick\'s answer, or section 3 drops pick\'s origin (Codex closing g1#1, Opus I2, F1)', t => {
+  const name = 'loop: section 8\'s ledger entry copies task, item_id and item_origin from pick\'s answer (F1)'
+  for (const [label, from, to, want] of [
+    // The prose before the fix: the model copied the origin from STATE.md by hand.
+    ['original', '`title`, `id` and `origin` that `pick` printed for the picked item (§3\n   step 2), copied from that answer and never from `STATE.md` by hand, or\n   null', 'picked item\'s title, id and `origin:` value, or null', /section 8 never copies `item_origin` from the `origin` `pick` printed/],
+    ['not kept', '     Keep its `origin` too (the item\'s `origin:` value as written, or null\n     without one): §8\'s ledger entry copies it from this answer.\n', '', /section 3 never keeps the `origin` `pick` printed for the ledger entry/],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, LOOP_SKILL, from, to)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`)
+    assert.match(failBlock(r.stdout, name) ?? '', want, label)
+  }
+})
+
+test('fails when README\'s invalid-id fix deletes a valid id, as the original row did (Codex closing g3#2, F7)', t => {
+  const name = 'loop: README\'s invalid-id fix never deletes a valid id (F7)'
+  const LIVE = 'Never delete a valid id: other items\' `blocked-by:` and `origin: loop from` lines and `## Needs decision` headings name it, and a fresh id would cut those links. When the two `id:` lines carry the same id, delete only one of them. When they carry two ids, or the value is a damaged id, keep or restore the id that other lines name (in `STATE.md` or `LEDGER.jsonl`). Delete the `id:` line, so the next firing gives the item a fresh id, only when no other line names its id'
+  for (const [label, to, want] of [
+    ['original', 'Delete the `id:` lines; the next firing gives the item a fresh id. Point any `blocked-by:` that named the old value at the new id', /tells the owner to delete both `id:` lines/],
+    ['both deleted', LIVE.replace('delete only one of them', 'delete both of them'), /never deletes only one of two identical `id:` lines/],
+    ['remint widened', LIVE.replace(', only when no other line names its id', ''), /never limits a fresh id to an id no other line names/],
+  ]) {
+    const dir = copyRepo(t)
+    mutate(dir, 'README.md', LIVE, to)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`)
+    assert.match(failBlock(r.stdout, name) ?? '', want, label)
+  }
 })

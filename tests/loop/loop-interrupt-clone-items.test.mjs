@@ -152,6 +152,8 @@ describe('interruption between the item edits of a firing', ROWS, () => {
     const f2 = await run(fx, work('two'))
     assert.deepEqual(f2.get('planned').plan.actions.slice(0, 1), ['finish-commit'])
     assert.equal(f2.get('picked').pick.id, fu[0].id, 'the follow-up sits at the top of ## Backlog')
+    // F1: pick prints the picked item's origin, and the ledger row copies it from that answer.
+    assert.deepEqual([f2.get('picked').pick.origin, ledger(fx).at(-1).item_origin], [`loop from ${A}`, `loop from ${A}`], f2.describe())
     assertRecovered(fx, { rows: [2], tip: committedSha(f2), sections: { Done: ['item A', 'follow A'], Backlog: ['item B', 'item C', 'item D'] } })
     assert.equal(parseState(stateText(fx)).items.filter(i => i.origin === `loop from ${A}`).length, 1)
     await run(fx, work('three'))
@@ -311,6 +313,35 @@ describe('interruption between the item edits of a firing', ROWS, () => {
     assert.deepEqual(f3.get('planned').plan.actions.slice(0, 1), ['requeue-now'])
     assert.equal(f3.get('picked').pick.id, A)
     assert.deepEqual(item(fx, A).map(i => [i.section, i.notes]), [['Done', 'also handle the empty case']])
+  })
+
+  test('the Now to Done move with the ## Now copy amended between its insertion and its deletion, in the same firing: the deletion fails, the item-edit incident keeps both copies (Codex closing g3#1, F6)', T, async t => {
+    // The deletion's old text is the source block as read before the insertion: an amendment
+    // made after that read is never deleted unseen while ## Done keeps the original, whose
+    // digest `check --item` would still accept, and which would release A's dependents.
+    const fx = project(t)
+    const f1 = start(fx, { gates: ['done-inserted'], attempts: [{ ops: EDIT }] })
+    await f1.event('done-inserted')
+    editState(fx, text => text.replace(`## Now\n${itemHead('item A').join('\n')}\n`, `## Now\n${itemHead('item A').join('\n')}\n  - notes: also handle the empty case\n`))
+    const before = stateText(fx)
+    go(fx, 'done-inserted')
+    const { exit } = await f1.ended()
+    assert.deepEqual(exit, { code: 0, signal: null }, f1.describe())
+    assert.ok(f1.get('incident'), `the deletion went through over the amendment: ${f1.describe()}`)
+    assert.equal(f1.get('done-moved'), undefined, 'no deletion after the amendment')
+    assert.deepEqual(item(fx, A).map(i => [i.section, i.notes]), [['Now', 'also handle the empty case'], ['Done', '']], 'both copies, the amendment kept')
+    const changed = stateText(fx).split('\n').filter(l => !before.split('\n').includes(l))
+    assert.ok(changed.every(l => l.startsWith('- generation 1: halted')), `only ## Last run changed: ${JSON.stringify(changed)}`)
+    const row = ledger(fx).at(-1)
+    assert.deepEqual([row.outcome, row.paused, row.item_id], ['halted', true, A])
+    assert.match(row.notes, /item edits: incident: edit: old occurs 0 times/)
+    // The owner unpauses without resolving the pair: the next firing's planner reports it as
+    // now-conflict and nothing is picked, so no dependent of A starts past the amendment.
+    unpause(fx)
+    const f2 = await run(fx, work('two'))
+    assert.equal(f2.get('incident')?.detail, `now-conflict: ${A}: digest-differs`, f2.describe())
+    assert.equal(f2.get('picked'), undefined, 'nothing picked while the copies differ')
+    assert.deepEqual(item(fx, A).map(i => [i.section, i.notes]), [['Now', 'also handle the empty case'], ['Done', '']])
   })
 
   test('the pick killed after its insertion, then a prerequisite added to the ## Now copy: now-conflict (blocked-by-differs), the prerequisite never discarded (Codex fix1-g2#1, R29a)', T, async t => {

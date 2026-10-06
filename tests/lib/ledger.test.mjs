@@ -120,7 +120,7 @@ test('ledgerItems collects ids from rows and recovered, done ids from done rows 
 test('ledgerItems: only an ID_RE item_id is done; the outcome and action must match exactly', t => {
   const S = tmp(t)
   writeLedger(S, [
-    row({ outcome: 'done', item_id: 'TL-0000000A' }), // an upper-case copy is not the shape
+    row({ outcome: 'done', item_id: 'TL-0000000A' }), // an upper-case copy is the same id, lowercased (F12)
     row({ outcome: 'done', item_id: 'my task' }), // a title is never a done id
     row({ outcome: 'done', item_id: 'tl-0000000i' }), // i is outside the alphabet
     row({ outcome: 'Done', item_id: B }),
@@ -133,9 +133,34 @@ test('ledgerItems: only an ID_RE item_id is done; the outcome and action must ma
     row({ outcome: 'done', item_id: H }),
   ])
   const r = ledgerItems(S)
-  assert.deepEqual(sorted(r.doneIds), [F, H])
-  // The id set takes every non-empty string item_id (the known set for minting), whatever its shape.
-  assert.deepEqual(sorted(r.ids), sorted(['TL-0000000A', 'my task', 'tl-0000000i', B, C, 'tl-0000000u', D, E, F, H]))
+  assert.deepEqual(sorted(r.doneIds), [A, F, H])
+  // The id set takes every non-empty string item_id (the known set for minting), whatever its shape, lowercased.
+  assert.deepEqual(sorted(r.ids), sorted([A, 'my task', 'tl-0000000i', B, C, 'tl-0000000u', D, E, F, H]))
+})
+
+// Fix manifest F12 (code-review #5): an upper-case item_id is the same id in lower case, in ids,
+// doneIds and origins alike, so a done row written with `TL-…` still satisfies a blocker after
+// ## Done is trimmed.
+test('ledgerItems lowercases item_id before testing and storing it (F12)', async t => {
+  const { blockerStatus, parseState } = await import('../../scripts/lib/loop-state.mjs')
+  const S = tmp(t)
+  writeLedger(S, [
+    row({ outcome: 'done', item_id: A.toUpperCase(), item_origin: 'human' }),
+    row({ outcome: 'skipped', recovered: { action: 'finish-commit', item_id: B.toUpperCase(), item_origin: `loop from ${A}` } }),
+    row({ outcome: 'failed', item_id: null, done_items: [{ item_id: 'Tl-0000000C', item_origin: 'unknown' }] }),
+    row({ outcome: 'failed', item_id: 'My Task', item_origin: 'human' }),
+  ])
+  const r = ledgerItems(S)
+  assert.deepEqual(sorted(r.doneIds), [A, B, C])
+  assert.deepEqual(sorted(r.ids), sorted([A, B, C, 'my task']))
+  assert.deepEqual([...r.origins].sort(), [['my task', 'human'], [A, 'human'], [B, `loop from ${A}`], [C, 'unknown']])
+  // Dependent waits on A; A's Done block was trimmed, so the ledger's record is all there is.
+  const state = parseState([
+    '## Now', '(empty)', '', '## Backlog',
+    '- [ ] Dependent · class: mechanical', `  - id: ${D}`, '  - origin: human', `  - blocked-by: ${A}`,
+    '', '## Blocked', '(empty)', '', '## Needs decision', '(empty)', '', '## Done', '(empty)', '', '## Last run', '(empty)', '',
+  ].join('\n'))
+  assert.equal(blockerStatus(state, A, r), 'finished')
 })
 
 test('ledgerItems keeps the latest origin per id in file order, recovered before the row, and skips empty or non-string ones', t => {

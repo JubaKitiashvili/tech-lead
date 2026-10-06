@@ -7,13 +7,16 @@
 //
 // A prose move (stage 0c-3 brief R14) is two edits, the insertion first: insertTop puts the
 // whole block (every field line kept, only the header rewritten for the destination) at the top
-// of the destination section, then removeItem deletes the source block, leaving `(empty)` when
-// the section holds nothing else. An interruption between the two leaves two copies, never
-// none, and the recovery planner's clear-now resolves the pair that involves ## Now when the two
-// copies are identical (its own anchored deletion of the ## Now block, R29): the same itemDigest,
-// blocked-by:, decided:, no-change-ok: and origin lines, whatever the status:, class:, recovery:
-// line and header form the move rewrote (R29a); copies that differ are now-conflict, the
-// item-edit incident.
+// of the destination section, then the source block is deleted, leaving `(empty)` when the
+// section holds nothing else. The driver's deletion is deleteAsRead, taken before the insertion
+// (the 0c-3 closing fix F6): the source block exactly as read, anchored through the next
+// non-blank line after it, so an amendment made between the two edits makes the deletion fail
+// (the item-edit incident) instead of being deleted unseen. An interruption between the two
+// leaves two copies, never none, and the recovery planner's clear-now resolves the pair that
+// involves ## Now when the two copies are identical (its own anchored deletion of the ## Now
+// block, R29): the same itemDigest and the same lines under the header, apart from the header
+// form and the field lines a move rewrites (R29a; the closing fix F5 narrows what may differ);
+// copies that differ are now-conflict, the item-edit incident.
 //
 // Exports:
 //   PLACEHOLDER, DOT, DASH                the `(empty)` line, the header separator's middle dot,
@@ -27,6 +30,11 @@
 //                                         `section`, in place of its `(empty)` line
 //   removeItem(text, item)                the edit deleting `item`'s block (an Item parsed from
 //                                         this text), `(empty)` left when nothing else remains
+//   deleteAsRead(text, item)              the same deletion as the prose takes it before the
+//                                         insertion: `item`'s block as read, anchored through
+//                                         the next non-blank line (loop-state.mjs's
+//                                         planDeleteBlock); it no longer applies once the block
+//                                         or the line after it changed
 //   replaceItem(text, item, block)        the edit replacing `item`'s block in place
 //   setSection(text, name, body)          the edit replacing section `name`'s body with `body`
 //   upsertEntry(text, id, entry)          the edit replacing the ## Needs decision entry whose
@@ -38,7 +46,7 @@
 //   doneBlock(item, sha, date)            the block in ## Done form, `sha` null for the dash
 //   blockedBlock(item, {attempts, reason, recovery})
 //                                         the block in ## Blocked form with its recovery: field
-import { parseState } from '../../scripts/lib/loop-state.mjs'
+import { parseState, planDeleteBlock } from '../../scripts/lib/loop-state.mjs'
 
 export const PLACEHOLDER = '(empty)'
 export const DOT = String.fromCharCode(0xb7)
@@ -86,6 +94,14 @@ export function removeItem(text, item) {
   // Anything else the section holds (another item, an unparsed line) keeps it from `(empty)`.
   const rest = [...lines.slice(sec.start, item.start), ...lines.slice(item.end, sec.end)].filter(l => l.trim() && l.trim() !== PLACEHOLDER)
   return edit(lines, sec.at, item.end, [...lines.slice(sec.at, item.start), ...(rest.length ? [] : [PLACEHOLDER])])
+}
+
+// A prose move's deletion, taken from the text as read before its insertion (F6, Codex closing
+// g3#1): the planner's own anchored deletion (R31), one edit.
+export function deleteAsRead(text, item) {
+  const { edits } = planDeleteBlock(text, item.section, item.start, item.end)
+  if (edits.length !== 1) throw new Error(`edit: the deletion of ${item.id ?? item.title} is ${edits.length} edits`)
+  return edits[0]
 }
 
 export function replaceItem(text, item, block) {
