@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 // scripts/loop-recover.mjs
-// The single recovery planner (stage 0c-2 brief section 14). Run at loop section 1 step 5,
-// after acquire and before any write-capable dispatch, it reports what interrupted firings
-// left behind and which governance-side recovery actions the main session takes, in a fixed
-// order. It carries out none of them, writes nothing and runs nothing from the trees it
-// reads: git runs in the clone <W> through workGit (GIT_OPTIONAL_LOCKS=0, so not even the
-// index's stat cache is refreshed), and the legacy 0c-1 worktree <S>/worktree is only read,
-// through safeGit with --no-optional-locks. Both `status` reads empty every configured filter
-// driver and read attributes from the checked-out commit (as changes.mjs collect does), and
-// pass --ignore-submodules=dirty, so git never runs inside a nested repository (R26: a
-// gitlink moved to another commit is still seen). Every <W> mutation of recovery happens
-// later, inside loop-clone.mjs prepare (rulings R10, R13).
+// The single recovery planner (stage 0c-2 brief section 14; stage 0c-3 R19-R21 bind the ## Now
+// item by id and digest and add clear-now; the fix pass's R29 limits clear-now to identical copies
+// of one item and adds now-conflict; fix round 2's R29a widens identical past the digest). Run at
+// loop section 1 step 5, after acquire and before any write-capable dispatch, it reports what
+// interrupted firings left behind and which governance-side recovery actions the main session
+// takes, in a fixed order. It carries out none
+// of them, writes nothing and runs nothing from the trees it reads: git runs in the clone <W>
+// through workGit (GIT_OPTIONAL_LOCKS=0, so not even the index's stat cache is refreshed), and the
+// legacy 0c-1 worktree <S>/worktree is only read, through safeGit with --no-optional-locks. Both
+// `status` reads empty every configured filter driver and read attributes from the checked-out
+// commit (as changes.mjs collect does), and pass --ignore-submodules=dirty, so git never runs
+// inside a nested repository (R26: a gitlink moved to another commit is still seen). Every <W>
+// mutation of recovery happens later, inside loop-clone.mjs prepare (rulings R10, R13).
 //
-// Inputs: <S>/STATE.md (nowLine and its SHA-256, the ## Done lines), <S>/LEDGER.jsonl
-// (ledgerShas), every run record <V>/run/<g>.json (run-record.mjs), the recovery bundles
-// they anchor (<V>/patches/<sha>.patch, hashed in place), the clone's facts (checkClone,
+// Inputs: <S>/STATE.md (nowLine and its SHA-256; the items through loop-state.mjs parseState, the
+// one item grammar: the ## Now item, the carriers of its id through idCarriers, raw ones included,
+// the ## Done sha slots; the clear-now deletion is planned there too, planDeleteBlock),
+// <S>/LEDGER.jsonl (ledgerShas), every run record <V>/run/<g>.json (run-record.mjs), the recovery
+// bundles they anchor (<V>/patches/<sha>.patch, hashed in place), the clone's facts (checkClone,
 // HEAD, `status`, git lock files) and the delivery bundles (delivery.bundleCurrent).
 //
 // Only the record that owns the clone (run-record ownerRecord: the newest unresolved record
@@ -23,12 +27,34 @@
 // consulting it (ruling R4).
 //
 // Actions, in this order:
-//   finish-commit     the owner record reads `committed`, ## Now holds an item
-//                     whose SHA-256 is the record's now_sha256, and neither a ## Done line
-//                     (the full sha or a 7+ hex prefix) nor a ledger row names the commit.
-//                     The main session moves the Now item to ## Done with the sha in one Edit
-//                     (no title search).
-//   requeue-now       ## Now holds an item and finish-commit does not apply.
+//   clear-now         ## Now holds exactly one block, the item, and its id is also carried by
+//                     exactly one item in another section, the same item: the same itemDigest
+//                     and the same blocked-by:, decided: and no-change-ok: lines and origin-like
+//                     lines (as written), whatever its status:, class:, recovery: line and
+//                     header form (a move rewrites those) (R29a); and by no raw carrier (an id
+//                     line that does not parse to it): a move (pick, finish, requeue, block) was
+//                     interrupted between its insertion and its deletion (R14), and the other
+//                     copy is the item (R29). The main session applies `clear.edits`, the
+//                     anchored deletion of that one block (## Now is left (empty)), and checks
+//                     `clear.expect_sha256`. Neither finish-commit nor requeue-now is then due.
+//   now-conflict      the ## Now item's id is carried elsewhere but clear-now does not hold: the
+//                     copies differ (a person amended one: its title, notes or decision, or a
+//                     field of the R29a identity), ## Now holds another block too, the id has
+//                     several other carriers, or a raw one (R29). The main session treats it as
+//                     the item-edit incident (pause, both copies kept); `conflict` names why.
+//                     Neither finish-commit nor requeue-now is then due.
+//   finish-commit     the owner record reads `committed`, ## Now holds an item whose line's
+//                     SHA-256 is the record's now_sha256, and, for a v:2 record, whose id and
+//                     itemDigest are the record's item_id and item_digest (a v:2 record that
+//                     bound no item never finishes; a v:1 record, written by 0.5.0, binds the
+//                     line alone, R20); and no ## Done header names the commit in its sha slot
+//                     (the full sha or a 7+ hex prefix; the header is split from the right)
+//                     and no ledger row names it. The main session moves the Now item to
+//                     ## Done with the sha in one Edit (no title search). A STATE.md holding a
+//                     carriage return (crlf) is never read for items: no clear-now and no
+//                     finish-commit.
+//   requeue-now       ## Now holds an item and none of clear-now, now-conflict and finish-commit
+//                     applies.
 //   ledger-recovered  some record still on disk holds a commit, save or recovery-bundle sha
 //                     that no ledger row names; this firing's single row gets `recovered`.
 //   write-bundle      a branch with a committed record has a missing or stale delivery bundle
@@ -44,7 +70,19 @@
 //     clone: {exists, valid, problems, head, branch, dirty: {staged, tracked, untracked, more},
 //             locks},
 //     records: [{generation, phase, verdict, sha, ledgered}],
-//     finish: null | {generation, sha}, recovered: null | {generations, commits, bundles, task},
+//     clear: null | {id, section, edits, expect_sha256} (section: the other copy's; edits and
+//       expect_sha256: the anchored deletion of the ## Now block, as loop-items prints edits),
+//     conflict: null | {id, reasons, now: {line, digest}, now_items, carriers: [{section, line,
+//       digest, raw}]} (reasons: several-now-items, several-carriers, raw-carrier,
+//       digest-differs, blocked-by-differs, origin-differs, decided-differs,
+//       no-change-ok-differs, each `-differs` naming what the one other copy differs in;
+//       now_items the number of blocks in ## Now; a raw carrier's line is its id line and its
+//       digest null),
+//     finish: null | {generation, sha, item_id, item_digest} (the ## Now item's id and
+//       itemDigest; both null when it has no valid id, as after a v:1 record),
+//     recovered: null | {generations, commits, bundles, task, item_id, item_origin} (task the
+//       ## Now line; item_id and item_origin the ## Now item's id (null without a valid one)
+//       and its first origin: value as written, null when there is none),
 //     write_bundles: [branch], legacy: {worktree: {exists, staged, tracked, untracked, more,
 //     problem}}, actions, notes}
 //   exit 2 prints {state:'error', detail} (an incident: paused, outcome skipped, stop the
@@ -61,11 +99,11 @@ import { fileURLToPath } from 'node:url'
 import { loopPaths } from './lib/loop-paths.mjs'
 import { safeGit, workGitRun } from './lib/git-safe.mjs'
 import { sha256Hex } from './lib/canonical.mjs'
-import { PLACEHOLDER as STATE_PLACEHOLDER, nowLine } from './lib/loop-state.mjs'
+import { PLACEHOLDER as STATE_PLACEHOLDER, fold, idCarriers, itemDigest, nowLine, parseState, planDeleteBlock } from './lib/loop-state.mjs'
 import { ledgerShas } from './lib/ledger.mjs'
 import { checkClone } from './lib/clone-check.mjs'
 import {
-  cloneVerdict, committedSha, isResolved, listRecords, maxRecordGeneration, ownerRecord, recordFile, vettedTip,
+  cloneVerdict, committedSha, isResolved, listRecords, maxRecordGeneration, ownerRecord, recordFile, recordItem, vettedTip,
 } from './lib/run-record.mjs'
 import { BASE_REF, bundleCurrent } from './lib/delivery.mjs'
 import { worktreeChanged } from './lib/changes.mjs'
@@ -74,15 +112,14 @@ import { worktreeChanged } from './lib/changes.mjs'
 // scripts/checks/loop.mjs reads the placeholder from loop-state.mjs.
 export { nowLine, STATE_PLACEHOLDER as PLACEHOLDER }
 
-export const ACTIONS = ['finish-commit', 'requeue-now', 'ledger-recovered', 'write-bundle', 'note-leftovers']
+export const ACTIONS = ['clear-now', 'now-conflict', 'finish-commit', 'requeue-now', 'ledger-recovered', 'write-bundle', 'note-leftovers']
 
 const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
 const CAP = 50
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const SHA256 = /^[0-9a-f]{64}$/
-// A hex run of 7 to 64 digits standing alone (not inside a word): a full or abbreviated sha.
-const HEX_RUN = /(?<![0-9A-Za-z])[0-9A-Fa-f]{7,64}(?![0-9A-Za-z])/g
-const SECTION_END = /^#{1,2}(?:[ \t]|$)/
+// A ## Done sha slot that names a commit: a full or abbreviated sha of 7 to 64 hex digits.
+const SHA_SLOT = /^[0-9a-f]{7,64}$/
 const LEFTOVER_VERDICTS = new Set(['leftovers', 'delegate-commit', 'rewind', 'resume', 'resume-reset'])
 const REWINDING = new Set(['delegate-commit', 'rewind'])
 const GIT_LOCKS = ['HEAD.lock', 'config.lock', 'index.lock', 'packed-refs.lock']
@@ -155,28 +192,89 @@ function gitError(r, label) {
 
 // ---------------------------------------------------------------- STATE.md
 
-// The lines of the `## <name>` section, up to the next level-1 or level-2 heading.
-function sectionLines(text, name) {
-  const lines = String(text).split(/\r?\n/)
-  const at = lines.findIndex(l => l.replace(/[ \t]+$/, '') === `## ${name}`)
-  if (at < 0) return []
-  const out = []
-  for (const l of lines.slice(at + 1)) {
-    if (SECTION_END.test(l)) break
-    out.push(l)
-  }
-  return out
-}
-
-// Does a ## Done line name sha, in full or by a prefix of 7 or more hex digits?
-function doneNames(text, sha) {
-  for (const line of sectionLines(text, 'Done')) {
-    for (const m of line.matchAll(HEX_RUN)) {
-      const hex = m[0].toLowerCase()
-      if (hex.length <= sha.length && sha.startsWith(hex)) return true
-    }
+// Does a ## Done item name sha in its header's sha slot (R20: the header is split from the
+// right, date, then sha, so a title never counts), in full or by a prefix of 7 or more hex
+// digits, any case? state is parseState's result; a dash slot names nothing, and a Done line
+// that does not parse as a header is no item.
+function doneNames(state, sha) {
+  for (const item of state.items) {
+    if (item.section !== 'Done' || item.sha === null) continue
+    const hex = item.sha.toLowerCase()
+    if (SHA_SLOT.test(hex) && sha.startsWith(hex)) return true
   }
   return false
+}
+
+// An origin-like line (fix manifest R28): `origin` in any case, after any indent and an optional
+// list marker, then a colon, read through fold. The same test as loop-state.mjs's (not exported).
+const ORIGIN_LIKE = /^\s*(?:[-*+]\s*)?origin\s*:/i
+
+// What decides an item's behaviour beyond its itemDigest (fix round 2, R29a), as
+// [[reason, value]]: the values of its blocked-by:, decided: and no-change-ok: lines and every
+// origin-like line of its block as written (a malformed `Origin:` included). Two copies of one
+// item moved halfway agree on each; what a move itself rewrites (status:, class:, a recovery:
+// line, the header form) is left out.
+function identity(item) {
+  const values = label => item.fields.filter(f => f.label === label).map(f => f.value)
+  return [
+    ['blocked-by-differs', values('blocked-by')],
+    ['origin-differs', item.lines.filter(l => ORIGIN_LIKE.test(fold(l)))],
+    ['decided-differs', values('decided')],
+    ['no-change-ok-differs', values('no-change-ok')],
+  ]
+}
+
+// The reasons two copies of one id are not one item moved halfway: digest-differs (title,
+// notes or decision), then each identity field on which they differ.
+function differences(a, b) {
+  const ib = new Map(identity(b))
+  return [
+    ...(itemDigest(a) === itemDigest(b) ? [] : ['digest-differs']),
+    ...identity(a).filter(([why, v]) => JSON.stringify(v) !== JSON.stringify(ib.get(why))).map(([why]) => why),
+  ]
+}
+
+// clear-now and now-conflict (R20, R29, R29a): {clear, conflict}, at most one of them set, both
+// null when the ## Now item has no valid id or no other block carries it. Every carrier counts:
+// the parsed items with the id (a second one in ## Now included) and the raw id lines
+// idCarriers reports. clear-now needs ## Now to hold this one block and exactly one other
+// carrier, parsed, that is the same item: the same itemDigest and the same identity (blocked-by:,
+// origin-like lines, decided:, no-change-ok:); anything else is a conflict, with its reasons.
+function interruptedMove(text, state, item) {
+  if (item === null || item.id === null) return { clear: null, conflict: null }
+  const { parsed, raw } = idCarriers(state, item.id)
+  const carriers = [
+    ...parsed.filter(i => i !== item).map(i => ({ section: i.section, line: i.line, digest: itemDigest(i), raw: false, item: i })),
+    ...raw.map(r => ({ section: r.section, line: r.line, digest: null, raw: true, item: null })),
+  ].sort((a, b) => a.line - b.line)
+  if (!carriers.length) return { clear: null, conflict: null }
+  const nowItems = state.items.filter(i => i.section === 'Now').length
+    + state.problems.filter(p => p.kind === 'unparsed-line' && p.section === 'Now').length
+  const digest = itemDigest(item)
+  const reasons = []
+  if (nowItems > 1) reasons.push('several-now-items')
+  if (carriers.length > 1) reasons.push('several-carriers')
+  if (raw.length) reasons.push('raw-carrier')
+  if (carriers.length === 1 && !raw.length) reasons.push(...differences(item, carriers[0].item))
+  if (!reasons.length) return { clear: { id: item.id, section: carriers[0].section, ...planDeleteBlock(text, 'Now', item.start, item.end) }, conflict: null }
+  return {
+    clear: null,
+    conflict: {
+      id: item.id, reasons, now: { line: item.line, digest }, now_items: nowItems,
+      carriers: carriers.map(({ section, line, digest: d, raw: r }) => ({ section, line, digest: d, raw: r })),
+    },
+  }
+}
+
+const CONFLICT_WHY = {
+  'several-now-items': '## Now holds another block too, which clearing would lose',
+  'several-carriers': 'several other blocks carry the id',
+  'raw-carrier': 'a block holds the id on a line that does not parse to it',
+  'digest-differs': 'the copies differ (title, notes or decision): one was edited after the interruption',
+  'blocked-by-differs': 'the copies\' blocked-by: lines differ: one was edited after the interruption',
+  'origin-differs': 'the copies\' origin lines differ: one was edited after the interruption',
+  'decided-differs': 'the copies\' decided: lines differ: one was edited after the interruption',
+  'no-change-ok-differs': 'the copies\' no-change-ok: lines differ: one was edited after the interruption',
 }
 
 // ---------------------------------------------------------------- run records and bundles
@@ -445,6 +543,24 @@ export function recoverPlan(P, { generation, reclaimed = null, env = process.env
   const now = nowLine(text)
   const nowSha = now === null ? null : sha256Hex(now)
   const notes = []
+  // The items, through the one grammar (R4). A carriage return makes parseState refuse the
+  // file (crlf): then no item is read, so nothing is cleared or finished.
+  const state = parseState(text)
+  const crlf = state.problems.some(p => p.kind === 'crlf')
+  if (crlf) notes.push('STATE.md holds a carriage return (crlf): its items are not read, so nothing is cleared or finished; convert the file to LF line endings')
+  // The ## Now item is the block whose header is the Now line: an unparsed line above an item
+  // leaves no item to bind, clear or name (the Now line is requeued as it is).
+  const first = state.items.find(i => i.section === 'Now') ?? null
+  const item = first !== null && first.header.trim() === now ? first : null
+  const { clear, conflict } = interruptedMove(text, state, item)
+  if (clear) {
+    notes.push(`the ## Now item ${clear.id} is also in ## ${clear.section}: a move was interrupted after its insertion; apply the clear edits, which delete the ## Now copy alone (the ## ${clear.section} copy is the item)`)
+  }
+  if (conflict) {
+    const where = conflict.carriers.map(c => `## ${c.section} line ${c.line}`).join(', ')
+    notes.push(`now-conflict: the ## Now item ${conflict.id} (line ${conflict.now.line}) is also carried at ${where}, but ${conflict.reasons.map(r => CONFLICT_WHY[r]).join('; ')}: `
+      + 'nothing is cleared; pause and keep both copies until a person resolves them')
+  }
 
   // Governance-side integrity first: no record of this or a later generation, every record
   // readable, every anchored recovery bundle intact.
@@ -501,7 +617,10 @@ export function recoverPlan(P, { generation, reclaimed = null, env = process.env
     rows.push({ generation: rec.generation, phase: rec.phase, verdict, sha, ledgered: !lostCommit && lostSaves.length === 0 })
   }
   const recovered = gensUnledgered.length
-    ? { generations: gensUnledgered, commits: unique(commits), bundles: unique(bundles), task: now }
+    ? {
+      generations: gensUnledgered, commits: unique(commits), bundles: unique(bundles), task: now,
+      item_id: item?.id ?? null, item_origin: item?.origin ?? null,
+    }
     : null
 
   if (v.verdict === 'no-clone' && unresolved.length) {
@@ -510,18 +629,29 @@ export function recoverPlan(P, { generation, reclaimed = null, env = process.env
   const vnote = verdictNote(v, owner, clone)
   if (vnote) notes.push(vnote)
 
-  // finish-commit binds the Now item to the commit by the recorded hash alone.
+  // finish-commit binds the Now item to the commit by the recorded Now line hash and, for a v:2
+  // record, by the recorded item id and digest too (R20).
   let finish = null
   if (v.verdict === 'committed') {
     const c = v.sha
     const where = `generation ${owner.generation} committed ${short(c)} on ${owner.branch ?? clone.branch}`
+    const bound = recordItem(owner)
+    const stays = 'requeue the item; the commit stays on the branch'
     let why = null
     if (now === null) why = '## Now is empty, so no item moves'
-    else if (owner.now_sha256 !== nowSha) why = 'the ## Now line is not the one it recorded: requeue the item; the commit stays on the branch'
-    else if (doneNames(text, c)) why = '## Done already names it: requeue the item'
+    else if (clear !== null) why = `## Now holds a copy of ${clear.id} left by an interrupted move: clear ## Now; the commit stays on the branch`
+    else if (conflict !== null) why = `## Now holds ${conflict.id}, which conflicts with another copy: nothing moves until a person resolves it; the commit stays on the branch`
+    else if (crlf) why = `STATE.md holds a carriage return, so the ## Now item cannot be read: ${stays}`
+    else if (owner.now_sha256 !== nowSha) why = `the ## Now line is not the one it recorded: ${stays}`
+    else if (owner.v !== 1 && bound.item_id === null) why = `it recorded no item, so the commit cannot be bound to the ## Now item: ${stays}`
+    else if (owner.v !== 1 && (item === null || item.id !== bound.item_id)) why = `the ## Now item is not ${bound.item_id}, the item it recorded: ${stays}`
+    else if (owner.v !== 1 && itemDigest(item) !== bound.item_digest) {
+      why = `the ## Now item ${bound.item_id} changed since it was recorded (its title, notes or decision): ${stays}`
+    } else if (doneNames(state, c)) why = '## Done already names it: requeue the item'
     else if (ledger.commits.has(c) || ledger.tips.has(c)) why = 'a ledger row already names it: requeue the item'
     if (why === null) {
-      finish = { generation: owner.generation, sha: c }
+      const id = item?.id ?? null
+      finish = { generation: owner.generation, sha: c, item_id: id, item_digest: id === null ? null : itemDigest(item) }
       notes.push(`${where} before its bookkeeping: move the ## Now item to ## Done with ${c}`)
     } else notes.push(`${where}, but ${why}`)
   }
@@ -582,14 +712,16 @@ export function recoverPlan(P, { generation, reclaimed = null, env = process.env
 
   const leftovers = LEFTOVER_VERDICTS.has(v.verdict) || (v.verdict === 'committed' && v.dirty)
   const due = {
+    'clear-now': clear !== null,
+    'now-conflict': conflict !== null,
     'finish-commit': finish !== null,
-    'requeue-now': now !== null && finish === null,
+    'requeue-now': now !== null && finish === null && clear === null && conflict === null,
     'ledger-recovered': recovered !== null,
     'write-bundle': writeBundles.length > 0,
     'note-leftovers': leftovers,
   }
   return {
-    generation, reclaimed, now, now_sha256: nowSha, clone, records: rows, finish, recovered,
+    generation, reclaimed, now, now_sha256: nowSha, clone, records: rows, clear, conflict, finish, recovered,
     write_bundles: writeBundles, legacy: { worktree: legacy }, actions: ACTIONS.filter(a => due[a]), notes,
   }
 }

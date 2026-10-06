@@ -19,17 +19,42 @@
 //   not the exec child, which leads a group of its own.
 //
 // 2. The 0c-2 firing with the clone (tests/loop/loop-interrupt-clone-*.test.mjs; brief
-//    section 19):
+//    section 19), with stage 0c-3's items (brief R13, R14, R17, R18, R20, R21):
 //   node firing-driver.mjs firing <scenario.json>
-//   It plays the prose in the section 19 order, deterministically:
+//   It plays the prose in the section 19 order, deterministically. STATE.md is changed only as
+//   the main session changes it (tests/fixtures/firing-moves.mjs): one Edit at a time, items
+//   found by id; a plan of loop-items.mjs (normalize, pick, followup) applied edit by edit and
+//   confirmed with `loop-items check --expect`; every move of an item inserts its whole block
+//   at the destination first, deletes the source second, and is confirmed with `loop-items
+//   check --item <id>@<section>:<digest>` (the digest pick printed for this firing's item,
+//   finish.item_digest for finish-commit, `loop-items digest` read before the move for any
+//   other item: loop "Item edits", step 1). An edit that does not apply, or a check that does
+//   not match, is R14's incident: {"event":"incident"}, ## Last run, `paused: true`, outcome
+//   halted, ## Now left as it stands.
 //     section 1   acquire; loop-recover.mjs <P> --generation <N> [--reclaimed <g>] and its
-//                 actions (finish-commit or requeue-now as one STATE.md edit, loop-clone.mjs
-//                 bundle per write-bundle, `recovered` carried to the ledger row with
-//                 `action` the ## Now action taken); planner exit 2 puts a ## Now item back at
+//                 actions (clear-now: the planner's clear.edits, the anchored deletion of the
+//                 one ## Now block, applied and checked with check --expect, noted "cleared
+//                 interrupted move of <id>", the other copy's digest read and checked;
+//                 now-conflict: the item-edit incident, every copy kept (R29);
+//                 finish-commit: ## Now to ## Done with finish.sha; requeue-now: ## Now back to
+//                 the top of ## Backlog; loop-clone.mjs bundle per write-bundle; `recovered`
+//                 carried to the ledger row with `action` the ## Now action taken:
+//                 finish-commit, requeue-now or null, null after clear-now too, as loop section
+//                 1 step 5 and loop-templates.md's schema say); planner exit 2 puts a ## Now item back at
 //                 the top of ## Backlog and halts the firing (incident, paused, outcome skipped)
 //     section 2   gate 1 only: LOOP.md's `paused: true` -> {"event":"gated","gate":"paused"},
 //                 outcome halted, note "paused", nothing picked, prepared or dispatched
-//     sections 3-4  pick: the first ## Backlog item whose status is `—` moves to ## Now
+//     sections 3-4  loop-items normalize, then loop-items pick (its releases included), each
+//                 applied and checked; normalize's minted ids and problems, pick's released ids
+//                 and skipped items go to ## Last run ("minted <ids>", "problem <kind> line <n>:
+//                 <detail>", "released <id>", "skipped <id> <title>: <reason> (<detail>)"); dry
+//                 -> "backlog dry", outcome skipped; an exit 2 or 3 from normalize, pick or a
+//                 move's digest read is the item-edit incident (loop "Item edits"); pick's
+//                 `unledgered` (a refusal's too) becomes the row's done_items (R27)
+//     section 5   path 'analysis' (L3 analysis-shaped): the read-only delegate between dispatch
+//                 open and close, no clone; with scenario.followup the follow-up (below), else
+//                 note "analysis -> no follow-up"; the item to ## Done with the dash; outcome
+//                 done, commits []
 //     section 5   loop-clone.mjs prepare; deps; the install through loop-lock exec --label
 //                 deps --cwd <W> --timeout-ms 540000 when not fresh (judged by the exec
 //                 line's state); check --after deps; deps --mark when the install ran;
@@ -43,7 +68,9 @@
 //                 "exit"} after each), then check --after verify after the last command or the
 //                 first that failed; a changed digest restarts from K = 0 once (R22), before
 //                 any failure counts, and the scope rail applies to the check after it; commit
-//                 --digest; the item to ## Done with the sha
+//                 --digest; with scenario.followup, the analysis follow-up (its JSON written
+//                 to <S>/briefs/<id>-followup.json, loop-items followup, applied and checked,
+//                 note "analysis -> <id>") before the item goes to ## Done with the sha
 //     section 7   an attempt failure (a verify failure, the scope rail, verify changing the
 //                 work twice, or commit refused out-of-scope or commit-failed): the first
 //                 keeps the attempt (a second dispatch), the second does Save and reset
@@ -52,25 +79,45 @@
 //                 exit 2 from dispatch open or close is the lock-error pause, with nothing
 //                 more dispatched, checked, verified or committed; every other refusal is a
 //                 touch-nothing pause (the item back to ## Backlog, its status unchanged)
-//     section 8   ## Last run, ## Now (empty), one ledger row, loop-clone.mjs close, release
+//     section 8   ## Last run, ## Now (empty), one ledger row (done_items included),
+//                 loop-clone.mjs close, release
+//   The ## Done trim, after the move to ## Done of section 6 step 4 and of the analysis branch
+//   (as in the prose, not after section 1's finish-commit move; a later trim reaches that item):
+//   `loop-items trim` (the 20 newest kept; below them only items the ledger records done
+//   deleted, whole blocks; nothing pick's unledgered listed is ever dropped, nor a block whose
+//   origin-like lines are not exactly one well-formed origin: field, R27a), its edits applied
+//   edit by edit and checked with check --expect; an exit 2 or 3 from either is the item-edit
+//   incident. The trimmed event carries trim's answer ({"event":"trimmed","dropped","out"}).
+//   The follow-up (R17): its JSON written to <S>/briefs/<id>-followup.json, loop-items
+//   followup, its edits applied and checked; both ok answers (reused false with one insertion,
+//   reused true with none) are a success, note "analysis -> <id>"; a refusal is the incident.
 //   Every pause (a touch-nothing pause, a planner exit 2, Save and reset (pause), a failed save
 //   or reset) sets `paused: true` in LOOP.md's front matter before section 8, and its ledger row
 //   carries paused: true; only the owner sets the flag back.
-//   Save and reset: reflex-bundle.mjs save, one STATE.md edit with the sha (`none` and the
-//   empty answer's base and scope on an empty save, which skips the reset), reflex-bundle.mjs
-//   reset (unsaved: once more from the save; busy: pause without a reset).
+//   Save and reset: reflex-bundle.mjs save --item <id> (R18), the STATE.md move with the sha
+//   (`none` and the empty answer's base, scope and item digest on an empty save, which skips
+//   the reset; a re-save rewrites the placed block in place), reflex-bundle.mjs reset (unsaved:
+//   once more from the save; busy: pause without a reset). delegate-flagged writes the
+//   `### <id> . <title>` entry (upserted by id) before the item's move.
 //   A not-holder answer from any helper, or an exec state not-holder or holder-gone (also as
 //   a lingering run's outcome), is a lost lock: {"event":"lost-lock","what","out"}, exit 0,
 //   and nothing more is written (no STATE.md edit, no ledger row).
 //   Stops (the event of the same name is printed at each, and the driver waits there to be
 //   killed when it is the scenario's `stop`; a name listed in `gates` waits instead until
-//   the file <ctl>/<name>.go exists, then goes on): acquired, planned (after the section 1
-//   edit), picked, prepared, deps (while the install's exec runs, and again after it),
-//   deps-checked (after check --after deps, before deps --mark), dispatched /
+//   the file <ctl>/<name>.go exists, then goes on): acquired, cleared (after clear-now's last
+//   edit; clear-edit-<k> after an earlier one),
+//   planned (after the section 1 edits), normalize-edit-<k>, pick-edit-<k>, followup-edit-<k>
+//   (after edit k of that plan, before its check), <move>-inserted and <move>-moved (after a
+//   move's insertion and after its deletion, before its check; <move> is finish, requeue,
+//   done, blocked, backlog or flag; flag-entry after the entry; <move>-replaced on a re-save),
+//   followed (after the follow-up's check), picked, prepared, deps (while the install's exec runs, and again after it),
+//   deps-checked (after check --after deps, before deps --mark), dispatched (also the analysis
+//   path's, the dispatch still open) /
 //   dispatched-commit (after the delegate's ops, the dispatch still open; -commit when the ops
 //   committed), checked, verifying (while exec --verify 0 runs), verify-checked (after each
 //   check --after verify), verified, saved, saved-state, reset, committed, done, ledger,
-//   closed; none runs to the release ({"event":"released"}).
+//   closed; none runs to the release ({"event":"released"}). The trim's stops: trim-edit-<k>
+//   (after edit k, before its check) and trimmed, between the move to ## Done and done.
 //   An acquire held prints {"event":"held","status","out"} and exits 0, writing nothing.
 //   A fault: scenario.faults maps a call key (prepare, deps-check, check, check1 for a retry's
 //   check, verify-check, commit, save, save2, reset, reset2, bundle, close) to a fault point;
@@ -79,8 +126,9 @@
 //   {"event":"faulted","key","point"} and waits to be killed (the session dies with it).
 //
 // Scenario (JSON): {P, stop, gates: [], ctl, prefix, base, date, deps: {install} | null,
-//   attempts: [{ops, fail, flag}], path: 'commit' | 'flag' | 'fail' | 'pause', subject,
-//   faults: {}, betweenSaveReset: [ops], env: {}}; env reaches the helpers, after the inherited
+//   attempts: [{ops, fail, flag}], path: 'commit' | 'flag' | 'fail' | 'pause' | 'analysis', subject,
+//   followup: {title, notes} | null, faults: {}, betweenSaveReset: [ops], env: {}}; briefs
+//   and the subject file are named by the item id (R23); env reaches the helpers, after the inherited
 //   git routing variables (GIT_ROUTING, tests/helpers.mjs) are scrubbed. Delegate ops, run with
 //   cwd <W>:
 //   ['write', rel, text], ['write64', rel, base64], ['append', rel, text], ['rm', rel],
@@ -93,6 +141,10 @@ import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { scrubGitRouting } from '../helpers.mjs'
+import { fold, parseOrigin } from '../../scripts/lib/loop-state.mjs'
+import {
+  DASH, DOT, blockedBlock, doneBlock, editOnce, findItem, insertTop, nowBlock, removeItem, replaceItem, setSection, upsertEntry, withField,
+} from './firing-moves.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SCRIPTS = path.resolve(HERE, '..', '..', 'scripts')
@@ -170,75 +222,12 @@ async function lockFiring() {
 
 // ---------------------------------------------------------------- mode 2 (0c-2, the clone)
 
-// STATE.md as sections: the lines before the first `## ` heading, then each section's body
-// lines without blank lines and without the `(empty)` placeholder.
-const PLACEHOLDER = '(empty)'
-const DOT = String.fromCharCode(0xb7)
-const DASH = String.fromCharCode(0x2014)
-
-function parseState(text) {
-  const head = []
-  const order = []
-  const body = {}
-  let cur = null
-  for (const line of text.split('\n')) {
-    const m = /^## (.+?)\s*$/.exec(line)
-    if (m) {
-      cur = m[1]
-      order.push(cur)
-      body[cur] = []
-    } else if (cur === null) head.push(line)
-    else if (line.trim() && line.trim() !== PLACEHOLDER) body[cur].push(line)
-  }
-  while (head.length && !head[head.length - 1].trim()) head.pop()
-  return { head, order, body }
-}
-
-function renderState(s) {
-  const out = [...s.head, '']
-  for (const name of s.order) {
-    out.push(`## ${name}`)
-    out.push(...(s.body[name].length ? s.body[name] : [PLACEHOLDER]))
-    out.push('')
-  }
-  return out.join('\n')
-}
-
-// An item is a `- ` line and the indented lines below it; a Needs decision entry a `### ` block.
-// Its `status:` sub-bullet (`—` when it has none), and the item with another status.
-const statusOf = lines => {
-  const m = lines.slice(1).map(l => /^\s+- status:\s*(.*?)\s*$/.exec(l)).find(Boolean)
-  return m ? m[1] : DASH
-}
-const withStatus = (lines, status) => {
-  const at = lines.findIndex((l, i) => i > 0 && /^\s+- status:/.test(l))
-  const out = [...lines]
-  if (at >= 0) out[at] = `  - status: ${status}`
-  else out.push(`  - status: ${status}`)
-  return out
-}
-// The item with its `recovery:` sub-bullet set to sha, in place of any older one.
-const withRecovery = (lines, sha) => [...lines.filter((l, i) => i === 0 || !/^\s+- recovery:/.test(l)), `  - recovery: ${sha}`]
-
-// The first eligible ## Backlog item (loop section 3.2: its status is `—`; waiting-* items are
-// never picked), taken out of the list.
-function takeFirstItem(lines) {
-  for (let at = 0; at < lines.length; at++) {
-    if (!lines[at].startsWith('- ')) continue
-    let end = at + 1
-    while (end < lines.length && /^\s+\S/.test(lines[end])) end++
-    if (statusOf(lines.slice(at, end)) === DASH) return lines.splice(at, end - at)
-    at = end - 1
-  }
-  return null
-}
-
-// `- [ ] P1 . <title> . class: ...` (Backlog), `- [x] <title> . <sha> . <date>` (Done),
-// `- [ ] <title> . attempts: ...` (Blocked); the separator is a middle dot.
-const titleOf = line => {
-  const parts = line.replace(/^- \[[ x]\] /, '').split(` ${DOT} `)
-  return (parts.length > 1 && /^P[0-9]+$/.test(parts[0]) ? parts[1] : parts[0]).trim()
-}
+// STATE.md is read and changed as the main session does it (stage 0c-3 brief R14): items are
+// found through scripts/lib/loop-state.mjs's parseState, by id, and every change is one Edit
+// whose `old` occurs once (tests/fixtures/firing-moves.mjs); the item CLI's plans are applied
+// edit by edit and confirmed with `loop-items check --expect`, and every move inserts the whole
+// block first, deletes the source second, and is confirmed with `loop-items check --item`.
+const ARROW = String.fromCharCode(0x2192)
 
 function cloneFiring(sc) {
   const P = sc.P
@@ -258,11 +247,13 @@ function cloneFiring(sc) {
   const env = { ...process.env, ...(sc.env ?? {}), TECH_LEAD_HOLDER_PID: String(process.pid) }
   delete env.TECH_LEAD_FAULT
   const notes = []
-  const row = { commits: [], bundles: [], saves: [], recovered: null }
+  // done_items: pick's `unledgered` (R27), the ## Done items no ledger row records done; null
+  // when the firing never ran pick.
+  const row = { commits: [], bundles: [], saves: [], recovered: null, done_items: null }
   let N = null
   let W = null
   let lockDir = null
-  let item = null // the ## Now item's lines while this firing holds it
+  let item = null // the picked item while this firing holds it: {id, title, origin, digest}
 
   const hang = () => { for (;;) block(2 ** 30) }
   const fail = (what, detail) => {
@@ -324,77 +315,166 @@ function cloneFiring(sc) {
     fs.writeFileSync(LOOP, lines.join('\n'))
   }
 
-  const editState = fn => {
-    const s = parseState(fs.readFileSync(STATE, 'utf8'))
-    fn(s)
-    fs.writeFileSync(STATE, renderState(s))
-  }
-  // The ## Now item back to the top of ## Backlog.
-  const requeue = () => editState(s => {
-    const now = s.body.Now
-    if (now.length) s.body.Backlog.unshift(...now)
-    s.body.Now = []
-  })
+  const readState = () => fs.readFileSync(STATE, 'utf8')
   const today = () => new Date().toISOString().slice(0, 10)
-  const moveNow = (fn) => editState(s => {
-    const lines = s.body.Now.length ? s.body.Now : item
-    s.body.Now = []
-    fn(s, lines)
-  })
-  const toDone = sha => moveNow((s, lines) => {
-    s.body.Done.unshift(`- [x] ${titleOf(lines[0])} ${DOT} ${sha ?? DASH} ${DOT} ${today()}`)
-  })
-  // The Save and reset caller's place for the sha (written again, in place, on a re-save):
-  // the item block this firing put at the top of a list, replaced by the next one it puts.
-  let placed = null
-  const putTop = (s, section, block) => {
-    if (placed) {
-      const list = s.body[placed.section]
-      const at0 = list.findIndex((l, i) => placed.block.every((b, k) => list[i + k] === b))
-      if (at0 >= 0) list.splice(at0, placed.block.length)
-    }
-    s.body[section].unshift(...block)
-    placed = { section, block }
+  // R14's incident: an edit whose `old` does not occur once, or a `check` that does not match.
+  // The firing writes it to ## Last run, sets `paused: true`, appends its ledger entry (outcome
+  // halted), changes nothing else in STATE.md (## Now stays as it stands for the next
+  // firing's planner) and releases the lock.
+  let incidentSeen = false
+  const incident = (detail, extra = {}) => {
+    emit({ event: 'incident', detail, ...extra })
+    if (incidentSeen) fail('incident', `a second incident while halting: ${detail}`)
+    incidentSeen = true
+    notes.push(`item edits: incident: ${String(detail).slice(0, 300)}`)
+    finish('halted', { paused: true, keepNow: true })
   }
-  // delegate-flagged (loop section 6.1): the ## Needs decision entry with its Recovery line,
-  // and the item back at the top of ## Backlog with status waiting-decision, its other fields
-  // kept. `saved` is the save's answer (an empty one carries base and scope too).
-  const placeFlag = (sha, saved) => moveNow((s, lines) => {
-    const title = titleOf(lines[0])
-    const nd = s.body['Needs decision']
-    const at0 = nd.indexOf(`### ${title}`)
-    if (at0 >= 0) {
-      let end = at0 + 1
-      while (end < nd.length && !nd[end].startsWith('### ')) end++
-      nd.splice(at0, end - at0)
+  // One Edit of STATE.md, then the stop `name`.
+  const edit = (e, name = null) => {
+    let next = null
+    try {
+      next = editOnce(readState(), e)
+    } catch (err) {
+      incident(err.message)
     }
-    nd.push(`### ${title}`, `**Flagged by:** fast-worker ${DASH} the delegate stopped on a judgment call`,
-      `**Recovery:** ${sha} ${DOT} base ${saved.base} ${DOT} item-digest none ${DOT} scope ${saved.scope.digest}`,
-      '**Decision:** (fill in to release the task back to the backlog)')
-    putTop(s, 'Backlog', withStatus(lines, 'waiting-decision'))
-  })
-  // attempt-failed: the ## Blocked item with its recovery: sub-bullet; codex or pause: the
-  // item back in ## Backlog, its fields kept, with its recovery: sub-bullet.
-  const placeSub = (section, reason) => (sha) => moveNow((s, lines) => {
-    const title = titleOf(lines[0])
-    const block = section === 'Blocked' ? [`- [ ] ${title} ${DOT} attempts: 2 ${DOT} ${reason}`, `  - recovery: ${sha}`] : withRecovery(lines, sha)
-    putTop(s, section, block)
-  })
+    fs.writeFileSync(STATE, next)
+    if (name) at(name)
+  }
+  const itemsCli = (cmd, args = []) => helper('loop-items.mjs', [cmd, P, ...args])
+  const checked = (args, what) => {
+    const c = itemsCli('check', args)
+    if (c.status !== 0) incident(`${what}: check ${args[0]}: ${c.out?.state ?? c.status}: ${c.out?.detail ?? c.stderr}`, { check: c.out })
+  }
+  // A plan of loop-items (normalize, pick, followup): its edits in order, a stop after each
+  // (<phase>-edit-<k>), then check --expect.
+  const applyPlan = (phase, out) => {
+    out.edits.forEach((e, k) => edit(e, `${phase}-edit-${k + 1}`))
+    checked(['--expect', out.expect_sha256], phase)
+  }
+  // The itemDigest of the one item carrying `id` (loop-items digest; loop "Item edits", step 1),
+  // null for an item without an id. A refusal (no-item: no item or several carry the id) is the
+  // item-edit incident, as every other exit 2 or 3 of loop-items.mjs is.
+  const digestOf = id => {
+    if (!id) return null
+    const r = itemsCli('digest', ['--item', id])
+    if (r.status !== 0) incident(`digest ${id}: ${r.out?.state ?? r.status}: ${r.out?.detail ?? r.stderr}`)
+    return r.out.item_digest
+  }
+  // check --item after a move (step 4); only a move of an item with no id (an interrupted 0.5.0
+  // firing's) goes unchecked, and is noted.
+  const checkMove = (id, section, digest, kind) => {
+    if (id) checked(['--item', `${id}@${section}:${digest}`], kind)
+    else notes.push(`${kind}: move unchecked (an item without an id)`)
+  }
+  // A prose move of the ## Now item to the top of `to`: the block `make(item)` inserted first
+  // (stop <kind>-inserted), then the ## Now block deleted, `(empty)` left (stop <kind>-moved),
+  // then check --item with `digest` (or digest(item), read before the move).
+  const moveNow = (kind, to, make, digest) => {
+    const src = nowBlock(readState())
+    if (!src) return null
+    const d = typeof digest === 'function' ? digest(src) : digest
+    edit(insertTop(readState(), to, make(src)), `${kind}-inserted`)
+    edit(removeItem(readState(), nowBlock(readState())), `${kind}-moved`)
+    checkMove(src.id, to, d, kind)
+    return src
+  }
+  // The ## Now item back to the top of ## Backlog, its block unchanged, or with `status` set in
+  // the insertion (loop section 5: the status a branch set is written in the move's insertion).
+  const requeue = (status = null) => moveNow('requeue', 'Backlog', src => (status ? withField(src.lines, 'status', status) : src.lines),
+    src => (item && src.id === item.id ? item.digest : digestOf(src.id)))
+  const toDone = sha => moveNow('done', 'Done', src => doneBlock(src, sha, today()), item.digest)
+  // The Save and reset caller's place for the sha (written again, in place, on a re-save): the
+  // item moved from ## Now to `section` as `make(block)`, or, already there, rewritten in place.
+  const placeItem = (kind, section, make) => {
+    const now = nowBlock(readState())
+    if (now && now.id === item.id) return moveNow(kind, section, make, item.digest)
+    const cur = findItem(readState(), item.id, section)
+    if (!cur) incident(`${kind}: ${item.id} is neither in ## Now nor in ## ${section}`)
+    edit(replaceItem(readState(), cur, make(cur)), `${kind}-replaced`)
+    checkMove(item.id, section, item.digest, kind)
+    return cur
+  }
+  // delegate-flagged (loop section 6.1): the ## Needs decision entry `### <id> . <title>` with
+  // its Recovery line (upserted by id, R15; the item digest from the save, R18), then the item
+  // back at the top of ## Backlog with status waiting-decision, its other fields kept. The entry
+  // goes first: interrupted there, the item is still in ## Now and is requeued as it was.
+  // `saved` is the save's answer (an empty one carries base, scope and the digest too).
+  const placeFlag = (sha, saved) => {
+    edit(upsertEntry(readState(), item.id, [
+      `### ${item.id} ${DOT} ${item.title}`,
+      `**Flagged by:** fast-worker ${DASH} the delegate stopped on a judgment call`,
+      `**Recovery:** ${sha} ${DOT} base ${saved.base} ${DOT} item-digest ${saved.item_digest ?? 'none'} ${DOT} scope ${saved.scope.digest}`,
+      '**Decision:** (fill in to release the task back to the backlog)',
+    ]), 'flag-entry')
+    placeItem('flag', 'Backlog', src => withField(src.lines, 'status', 'waiting-decision'))
+  }
+  // attempt-failed: the ## Blocked item (every field kept) with its recovery: field; codex or
+  // pause: the item back in ## Backlog, its fields kept, with its recovery: field.
+  const placeSub = (section, reason) => sha => placeItem(section === 'Blocked' ? 'blocked' : 'backlog', section,
+    src => (section === 'Blocked' ? blockedBlock(src, { attempts: 2, reason, recovery: sha }) : withField(src.lines, 'recovery', sha)))
+
+  // Loop sections 4-5, the analysis follow-up (R17): the JSON written with the Write tool,
+  // followup's insertion applied and checked before the item moves to ## Done, so an
+  // interruption leaves the analysis in ## Now (finished, cleared or requeued by the planner)
+  // and a rerun of it finds the follow-up already there (followup is idempotent). Both ok
+  // answers are a success (reused: false with its insertion, reused: true with no edits; Codex
+  // g3#3); only a refusal or an error is the item-edit incident.
+  const followUp = () => {
+    const file = path.join(S, 'briefs', `${item.id}-followup.json`)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify(sc.followup))
+    const fu = itemsCli('followup', ['--parent', item.id, '--input', file])
+    if (fu.status !== 0) incident(`followup: ${fu.out?.state ?? fu.status}: ${fu.out?.detail ?? fu.stderr}`)
+    applyPlan('followup', fu.out)
+    notes.push(`analysis ${ARROW} ${fu.out.id}`)
+    at('followed', { out: fu.out })
+  }
+
+  // Loop section 6 step 4 (and the analysis branch), after the move to ## Done and before the
+  // ledger append (R27; Claude PDC-2; loop "Item edits", Trimming ## Done), as the prose runs
+  // it: `loop-items trim`, its edits applied in order (stop trim-edit-<k>), then check --expect
+  // (run with an empty edit list too); an exit 2 or 3 from either is the item-edit incident.
+  const trimDone = () => {
+    const tr = itemsCli('trim')
+    if (tr.status !== 0) incident(`trim: ${tr.out?.state ?? tr.status}: ${tr.out?.detail ?? tr.stderr}`)
+    // The rule as R27 states it: nothing pick listed as unledgered is ever dropped (the ledger
+    // has not changed since pick).
+    const kept = new Set((row.done_items ?? []).map(d => d.item_id))
+    if (tr.out.dropped.some(id => kept.has(id))) fail('trim', `loop-items trim drops an item pick listed as unledgered: ${tr.out.dropped}`)
+    // R27a as the prose states it: a block whose origin lines are not exactly one well-formed
+    // `origin:` field (a capitalized `Origin:`, a second origin line, an invalid value) is the
+    // only full record of its parents, so it is never dropped; one with no origin line may go.
+    const before = readState()
+    const torn = tr.out.dropped.filter(id => {
+      const it = findItem(before, id, 'Done')
+      if (!it) return false
+      const like = it.lines.filter(l => /^\s*(?:[-*+]\s*)?origin\s*:/i.test(fold(l)))
+      const own = it.fields.filter(f => f.label === 'origin')
+      return like.length > 1 || (like.length === 1 && (own.length !== 1 || parseOrigin(own[0].value) === null))
+    })
+    if (torn.length) fail('trim', `loop-items trim drops a block whose lineage the ledger cannot carry whole: ${torn}`)
+    applyPlan('trim', tr.out)
+    at('trimmed', { dropped: tr.out.dropped, out: tr.out })
+  }
 
   // ---- section 8: ## Last run, ## Now (empty), the ledger row, close, release.
   const finish = (outcome, extra = {}) => {
     if (extra.paused) setPaused()
-    editState(s => {
-      if (s.body.Now.length) {
-        s.body.Backlog.unshift(...s.body.Now)
-        s.body.Now = []
-      }
-      s.body['Last run'] = [`- generation ${N}: ${outcome}${notes.length ? ` (${notes.join('; ')})` : ''}`]
-    })
+    // An item still in ## Now goes back to the top of ## Backlog (a move), except after an
+    // incident, which leaves ## Now as it stands.
+    if (!extra.keepNow && nowBlock(readState())) requeue()
+    try {
+      const line = `- generation ${N}: ${outcome}${notes.length ? ` (${notes.join('; ')})` : ''}`.replace(/\n/g, ' ')
+      fs.writeFileSync(STATE, editOnce(readState(), setSection(readState(), 'Last run', [line])))
+    } catch (err) {
+      notes.push(`## Last run not written: ${err.message}`)
+    }
+    // R21: the row names the item by id and origin (null when nothing was picked).
     const r = {
-      ts: new Date().toISOString(), iteration: N, task: item ? titleOf(item[0]) : null, outcome,
+      ts: new Date().toISOString(), iteration: N, task: item ? item.title : null, item_id: item ? item.id : null,
+      item_origin: item ? item.origin : null, outcome,
       verify: extra.verify ?? null, commits: row.commits, bundles: row.bundles.length ? row.bundles : null,
-      saves: row.saves.length ? row.saves : null, recovered: row.recovered, notes: notes.join('; ') || null,
+      saves: row.saves.length ? row.saves : null, recovered: row.recovered, done_items: row.done_items, notes: notes.join('; ') || null,
       ...(extra.paused ? { paused: true } : {}),
     }
     fs.appendFileSync(LEDGER, `${JSON.stringify(r)}\n`)
@@ -412,8 +492,7 @@ function cloneFiring(sc) {
   const pause = (why, detail, status = null) => {
     notes.push(`paused: ${why}${detail ? `: ${String(typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 300)}` : ''}`)
     emit({ event: 'paused', why, detail })
-    if (status) editState(s => { if (s.body.Now.length) s.body.Now = withStatus(s.body.Now, status) })
-    requeue()
+    requeue(status)
     finish('skipped', { paused: true })
   }
   // The last stderr line of a loop-lock exec run, as JSON ({state:'unreadable'} without one).
@@ -434,7 +513,7 @@ function cloneFiring(sc) {
   // ---- Save and reset (the named procedure; brief section 19).
   const saveAndReset = (why, place) => {
     for (let round = 0; round < 2; round++) {
-      const s = bundleTool('save', ['--why', why], round ? 'save2' : 'save')
+      const s = bundleTool('save', ['--why', why, '--item', item.id], round ? 'save2' : 'save')
       if (s.status === 3 && s.out?.state === 'not-holder') lostLock('save', s.out)
       if (s.out?.state === 'empty') {
         // Nothing to save: the caller's section move with `none` in the sha's place; no reset.
@@ -510,7 +589,7 @@ function cloneFiring(sc) {
         const r = spawnSync(process.execPath, ['-e', launch], { encoding: 'utf8', cwd: W })
         dwellers.push(Number(r.stdout.trim()))
       } else if (kind === 'codex') {
-        const brief = path.join(S, 'briefs', `codex-${N}.md`)
+        const brief = path.join(S, 'briefs', `${item.id}-codex.md`)
         fs.mkdirSync(path.dirname(brief), { recursive: true })
         fs.writeFileSync(brief, 'brief\n')
         const r = helper('loop-codex.mjs', ['start', '--cwd', W, '--prompt-file', brief, '--cap-min', '1', '--project', P, ...gen()])
@@ -551,17 +630,34 @@ function cloneFiring(sc) {
   if (plan.status !== 0) {
     // Loop section 1 step 5: a ## Now item goes back to the top of ## Backlog (finish does it),
     // named in the incident.
-    const now = parseState(fs.readFileSync(STATE, 'utf8')).body.Now
-    notes.push(`recovery planner: ${plan.out?.detail ?? plan.stderr}${now.length ? `; ${titleOf(now[0])} back to the top of ## Backlog` : ''}`)
+    const now = nowBlock(readState())
+    notes.push(`recovery planner: ${plan.out?.detail ?? plan.stderr}${now ? `; ${now.title} back to the top of ## Backlog` : ''}`)
     emit({ event: 'halted', status: plan.status, out: plan.out })
     finish('skipped', { paused: true })
   }
   const actions = plan.out.actions
-  // The ## Now action taken, which the ledger row's recovered.action names.
-  const nowAction = actions.includes('finish-commit') ? 'finish-commit' : actions.includes('requeue-now') ? 'requeue-now' : null
+  // The ## Now action taken, which the ledger row's recovered.action names: finish-commit or
+  // requeue-now, and null otherwise, after clear-now too (loop section 1 step 5; the ledger
+  // schema in loop-templates.md has no clear-now value).
+  const nowAction = ['finish-commit', 'requeue-now'].find(a => actions.includes(a)) ?? null
   for (const action of actions) {
-    if (action === 'finish-commit') toDone(plan.out.finish.sha)
-    else if (action === 'requeue-now') requeue()
+    if (action === 'clear-now') {
+      // R20, R29: the planner's anchored deletion of the one ## Now block (never the whole
+      // section), applied and checked; the other copy is the item, confirmed as a move is.
+      const c = plan.out.clear
+      c.edits.forEach((e, k) => edit(e, k === c.edits.length - 1 ? 'cleared' : `clear-edit-${k + 1}`))
+      checked(['--expect', c.expect_sha256], 'clear-now')
+      notes.push(`cleared interrupted move of ${c.id}`)
+      checkMove(c.id, c.section, digestOf(c.id), 'clear-now')
+    } else if (action === 'now-conflict') {
+      // R29: the copies are not one item caught inside a move: the item-edit incident, every
+      // copy kept, ## Now as it stands.
+      const c = plan.out.conflict
+      incident(`now-conflict: ${c.id}: ${c.reasons.join(', ')}`, { conflict: c })
+    } else if (action === 'finish-commit') {
+      const f = plan.out.finish
+      moveNow('finish', 'Done', src => doneBlock(src, f.sha, today()), src => f.item_digest ?? digestOf(src.id))
+    } else if (action === 'requeue-now') requeue()
     else if (action === 'ledger-recovered') row.recovered = { ...plan.out.recovered, action: nowAction }
     else if (action === 'write-bundle') {
       for (const b of plan.out.write_bundles) {
@@ -582,19 +678,53 @@ function cloneFiring(sc) {
     finish('halted')
   }
 
-  // ---- sections 2-4: pick.
-  editState(s => {
-    if (!s.body.Now.length) {
-      const it = takeFirstItem(s.body.Backlog)
-      if (it) s.body.Now = it
-    }
-    item = s.body.Now.length ? [...s.body.Now] : null
-  })
-  if (!item) {
-    notes.push('idle: nothing to pick')
+  // ---- section 3: step 0 normalize (ids and origins filled, R1), then pick (the releases and
+  // the order, R13, R16), each plan applied edit by edit and checked; the skipped items and
+  // their reasons go to ## Last run. A refusal or error of either is the item-edit incident
+  // (loop "Item edits"): ## Now left as it stands, outcome halted, paused.
+  const nz = itemsCli('normalize')
+  if (nz.status !== 0) incident(`normalize: ${nz.out?.state ?? nz.status}: ${nz.out?.detail ?? nz.stderr}`)
+  applyPlan('normalize', nz.out)
+  // Loop section 3 step 1: the minted ids and each problem, in ## Last run.
+  if (nz.out.minted.length) notes.push(`minted ${nz.out.minted.join(', ')}`)
+  for (const pr of nz.out.problems) notes.push(`problem ${pr.kind} line ${pr.line}${pr.detail ? `: ${pr.detail}` : ''}${pr.candidate ? ` (candidate ${pr.candidate})` : ''}`)
+  const pk = itemsCli('pick')
+  // R27: the row records pick's `unledgered` as its done_items, whatever the outcome (a refusal
+  // carries it too).
+  if (Array.isArray(pk.out?.unledgered)) row.done_items = pk.out.unledgered
+  if (pk.status !== 0) incident(`pick: ${pk.out?.state ?? pk.status}: ${pk.out?.detail ?? pk.stderr}`)
+  // Step 2: each released id and each skipped row.
+  for (const id of pk.out.released) notes.push(`released ${id}`)
+  for (const sk of pk.out.skipped) notes.push(`skipped ${sk.id ?? '-'} ${sk.title ?? ''}: ${sk.reason}${sk.detail ? ` (${sk.detail})` : ''}`)
+  applyPlan('pick', pk.out)
+  if (pk.out.state !== 'picked') {
+    notes.push('backlog dry')
     finish('skipped')
   }
-  at('picked', { item })
+  const picked = findItem(readState(), pk.out.id, 'Now')
+  if (!picked) incident(`pick: ${pk.out.id} is not in ## Now`)
+  item = { id: pk.out.id, title: pk.out.title, origin: picked.origin ?? null, digest: pk.out.digest }
+  at('picked', { item: picked.lines, pick: pk.out })
+
+  // ---- section 5, L3 analysis-shaped (path 'analysis'): the read-only deep-reasoner, bracketed
+  // by a dispatch record; no clone is prepared and nothing is committed. Its follow-up (when the
+  // scenario has one) is created, applied and checked, then the item moves to ## Done with the
+  // dash in the sha slot; outcome done, commits [], note "analysis -> <id or 'no follow-up'>".
+  if (whyPath === 'analysis') {
+    const d = lock(['dispatch', 'open', P, ...gen(), '--label', 'deep-reasoner'])
+    if (d.status === 3) lostLock('dispatch open', d.out)
+    if (d.status !== 0) pause('lock error', d.out?.detail)
+    at('dispatched', { analysis: true })
+    const dc = lock(['dispatch', 'close', P, ...gen(), '--id', d.out.id])
+    if (dc.status === 3) lostLock('dispatch close', dc.out)
+    if (dc.status !== 0) pause('lock error', dc.out?.detail ?? dc.stderr)
+    if (sc.followup) followUp()
+    else notes.push(`analysis ${ARROW} no follow-up`)
+    toDone(null)
+    trimDone()
+    at('done', { sha: null })
+    finish('done')
+  }
 
   // ---- section 5: prepare, deps, dispatch, check.
   const prep = clone('prepare', ['--prefix', prefix, '--base', base, '--date', date], 'prepare')
@@ -728,9 +858,9 @@ function cloneFiring(sc) {
       continue
     }
     at('verified', { digest })
-    const subject = path.join(S, 'briefs', `item-${N}.subject`)
+    const subject = path.join(S, 'briefs', `${item.id}.subject`)
     fs.mkdirSync(path.dirname(subject), { recursive: true })
-    fs.writeFileSync(subject, `${sc.subject ?? titleOf(item[0])}\n`)
+    fs.writeFileSync(subject, `${sc.subject ?? item.title}\n`)
     const cm = clone('commit', ['--digest', digest, '--subject-file', subject], 'commit')
     if (cm.status === 3 && cm.out?.state === 'not-holder') lostLock('commit', cm.out)
     if (cm.status !== 0) {
@@ -752,7 +882,9 @@ function cloneFiring(sc) {
       if (cm.out.bundleError) notes.push(`bundle error: ${cm.out.bundleError}`)
     }
     at('committed', { out: cm.out })
+    if (sc.followup) followUp()
     toDone(sha)
+    trimDone()
     at('done', { sha })
     finish('done', { verify: 'pass' })
   }

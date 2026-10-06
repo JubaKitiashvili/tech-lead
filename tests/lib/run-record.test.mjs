@@ -1,6 +1,8 @@
 // tests/lib/run-record.test.mjs
 // The run record (stage 0c-2 brief section 9): one schema-checked file per write-capable firing,
-// <V>/run/<N>.json, written through atomic.mjs; isResolved and committedSha from stored fields;
+// <V>/run/<N>.json, written through atomic.mjs; v:2 (stage 0c-3, R19) adds the ## Now item's
+// item_id and item_digest, and a v:1 record of an interrupted 0.5.0 firing still reads and is
+// updated as v:1; isResolved and committedSha from stored fields;
 // vettedTip, the one predicate for bundle writes, rotation and chaining; and the pure
 // cloneVerdict with its nine ordered rules. Records live under a real <V> (loopPaths over a
 // real temporary git repository, TECH_LEAD_CACHE in a temporary directory).
@@ -52,13 +54,20 @@ const BR = 'tl/2026-10-02', REF = `refs/heads/${BR}`
 const TS = '2026-10-02T00:00:00.000Z'
 const RULES = { v: 1, mode: 'recorded', base: BASE, ignores: [], excludes_file: null, info_exclude: { sha256: H('0'), b64: '' } }
 
-// A complete, schema-valid record (phase prepared unless overridden).
+// A complete, schema-valid v:2 record (phase prepared unless overridden), and the same as a
+// v:1 record (an interrupted 0.5.0 firing's: no item keys).
+const ITEM_ID = 'tl-0123abcd', ITEM_DIGEST = H('9')
 const full = (generation, over = {}) => ({
-  v: 1, generation, phase: 'prepared', pre_head: PRE, branch: BR, head_ref: REF, base: BASE,
-  now_sha256: H('1'), rules: null, refs: { [REF]: BASE, 'refs/tech-lead/base': BASE }, meta_sha: H('2'),
-  intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [], adopted: [], recovery: null,
+  v: 2, generation, phase: 'prepared', pre_head: PRE, branch: BR, head_ref: REF, base: BASE,
+  now_sha256: H('1'), item_id: null, item_digest: null, rules: null, refs: { [REF]: BASE, 'refs/tech-lead/base': BASE },
+  meta_sha: H('2'), intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [], adopted: [], recovery: null,
   created_at: TS, updated_at: TS, ...over,
 })
+const fullV1 = (generation, over = {}) => {
+  const { item_id, item_digest, ...rest } = full(generation, over)
+  void item_id, void item_digest
+  return { ...rest, v: 1 }
+}
 const recovery = over => ({ by: 9, base: BASE, rewind: null, bundles: [], reset_sha: null, step: 'saved', note: null, ...over })
 const writeRaw = (file, value) => {
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -91,7 +100,7 @@ const deepFreeze = o => {
 
 test('run-record exports what brief section 9 names', () => {
   for (const name of ['recordFile', 'readRecord', 'listRecords', 'createRecord', 'updateRecord', 'deleteRecord',
-    'maxRecordGeneration', 'isResolved', 'committedSha', 'vettedTip', 'cloneVerdict']) {
+    'maxRecordGeneration', 'isResolved', 'committedSha', 'vettedTip', 'cloneVerdict', 'recordItem']) {
     assert.equal(typeof runRecord[name], 'function', name)
   }
 })
@@ -115,8 +124,8 @@ test('createRecord writes a complete record once; a second create is false and c
   const rec = readRecord(paths, 5)
   assert.deepEqual(Object.keys(rec).sort(), Object.keys(full(5)).sort())
   like(rec, {
-    v: 1, generation: 5, phase: 'preparing', pre_head: PRE, branch: null, head_ref: null, base: null, now_sha256: null,
-    rules: null, refs: {}, meta_sha: null, intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [],
+    v: 2, generation: 5, phase: 'preparing', pre_head: PRE, branch: null, head_ref: null, base: null, now_sha256: null,
+    item_id: null, item_digest: null, rules: null, refs: {}, meta_sha: null, intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [],
     adopted: [], recovery: null,
   })
   assert.match(rec.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
@@ -185,9 +194,16 @@ test('readRecord refuses every schema violation as corrupt: <file>', t => {
     ['not JSON', '{"v":1,'],
     ['an array', '[1]\n'],
     ['null', 'null\n'],
-    ['v 2', r => ({ ...r, v: 2 })],
+    ['v 3', r => ({ ...r, v: 3 })],
+    ['v 1 carrying the v 2 item keys', r => ({ ...r, v: 1 })],
+    ['v 2 without the item keys', () => ({ ...fullV1(7), v: 2 })],
     ['a missing key', r => { const { meta_sha, ...rest } = r; return rest }],
-    ['an unknown key', r => ({ ...r, item_id: 'x' })],
+    ['an unknown key', r => ({ ...r, task: 'x' })],
+    ['item_id not a tl- id', r => ({ ...r, item_id: 'it-1', item_digest: ITEM_DIGEST })],
+    ['item_id upper case', r => ({ ...r, item_id: ITEM_ID.toUpperCase(), item_digest: ITEM_DIGEST })],
+    ['item_digest not a sha256', r => ({ ...r, item_id: ITEM_ID, item_digest: 'abc' })],
+    ['item_id without item_digest', r => ({ ...r, item_id: ITEM_ID })],
+    ['item_digest without item_id', r => ({ ...r, item_digest: ITEM_DIGEST })],
     ['generation other than the file name', r => ({ ...r, generation: 8 })],
     ['generation a string', r => ({ ...r, generation: '7' })],
     ['an unknown phase', r => ({ ...r, phase: 'done' })],
@@ -239,6 +255,63 @@ test('readRecord refuses every schema violation as corrupt: <file>', t => {
   writeRaw(elsewhere, full(7))
   fs.symlinkSync(elsewhere, file)
   assert.throws(() => readRecord(paths, 7), { code: 'CORRUPT' })
+})
+
+test('v:2 (R19): createRecord writes item_id and item_digest, both null or both set; updateRecord sets and clears them', t => {
+  const { paths } = project(t)
+  assert.equal(createRecord(paths, 5, { phase: 'preparing', pre_head: PRE }), true)
+  assert.deepEqual(runRecord.recordItem(readRecord(paths, 5)), { item_id: null, item_digest: null })
+  const set = updateRecord(paths, 5, { phase: 'prepared', branch: BR, head_ref: REF, base: BASE, item_id: ITEM_ID, item_digest: ITEM_DIGEST })
+  like(set, { v: 2, item_id: ITEM_ID, item_digest: ITEM_DIGEST })
+  assert.deepEqual(readRecord(paths, 5), set)
+  assert.deepEqual(runRecord.recordItem(set), { item_id: ITEM_ID, item_digest: ITEM_DIGEST })
+  // One without the other is refused, and the file keeps what it had.
+  const before = fs.readFileSync(recordFile(paths, 5), 'utf8')
+  for (const patch of [{ item_id: null }, { item_digest: null }, { item_id: 'it-1' }, { item_digest: 'x' }]) {
+    assert.throws(() => updateRecord(paths, 5, patch), { code: 'BAD_RECORD' }, JSON.stringify(patch))
+  }
+  assert.equal(fs.readFileSync(recordFile(paths, 5), 'utf8'), before)
+  like(updateRecord(paths, 5, { item_id: null, item_digest: null }), { item_id: null, item_digest: null })
+  assert.equal(createRecord(paths, 6, { phase: 'prepared', base: BASE, item_id: ITEM_ID, item_digest: ITEM_DIGEST }), true)
+  like(readRecord(paths, 6), { v: 2, item_id: ITEM_ID, item_digest: ITEM_DIGEST })
+  for (const fields of [{ item_id: ITEM_ID }, { item_id: 'TL-0123ABCD', item_digest: ITEM_DIGEST }]) {
+    assert.throws(() => createRecord(paths, 7, fields), { code: 'BAD_RECORD' }, JSON.stringify(fields))
+  }
+  assert.equal(fs.existsSync(recordFile(paths, 7)), false)
+})
+
+test('new records are v:2: createRecord refuses any other v and writes nothing', t => {
+  const { paths, run } = project(t)
+  for (const v of [1, 3, '2']) assert.throws(() => createRecord(paths, 4, { v }), { code: 'BAD_RECORD' }, String(v))
+  assert.equal(fs.existsSync(run), false)
+  assert.equal(createRecord(paths, 4, { v: 2 }), true)
+  assert.equal(readRecord(paths, 4).v, 2)
+})
+
+test('v:1 (an interrupted 0.5.0 firing): reads unchanged, recordItem gives nulls, updates stay v:1 and can never carry an item', t => {
+  const { paths } = project(t)
+  const old = fullV1(3, { phase: 'committed', commit: { sha: C } })
+  writeRaw(recordFile(paths, 3), old)
+  assert.deepEqual(readRecord(paths, 3), old)
+  assert.deepEqual(listRecords(paths), [old])
+  assert.deepEqual(runRecord.recordItem(readRecord(paths, 3)), { item_id: null, item_digest: null })
+  assert.equal(runRecord.recordItem(null), null)
+  // A recovery mark from a 0.6.0 holder, as an object patch and as a function: still v:1, no item keys.
+  const a = updateRecord(paths, 3, { recovery: { by: 5, step: 'done', note: 'superseded' } })
+  assert.equal(a.v, 1)
+  assert.deepEqual(Object.keys(a).sort(), Object.keys(old).sort())
+  const b = updateRecord(paths, 3, rec => ({ ...rec, delegate_commits: [D] }))
+  assert.equal(b.v, 1)
+  assert.deepEqual(readRecord(paths, 3), b)
+  const before = fs.readFileSync(recordFile(paths, 3), 'utf8')
+  for (const patch of [{ item_id: ITEM_ID, item_digest: ITEM_DIGEST }, { item_id: null, item_digest: null }, { v: 2 },
+    rec => ({ ...rec, v: 2, item_id: null, item_digest: null })]) {
+    assert.throws(() => updateRecord(paths, 3, patch), { code: 'BAD_RECORD' }, String(patch.toString?.() ?? JSON.stringify(patch)))
+  }
+  assert.equal(fs.readFileSync(recordFile(paths, 3), 'utf8'), before)
+  // The pure predicates read a v:1 record as they always did.
+  assert.equal(committedSha(b), C)
+  assert.equal(isResolved(b), true)
 })
 
 test('listRecords: ascending by generation, only record names, a corrupt record throws', t => {
@@ -394,7 +467,7 @@ test('updateRecord refuses a missing record, a corrupt one, an identity change a
 
   writeRaw(recordFile(paths, 3), full(3))
   const before = fs.readFileSync(recordFile(paths, 3), 'utf8')
-  for (const patch of [{ generation: 4 }, { v: 2 }, { created_at: '2020-01-01T00:00:00.000Z' }, { phase: 'intent' }, { base: 'x' },
+  for (const patch of [{ generation: 4 }, { v: 1 }, { v: 3 }, { created_at: '2020-01-01T00:00:00.000Z' }, { phase: 'intent' }, { base: 'x' },
     { recovery: { by: 2, step: 'done' } }, rec => ({ ...rec, generation: 9 }), () => null]) {
     assert.throws(() => updateRecord(paths, 3, patch), { code: 'BAD_RECORD' }, String(patch.toString?.() ?? JSON.stringify(patch)))
   }
