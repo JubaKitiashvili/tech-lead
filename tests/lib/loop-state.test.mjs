@@ -1,6 +1,7 @@
 // tests/lib/loop-state.test.mjs
 // STATE.md reading (stage 0c-2 brief section 1): nowLine and PLACEHOLDER moved here from
-// loop-recover.mjs, which re-exports them unchanged.
+// loop-recover.mjs, which re-exports them unchanged. The fixture's items carry ids (stage 0c-3);
+// the item grammar's own tests are tests/lib/loop-state-*.test.mjs.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PLACEHOLDER, nowLine } from '../../scripts/lib/loop-state.mjs'
@@ -13,7 +14,7 @@ const state = now => [
   '# Demo - Loop State', '',
   '## Now', now, '',
   '## Backlog',
-  `- [ ] P2 ${DOT} later work ${DOT} class: unclassified`, '  - blocked-by: -', '  - status: -', '',
+  `- [ ] P2 ${DOT} later work ${DOT} class: unclassified`, '  - id: tl-bbbbbbbb', '  - origin: human', '  - blocked-by: -', '  - status: -', '',
   '## Needs decision', '(empty)', '',
   '## Blocked', '(empty)', '',
   '## Done', '(empty)', '',
