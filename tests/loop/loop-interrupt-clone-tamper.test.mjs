@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  ROWS, D2, PREFIX, SCRIPTS, T, assertRecovered, git, go, helperAs, interrupt, ledger, patches, project, recordGenerations, run, snapshot, start,
+  ROWS, D2, PREFIX, SCRIPTS, T, assertRecovered, git, go, helperAs, idOf, interrupt, ledger, patches, project, recordGenerations, run, snapshot, start,
   titles, unpause, workSnap,
 } from './interrupt-fixture.mjs'
 import { createRecord } from '../../scripts/lib/run-record.mjs'
@@ -115,8 +115,9 @@ describe('section 19 tamper table', ROWS, () => {
     let snap, before, planted
     const f1 = start(fx, { path: 'pause', gates: ['checked'], attempts: [{ ops: EDIT }] })
     await f1.event('checked')
-    // The same save, killed before its link, gives the name the driver's save will want.
-    const k = helperAs(fx, f1.pid, 'reflex-bundle.mjs', ['save', fx.P, '--generation', '1', '--why', 'pause'], { TECH_LEAD_FAULT: 'save:after-check' })
+    // The same save (the driver's names the ## Now item, R18), killed before its link, gives
+    // the name the driver's save will want.
+    const k = helperAs(fx, f1.pid, 'reflex-bundle.mjs', ['save', fx.P, '--generation', '1', '--why', 'pause', '--item', idOf('item A')], { TECH_LEAD_FAULT: 'save:after-check' })
     assert.equal(k.signal, 'SIGKILL', k.stdout + k.stderr)
     const dir = path.join(fx.V, 'patches')
     const temp = fs.readdirSync(dir).find(n => n.startsWith('.tmp-'))

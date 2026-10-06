@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  ROWS, BASE_FILES, D2, PREFIX, T, assertRecovered, git, headerOf, interrupt, project, run, tipOf, titles, workSnap,
+  ROWS, BASE_FILES, D2, PREFIX, T, assertRecovered, git, headerOf, interrupt, itemHead, project, run, tipOf, titles, workSnap,
 } from './interrupt-fixture.mjs'
 
 const BRANCH = `${PREFIX}/${D2}`
@@ -44,7 +44,7 @@ describe('section 19 matrix: prose boundaries before the commit', ROWS, () => {
     assert.deepEqual(titles(fx, 'Now'), ['item A'])
     const f2 = await run(fx, work('two'))
     assert.deepEqual(f2.get('planned').plan.actions, ['requeue-now'])
-    assert.deepEqual(f2.get('picked').item.length, 1)
+    assert.deepEqual(f2.get('picked').item, itemHead('item A'), 'the whole block, picked once')
     assertRecovered(fx, { rows: [2], tip: committedSha(f2), sections: { Done: ['item A'], Backlog: ['item B', 'item C', 'item D'] } })
     await run(fx, work('three'))
     assertRecovered(fx, { rows: [2, 3], sections: { Done: ['item A', 'item B'] } })

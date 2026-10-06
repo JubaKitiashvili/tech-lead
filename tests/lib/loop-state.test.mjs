@@ -1,9 +1,11 @@
 // tests/lib/loop-state.test.mjs
 // STATE.md reading (stage 0c-2 brief section 1): nowLine and PLACEHOLDER moved here from
-// loop-recover.mjs, which re-exports them unchanged.
+// loop-recover.mjs, which re-exports them unchanged. The fixture's items carry ids (stage 0c-3);
+// the item grammar's own tests are tests/lib/loop-state-*.test.mjs. Closing fix F9: nowLine and
+// parseState share one section end.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { PLACEHOLDER, nowLine } from '../../scripts/lib/loop-state.mjs'
+import { PLACEHOLDER, nowLine, parseState } from '../../scripts/lib/loop-state.mjs'
 import * as recover from '../../scripts/loop-recover.mjs'
 
 // The STATE.md separator the templates use; built from its code point to keep this file ASCII.
@@ -13,7 +15,7 @@ const state = now => [
   '# Demo - Loop State', '',
   '## Now', now, '',
   '## Backlog',
-  `- [ ] P2 ${DOT} later work ${DOT} class: unclassified`, '  - blocked-by: -', '  - status: -', '',
+  `- [ ] P2 ${DOT} later work ${DOT} class: unclassified`, '  - id: tl-bbbbbbbb', '  - origin: human', '  - blocked-by: -', '  - status: -', '',
   '## Needs decision', '(empty)', '',
   '## Blocked', '(empty)', '',
   '## Done', '(empty)', '',
@@ -33,9 +35,10 @@ test('nowLine: the first line of ## Now, null when it is empty or missing', () =
   assert.equal(nowLine(state('')), null)
   // Blank lines before the item, CRLF line ends, trailing spaces, a multi-line item.
   assert.equal(nowLine('## Now\r\n\r\n  - [ ] P1 task  \r\n  - status: -\r\n## Backlog\r\n'), '- [ ] P1 task')
-  // The section ends at the next level-1 or level-2 heading; a deeper heading stays inside.
+  // The section ends at the next level-2 heading; a deeper heading stays inside, and so does a
+  // level-1 heading, which parseState reports as a stray heading in ## Now (closing fix F9).
   assert.equal(nowLine('## Now\n## Backlog\n- [ ] P2 other\n'), null)
-  assert.equal(nowLine('## Now\n\n# Other\n- [ ] P2 other\n'), null)
+  assert.equal(nowLine('## Now\n\n# Other\n- [ ] P2 other\n'), '# Other')
   assert.equal(nowLine('## Now\n\n##\n- [ ] P2 other\n'), null)
   assert.equal(nowLine('## Now\n### detail\n'), '### detail')
   // Only the exact heading opens the section, and only the first one counts.
@@ -48,4 +51,19 @@ test('nowLine: the first line of ## Now, null when it is empty or missing', () =
   // Anything that is not text reads as its string.
   assert.equal(nowLine(Buffer.from('## Now\n- [ ] P1 x\n')), '- [ ] P1 x')
   assert.equal(nowLine(''), null)
+})
+
+// Closing fix F9 (code-review #2): with a level-1 heading inside ## Now, parseState still reads
+// the item under it, so nowLine must not call the section empty (the recovery planner would see
+// no Now line while pick refuses now-occupied, every firing).
+test('F9: nowLine and parseState agree on where ## Now ends', () => {
+  const ID = '  - id: tl-cccccccc'
+  for (const now of [`# note from owner\n${ITEM}\n${ID}`, `${PLACEHOLDER}\n# note\n${ITEM}\n${ID}`, `\n#\n${ITEM}\n${ID}`]) {
+    const text = state(now)
+    assert.equal(parseState(text).items.filter(i => i.section === 'Now').length, 1, now)
+    const first = now.split('\n').map(l => l.trim()).find(l => l && l !== PLACEHOLDER)
+    assert.equal(nowLine(text), first, now)
+  }
+  // A level-1 heading still ends a section that holds no items, and nothing is read past it.
+  assert.equal(nowLine(`${state(PLACEHOLDER)}\n# Appendix\n- [ ] not an item\n`), null)
 })

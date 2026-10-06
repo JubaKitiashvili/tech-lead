@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.5.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.6.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -536,12 +536,14 @@ Scheduled firings never ask questions. Anything that needs you goes into
    firing that finds it held exits and writes nothing. Then read
    `LOOP.md`, `STATE.md`, and the recent ledger, and plan the recovery of
    an interrupted firing: its item goes back to the backlog (or to
-   `## Done`, when its commit landed), and work no ledger entry names is
-   recorded.
+   `## Done`, when its commit landed, or stays where an interrupted move
+   already put it), and work no ledger entry names is recorded.
 2. **Gates.** Stop if the loop is paused, if the circuit breaker has tripped
    (too many consecutive failures), or if the daily budget is spent.
-3. **Pick.** Take an item you just decided, or the first eligible backlog
-   item.
+3. **Pick.** Give every item that lacks one an id and an origin, then take
+   an item you just decided, or the first eligible backlog item. A helper
+   plans both as edits; the firing applies them and checks the result
+   before it goes on (see [Items in `STATE.md`](#items-in-statemd)).
 4. **Classify.** Label the item `mechanical`, `hard`, or `high-stakes`,
    picking the more cautious class when unsure. The triage workflow then
    runs as a second check.
@@ -554,11 +556,20 @@ Scheduled firings never ask questions. Anything that needs you goes into
    - Every `verify:` command must pass.
    - Only then does the loop commit, in the clone, and write the day's
      delivery bundle for you to fetch.
+   - The item moves to `## Done`, which keeps its 20 most recent items:
+     an older one goes, as a whole block, only once the ledger records it
+     done with the origin the block holds, and never while it holds an
+     origin line other than one well-formed `origin:` field (the ledger
+     keeps only that one). A
+     helper plans this trim as edits; the firing applies them and checks
+     the result.
 7. **Failure path.** Retry once with the failure excerpt. After a second
    failure, save the task's changes to a recovery bundle, reset the clone,
    and move the item to `## Blocked`.
-8. **Report.** Update `## Last run`, append exactly one ledger entry, close
-   the firing's run records, and release the lock.
+8. **Report.** Update `## Last run`, append exactly one ledger entry (it
+   also records every `## Done` item no earlier entry records, so its id
+   and origin outlive `## Done`), close the firing's run records, and
+   release the lock.
 
 | Level | `mechanical` | `hard` | `high-stakes` |
 |---|---|---|---|
@@ -571,8 +582,8 @@ Scheduled firings never ask questions. Anything that needs you goes into
 | Path | What it is |
 |---|---|
 | `LOOP.md` | Configuration (see below) |
-| `STATE.md` | Six sections: `## Now`, `## Backlog`, `## Needs decision`, `## Blocked`, `## Done`, `## Last run`. You can edit it directly to reorder, add, or veto items |
-| `LEDGER.jsonl` | One JSON line per firing that took the lock and kept it: task, class, outcome, verify, commits, triage, and panel |
+| `STATE.md` | Six sections: `## Now`, `## Backlog`, `## Needs decision`, `## Blocked`, `## Done`, `## Last run`. You can edit it directly to reorder, add, or veto items (see [Items in `STATE.md`](#items-in-statemd)) |
+| `LEDGER.jsonl` | One JSON line per firing that took the lock and kept it: task, its item id and origin, class, outcome, verify, commits, triage, and panel |
 | `briefs/` | Panel and Codex briefs, and commit subjects (gitignored) |
 
 Up to 0.4.x the spine also held `worktree/`, the loop's git worktree, and
@@ -600,6 +611,61 @@ scope:
 push: never              # literal; v1 has no other value
 ---
 ```
+
+### Items in `STATE.md`
+
+Each item in `STATE.md` is a header line with field lines under it
+(`skills/loop/references/loop-templates.md` has every format). To add one,
+write it in `## Backlog` where you want it picked, items above it first:
+
+```markdown
+- [ ] Add rate limiting to the upload endpoint · class: unclassified
+  - origin: human
+  - blocked-by: —
+  - status: —
+  - notes: 10 requests a minute per user; answer 429 with Retry-After
+```
+
+- **No id.** The next firing gives each item without an `id:` line a stable
+  id (`tl-` and 8 characters), written first under its header, and writes
+  `origin: unknown` on an item without an `origin:` line, so
+  `origin: human` is optional. Never write an `id:` line yourself: the
+  loop mints ids, a value of another shape is refused (`invalid-id`), and
+  one id on two items parks both.
+- **One title per open item.** Titles are unique among the items in
+  `## Now`, `## Backlog` and `## Blocked`, case and spacing aside; the loop
+  never renames your items. A title may not start with `P<digits> · ` or
+  contain ` · class: ` or ` · attempts: `. `## Done` may hold any title.
+- **`blocked-by:` takes an id,** copied from the other item's `id:` line,
+  or `—`. The item waits until that item is in `## Done` (or the ledger
+  records it done) and no follow-up the loop made from it
+  (`origin: loop from <id>`) is still open. The loop never reads a title
+  there as an item: it skips the item, and `## Last run` names the
+  candidate id to write instead.
+- **Field lines** are `- <label>: <value>`, indented two to four spaces.
+  Only `notes:` and `decision:` continue on more lines, each indented two
+  more spaces than the field's dash. Anything else under an item (a tab, a
+  `*` bullet, a capitalized `Notes:`, a bold `**id:**`, a field line
+  written at column 0 right below the header) keeps the item from being
+  picked until you fix it.
+- **Moving or reopening an item:** move its whole block, every field line
+  with it, never a copy. To reopen a done item, move its block from
+  `## Done` to `## Backlog` and rewrite its header in the Backlog form,
+  `- [ ] <title> · class: <class>` (the `- [x]`, the sha and the date
+  go), keeping every field line under it. A `- [x]` header left in
+  `## Backlog` does not read as an item: the loop keeps every item that
+  waits for it waiting, and skips the line (`unparsed-line`) until you
+  rewrite it. The loop moves items the same way: it inserts the block at
+  its new place first, deletes the old one, then checks the result.
+- **Decisions.** When you fill in `**Decision:**` in a `## Needs decision`
+  entry, the next firing copies it into the item's `decision:` field, after
+  any earlier decision (`<old>; then: <new>`), and deletes the entry.
+  Entries are headed `### <id> · <title>`, and the id is what finds the
+  item. An older entry headed by its title alone is never released, and
+  the open item with that title waits (`legacy-entry`) until you add the
+  id to the heading.
+- **Line endings.** Keep the file in LF line endings: the loop refuses a
+  `STATE.md` that holds a carriage return (`crlf`).
 
 ### The firing lock
 
@@ -749,8 +815,9 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
   - Each day's branch starts from `base:` in `LOOP.md`, or from the newest
     loop branch not yet merged into it (and not retired by you), never from
     the branch you have checked out.
-  - Loop commits use your git identity, carry a `Tech-Lead-Generation:`
-    trailer and no Co-Authored-By line. Your project's git hooks do not run
+  - Loop commits use your git identity, carry `Tech-Lead-Item:` (the
+    item's id) and `Tech-Lead-Generation:` trailers and no Co-Authored-By
+    line. Your project's git hooks do not run
     on them, so put the checks a hook enforces into `verify:`. They are
     never pushed or merged; reviewing and merging the loop branch is up to
     you.
@@ -767,9 +834,10 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
     `## Needs decision`. Answer by filling in the item's `**Decision:**`
     line. Only you write that line: text from delegates and seats is
     flattened to one line and defanged before it lands in `STATE.md`.
-  - The next firing moves the item back to the backlog. The item is
-    reclassified as `hard`, or as `mechanical` only if the follow-up is fully
-    specified, and never as `high-stakes`.
+  - The next firing copies your decision into the item's `decision:`
+    field and moves the item back to the backlog. The item is reclassified
+    as `hard`, or as `mechanical` only if the follow-up is fully specified,
+    and never as `high-stakes`.
   - To resume: clear a `waiting-infra` status, or set `paused: false`.
 - **Triage.** Runs in `shadow` mode by default, which only logs the Haiku
   second check. Switch to `gate`, which applies it (escalate-only), only
@@ -787,7 +855,12 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
 The first run on a project bootstraps the spine interactively:
 
 - it detects your verify commands;
-- it builds the initial backlog with you;
+- it builds the initial backlog with you, keeping each dependency your
+  task sources name as `blocked-by: <the other item's title>` (the waiting
+  item is skipped as `title-blocker` until you write the id that
+  `## Last run` names as the candidate); a prerequisite titled like an
+  empty blocker (`—`, `-`, `--`, `none` or `n/a`, in any case) is first
+  renamed with ` (task)` appended, so the blocker still names it;
 - it refuses to run on a dirty index.
 
 ### Upgrading to 0.5.0
@@ -828,7 +901,12 @@ The first run on a project bootstraps the spine interactively:
 | `/tech-lead` is unknown after a marketplace install | Another command already uses the bare name | Use `/tech-lead:tech-lead` |
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
 | A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
-| The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that isn't done or doesn't exist (see `## Last run`) | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix the `blocked-by:` line |
+| The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that is not finished (still open, or a follow-up the loop made from it is open), or they are skipped for a problem in their lines. `## Last run` names each skipped item with its reason | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix what the reason names (see [Why the loop skips an item](#why-the-loop-skips-an-item)) |
+| The loop paused with "item edits": `STATE.md` does not match the planned item edits (`mismatch`) | An edit the firing applied to `STATE.md` did not land as planned, or something else wrote the file at the same time (you, an editor, another tool). `## Last run` names what differs. The firing changed nothing else, and left `## Now` as it was | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`). Each item should appear once: when one sits in two sections, keep the copy in the section it was moving to and delete the other (when one copy is in `## Now` and the two copies are identical, apart from the header form and the line a move writes, such as a `status:` or `recovery:` line, the next firing does that itself; when they differ, it pauses with `now-conflict`). Run `node <plugin>/scripts/loop-items.mjs check <project>` (read-only), fix what its `problems` name, then set `paused: false` |
+| The loop paused with "item edits" and `crlf` | `STATE.md` holds a carriage return (Windows line endings, often from an editor or git's `core.autocrlf`), which every item command refuses | Convert the file to LF line endings (for example `perl -pi -e 's/\r//g' <project>/.tech-lead/STATE.md`), then set `paused: false` |
+| The loop paused with "item edits" and `bad-sections`, `now-occupied`, `bad-parent`, `bad-input` or `no-item` | `STATE.md` lacks a section or repeats one (`bad-sections`), or the firing found the file other than it left it: `## Now` not empty when it picked, the item it worked on gone or doubled. The detail names it | Restore the six sections (`skills/loop/references/loop-templates.md`), make sure each item appears once, then set `paused: false` |
+| The loop paused with "item edits" and `now-conflict` | An interrupted firing left the item in `## Now` and its id on another item too, but the two are not one item caught halfway through a move: their title, notes or decision differ (you edited one), or their `blocked-by:`, `decided:` or `no-change-ok:` lines or origin lines do (a prerequisite you added to one copy included), or any other line under the header does (a field line you added or changed), `## Now` holds a second item, or more than two items (or an id line that does not read as an item) carry the id. The loop deletes neither copy. `## Last run` names the id, the reasons and every copy's section and line | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`). Keep the copy that holds what you want done and delete every other block that carries the id (every line of it). A copy you keep in `## Now` goes back to the top of `## Backlog` at the next firing. Run `node <plugin>/scripts/loop-items.mjs check <project>` (read-only), then set `paused: false` |
+| The loop paused with "item edits" and an error (`"state": "error"`) | The item helper could not read what it needs: `LOOP.md`'s `level:` is not 1, 2 or 3 (`bad-level`), `LOOP.md` is missing (`no-loop-md`), `STATE.md` or `LOOP.md` is not UTF-8 (`bad-encoding`), `LEDGER.jsonl` cannot be read (`ledger: ...`), or a planned edit found no anchor in `STATE.md` (`edit-anchor`, for example a file whose last line has no newline). The detail names it | Fix what the detail names (a `level:` of 1, 2 or 3, the file saved as UTF-8, a readable ledger, a newline at the end of `STATE.md`), then set `paused: false` |
 | A firing ends at once and writes nothing, not even a ledger entry, and the loop goes on | The project's [firing lock](#the-firing-lock) is busy: another firing holds it (`holder-live`) or took it first (`race`), or a holder's liveness could not be read just now (`holder-unknown`) | Nothing: a live holder finishes on its own, and a later firing takes the lock. If it keeps happening, run `node <plugin>/scripts/loop-lock.mjs status <project>`: a holder that stays alive without running a firing (an interrupted turn in a session that stays open) needs the owner release |
 | A firing ends at once, writes nothing, and the runner stops | The lock needs you: an unreadable lock record (`corrupt`), a dispatch of an interrupted firing in this session still on record (`dispatch-open`), or a lock error (the printed `detail`, for example no holder process) | Run `node <plugin>/scripts/loop-lock.mjs status <project>`. If the firing that holds the lock is not running, use the owner release |
 | The runner stops with `child-live` | A child of an earlier firing could not be stopped (`alive`), or a process has its working directory inside the lock's cache folder (which holds the loop's clone) or an old `.tech-lead/worktree` (`procs`): a delegate's leftover command, a dev server, or a shell you opened there. The lock waits until they are gone, and never kills a process it cannot prove is its own | End the listed processes yourself, or move your shells out of the clone, then run the loop again |
@@ -849,6 +927,36 @@ The first run on a project bootstraps the spine interactively:
 | The loop paused with "clone excludes-file" (`excludes-file-in-work-area`) | Your `core.excludesFile` lies inside the project or the loop's work area, where a delegate could edit the rules that keep a file out of a save | Move the file elsewhere (for example `~/.config/git/ignore`), point `core.excludesFile` at it, then set `paused: false` |
 | Each firing's `## Last run` notes a clean-clone bundle of the same tool cache (for example `.pytest_cache`), and `close` keeps a record as `hidden` | A verify command creates a folder that ignores itself (its own `*` `.gitignore`), and your base `.gitignore` does not list it. The loop cannot tell that from a delegate hiding a file, so it saves and removes the folder each time | Add the folder to the `.gitignore` of your base branch |
 | The loop paused with "clone infra", "clone error" or "no base" | A git failure, a shallow repository, no git identity in your repository, a first clone that took longer than 540 s, or a base the loop cannot find (named in `## Last run`) | Fix the named cause (for example `git config user.name` and `user.email`, `git fetch --unshallow`, or `base:` in `LOOP.md`), then set `paused: false` |
+
+### Why the loop skips an item
+
+Each firing writes the items it skipped to `## Last run`, as
+"skipped <id> <title>: <reason> (<detail>)", and the problems it found in
+`STATE.md` the same way. A skipped item stays where it is until you fix it.
+See [Items in `STATE.md`](#items-in-statemd) for the format.
+
+| Reason | What it means | Fix |
+|---|---|---|
+| `no-id` | The item has no `id:` line yet. The firing gives it one before it picks, so this means that step reported a problem | Look for the problem `## Last run` names first |
+| `invalid-id` | The `id:` value is not a loop id (`tl-` and 8 characters; an empty value or `—` included), or the item has two `id:` lines. The loop never writes over it | Never delete a valid id: other items' `blocked-by:` and `origin: loop from` lines and `## Needs decision` headings name it, and a fresh id would cut those links. When the two `id:` lines carry the same id, delete only one of them. When they carry two ids, or the value is a damaged id, keep or restore the id that other lines name (in `STATE.md` or `LEDGER.jsonl`). Delete the `id:` line, so the next firing gives the item a fresh id, only when no other line names its id |
+| `duplicate-id` | Two items carry the same id, in any sections (`## Done` included), or an `id:` line elsewhere names it too (in a block the loop cannot read, or under a `##` section that is not one of the six), so a blocker or a decision could mean either. Every carrier is skipped | Keep the id on the item it belongs to and delete the `id:` line of the copy (the next firing gives it its own id). To reopen a done item, move its block back, never copy it, and rewrite its header as `- [ ] <title> · class: <class>` |
+| `duplicate-title` | Two open items have the same title, case and spacing aside. Both are skipped, and the detail names their ids | Rename one of them |
+| `ambiguous-title` | The title is empty, starts with `P<digits> · `, or contains ` · class: ` or ` · attempts: `, so it would not survive a move to another section | Reword the title |
+| `malformed-field` | A line under the item is not a field line: a tab indent, a `*` or `+` bullet, a capitalized label, markup around the label (`- **id:**`), a label without its colon (`- id tl-…`), a line under a one-line field, a line before the first field, or a field line at column 0 right below the item (an outdented `- blocked-by:`). The detail names the line | Rewrite it as `- <label>: <value>`, indented two to four spaces, or move the text into `notes:` |
+| `duplicate-field` | A field appears twice (two `status:` or two `notes:` lines, for example) | Merge them into one line |
+| `invalid-origin` | `origin:` is not `bootstrap`, `human`, `unknown` or `loop from <id>`. Any id in the value still counts as the item's parent | Fix the value, keeping the parent id of a `loop from` line |
+| `origin-cycle` | The `loop from` links of some items lead in a circle | Fix the `origin:` lines of the items the detail names |
+| `title-blocker` | `blocked-by:` holds a title, or anything else that is not one id. The detail names the candidate id (the one open item with that title, or else the one `## Done` item), and says "an analysis item; its follow-up may still be open" when that is a done analysis | Write the id instead (or `—`). For an analysis item, check whether the item waits for its follow-up, and use the follow-up's id if so |
+| `unknown-blocker` | `blocked-by:` holds an id that no item and no ledger entry carries | Fix the id, or write `—` |
+| `self-blocker` | `blocked-by:` holds the item's own id | Write the id of the item it waits for, or `—` |
+| `blocked` | The item it waits for is not finished: it is still open, or an item the loop made from it (`origin: loop from <id>`, or further down that chain) is open, other than the waiting item itself and the items made from it. An `id:` or `origin:` line under a `##` section that is not one of the six, or under a `- [ ]` line in `## Done`, counts as open | Nothing: the item is picked once those are done. Write `—` to stop the wait. Move a stray `id:` line out of a section of your own, and reopen an unticked `## Done` item by moving its block to `## Backlog` |
+| `status` | `status:` is `waiting-decision` or `waiting-infra`, or `waiting-level` while `level:` does not allow the item's class yet | Fill in its `**Decision:**`, clear `waiting-infra`, or raise `level:` |
+| `unparsed-line` | A line at column 0 in `## Now`, `## Backlog`, `## Blocked` or `## Done` that is no item header in that section's form (`- [x]` outside `## Done`, a `*` bullet, plain text) | Rewrite it as an item, or delete it |
+| `legacy-entry` | A `## Needs decision` heading is not `### <id> · <title>` (an entry written before items had ids). Its decision is not released; the detail names the candidate id. The open item whose title the heading names is skipped too, so it never runs without that decision; its detail names the heading's line | Rewrite the heading as `### <id> · <title>`, with the item's id |
+| `orphan-entry` | A decided entry names an id that no item carries. The loop keeps the entry and does not recreate the item | Rewrite the heading with the id of the item the decision is for (the next firing releases it), or delete the entry |
+| `entry-item-done` | A decided entry names an item that is in `## Done` | Reopen the item (move its whole block back to `## Backlog`, its header rewritten as `- [ ] <title> · class: <class>`), or delete the entry |
+| `ambiguous-decision` | The entry has two `**Decision:**` lines | Keep one |
+| `ambiguous-carrier` | A decided entry names an id that more than one block carries, or that a line which does not read as that item carries (an `id:` line of a block the loop cannot read, a capitalized `ID:`), so the decision could be meant for either. The loop keeps the entry and writes the decision into no copy | Keep the id on the item the decision is for: delete the other copy, or fix its id line (the next firing releases the decision) |
 
 ## Releasing a new version
 

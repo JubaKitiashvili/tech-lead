@@ -61,6 +61,13 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
      The branch checked out in `<P>` plays no part. The switch never
      overwrites a file the clone holds and its rules ignore: when the new
      branch tracks one, `prepare` refuses `infra` and names it (`paths`).
+
+   Its run record also keeps the `## Now` line's hash and the `## Now`
+   item's id and item digest, read from `STATE.md` (so `prepare` runs after
+   the pick put the item there, loop §3): `commit` writes that id in the
+   `Tech-Lead-Item:` trailer, and the next firing's recovery planner
+   finishes an interrupted commit only for that same item (loop §1 step 5,
+   `finish-commit`).
 2. **Record what `prepare` did** (exit 0, `"state": "ready"`). In
    `## Last run`, note:
    - `created: true`: "created the clone", and each `adopted` branch;
@@ -74,7 +81,10 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
      generation <generation> (<files> files, <out_of_scope> out of scope,
      <hidden> hidden)", and "delegate commit <rewound_from> rewound" when
      `rewound_from` is set. A null `generation` means work no firing
-     recorded (a process that wrote into `<W>` after a release);
+     recorded (a process that wrote into `<W>` after a release). The
+     bundle's header names the interrupted firing's item, with the
+     `item_id` and `item_digest` its run record kept (both null for a run
+     record 0.5.0 wrote, or when no record owns the work);
    - every line of `notes`.
 
    In this firing's single ledger entry, each `recovered` entry joins
@@ -118,7 +128,8 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
      the next firing installs again. Then:
      - write the incident to `## Last run`;
      - set `paused: true` in `LOOP.md`;
-     - return the item to `## Backlog` with its `status:` unchanged;
+     - return the item to `## Backlog` with its `status:` unchanged (loop
+       "Item edits": the whole block, inserted before it is deleted);
      - record outcome `skipped`, note "clone deps";
      - stop the runner.
    - `lingering` (exit 123) means a process of the install outlived it:
@@ -146,8 +157,9 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
 
    - `deps-dirty`: the install changed files that git does not ignore
      (`paths`: a rewritten lockfile, generated sources). This is an infra
-     incident: name the paths, set `paused: true`, return the item with its
-     `status:` unchanged, record outcome `skipped`, note "clone deps-dirty",
+     incident: name the paths, set `paused: true`, return the item to
+     `## Backlog` with its `status:` unchanged (loop "Item edits"), record
+     outcome `skipped`, note "clone deps-dirty",
      and stop the runner. The next clone preparation saves and resets those
      files. The fix is an install that leaves tracked files alone (`npm ci`,
      not `npm install`), or ignore rules for what it writes.
@@ -191,9 +203,11 @@ another commit is seen, and no bundle can hold it (`unsavable`).
 **Pause** means: touch nothing in `<W>`, write the incident to `## Last run`
 with the `detail` (and any `paths`, `largest`, `problems` or `procs` it
 printed), set `paused: true`, return the item to `## Backlog` with its
-`status:` unchanged, record outcome `skipped` with the note in the table, and
-stop the runner. The next clone preparation saves what `<W>` holds. README's
-Troubleshooting has the owner's fix for each note.
+`status:` unchanged (loop "Item edits": the whole block, inserted at the top
+of `## Backlog` before it is deleted from `## Now`, then checked), record
+outcome `skipped` with the note in the table, and stop the runner. The next
+clone preparation saves what `<W>` holds. README's Troubleshooting has the
+owner's fix for each note.
 
 | Command | `state` (exit 3) | What the loop does |
 |---|---|---|

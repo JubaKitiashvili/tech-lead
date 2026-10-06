@@ -9,8 +9,9 @@ same way: the root skill, `/tech-lead:panel`, and the loop.
 
 Write ONE self-contained brief to a file, following `briefing-template.md`:
 
-- Write it to your scratchpad directory, or to `<P>/.tech-lead/briefs/<slug>.md`
-  in loop mode. Pass the path as an absolute path.
+- Write it to your scratchpad directory, or to
+  `<P>/.tech-lead/briefs/<id>-panel.md` in loop mode, where `<id>` is the
+  item's id. Pass the path as an absolute path.
 - List 2–5 options with stable ids.
 - Keep the brief neutral: no preferred option, and no wording, ordering, or
   level of detail that favours one.

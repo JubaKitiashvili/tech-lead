@@ -20,6 +20,7 @@ import { startToken } from '../../scripts/lib/loop-proc.mjs'
 
 const N_ = f => String(f.N)
 const D = 'd'.repeat(64)
+const ITEM = 'tl-dddddddd'
 const kill = async pid => {
   process.kill(pid, 'SIGKILL')
   for (let i = 0; i < 100 && startToken(pid).state !== 'gone'; i++) await new Promise(r => setTimeout(r, 30))
@@ -308,7 +309,7 @@ test('the size cap refuses a bundle over TECH_LEAD_BUNDLE_MAX_BYTES and keeps no
 test('save refuses index-only and unsavable content and an invalid clone; a clean clone is empty', T, async t => {
   const f = await fixture(t, { 'a.txt': 'a\n', 'u.txt': 'u\n' })
   const e = run(f.env, 0, 'save', f.P, '--generation', N_(f), '--why', 'pause')
-  assert.deepEqual(e, { state: 'empty', base: f.base, head: f.base, indexDirty: false, scope: e.scope })
+  assert.deepEqual(e, { state: 'empty', base: f.base, head: f.base, indexDirty: false, scope: e.scope, item_id: null, item_digest: null })
   assert.deepEqual([e.scope.state, e.scope.entries], ['whole', ['.']])
   assert.match(e.scope.digest, /^[0-9a-f]{64}$/)
   assert.deepEqual(recordOf(f).saves, [])
@@ -369,21 +370,23 @@ test('save needs a prepared record with recorded rules; usage errors exit 2', T,
   assert.deepEqual(WHYS, ['clean-clone', 'delegate-flagged', 'codex', 'attempt-failed', 'pause'])
 })
 
-test('saveFor as prepare calls it: base rules, no source, an item digest; verifyBundle and readBundle agree', T, async t => {
+test('saveFor as prepare calls it: base rules, no source, an item id and digest; verifyBundle and readBundle agree', T, async t => {
   const f = await fixture(t, { '.gitignore': '*.tmp\n', 'a.txt': 'a\n' }, { record: false })
   write(f.W, 'a.txt', 'left over\n')
   write(f.W, 'x.tmp', 'ignored by the base rules\n')
   write(f.W, 'n.txt', 'new\n')
   const rules = baseRules(f.wt, f.base)
-  const r = saveFor(f.paths, { saver: f.N, source: null, base: f.base, rules, why: 'clean-clone', itemDigest: D, env: f.env })
+  const r = saveFor(f.paths, { saver: f.N, source: null, base: f.base, rules, why: 'clean-clone', itemId: ITEM, itemDigest: D, env: f.env })
   assert.equal(r.state, 'saved')
   assert.equal(r.item_digest, D)
+  assert.equal(r.item_id, ITEM)
   assert.deepEqual(r.paths, ['a.txt', 'n.txt'])
   const h = header(f, r.sha)
   assert.deepEqual(h.source, { generation: null })
   assert.equal(h.why, 'clean-clone')
   assert.deepEqual(h.rules, { mode: 'base', sha: rulesSha(rules) })
   assert.equal(h.item_digest, D)
+  assert.equal(h.item_id, ITEM)
   const stored = fs.readFileSync(path.join(f.V, 'patches', `rules-${rulesSha(rules)}.json`), 'utf8')
   assert.equal(stored, canonicalJson(rules))
   const b = verifyBundle(f.paths, r.sha, { env: f.env })
@@ -391,7 +394,7 @@ test('saveFor as prepare calls it: base rules, no source, an item digest; verify
   assert.deepEqual(readBundle(f.paths, r.sha).header, h)
   assert.equal(b.bytes, fs.statSync(r.file).size)
   // Nothing changed: the same call again is the same bundle.
-  const again = saveFor(f.paths, { saver: f.N, source: null, base: f.base, rules, why: 'clean-clone', itemDigest: D, env: f.env })
+  const again = saveFor(f.paths, { saver: f.N, source: null, base: f.base, rules, why: 'clean-clone', itemId: ITEM, itemDigest: D, env: f.env })
   assert.equal(again.sha, r.sha)
   assert.equal(again.reused, true)
   assert.throws(() => saveFor(f.paths, { saver: f.N, base: f.base, rules, why: 'migration', env: f.env }), TypeError)

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // scripts/loop-clone.mjs
 // Owner of the loop's clone <W> = <V>/clone (stage 0c-2, brief section 13; spec 7.5 as amended
-// by A11, 7.6; rulings R2, R4, R7, R9-R15, R17, R18, R20, R21, R23). Delegates and verify
-// commands work in <W>, a full clone of <P> made with `git clone --no-local`; the loop branch
-// lives only there, and the owner receives it as a delivery bundle under <V>/out. Every git call
-// in <W> goes through git-safe's workGit (hooks, fsmonitor, pagers, external diff and textconv
-// off), and nothing here writes <P>'s tree or .git.
+// by A11, 7.6; rulings R2, R4, R7, R9-R15, R17, R18, R20, R21, R23; stage 0c-3 R19, R33). Delegates
+// and verify commands work in <W>, a full clone of <P> made with `git clone --no-local`; the loop
+// branch lives only there, and the owner receives it as a delivery bundle under <V>/out. Every
+// git call in <W> goes through git-safe's workGit (hooks, fsmonitor, pagers, external diff and
+// textconv off), and nothing here writes <P>'s tree or .git.
 //
 // CLI (one JSON line on stdout; exit 0 ok, 2 {state:'error', detail[, partial]}, 3 refused with
 // `state` naming why; not the holder is exit 3 {state:'not-holder', detail}):
@@ -13,9 +13,12 @@
 //       once per firing, before the first write-capable dispatch: creates <W> or checks it
 //       (checkClone, quiesce, the process sweep, the refs the newest run record or the run
 //       anchor <V>/run/refs.json holds), saves and resets what an interrupted firing left (the
-//       clean-clone rule; with no record left, under the rules the run anchor holds, R25),
+//       clean-clone rule; with no record left, under the rules the run anchor holds, R25; the
+//       bundle header carries the interrupted v:2 record's item_id and item_digest, 0c-3 R33),
 //       refreshes from <P>, re-syncs the delivery bundles and rotates to today's branch
-//       <p>/<date>. Exit 0
+//       <p>/<date>. Its v:2 run record binds <S>/STATE.md's ## Now: now_sha256 (the Now line's
+//       hash) and the Now item's item_id and item_digest (loop-state's nowItem and itemDigest;
+//       both null when ## Now holds no item with a valid id). Exit 0
 //       {state:'ready', W, branch, base, baseSha, head, startPoint, chainedFrom, created, rotated,
 //       retiredReset, baseAhead, adopted, bundles, recovered, notes}; exit 3 not-quiet,
 //       clone-invalid {problems}, no-base, infra (also git-too-old, R24; an unsafe merge or
@@ -35,7 +38,8 @@
 //       tampered, deps-dirty {paths}, unsavable {paths}, index-only {paths}, corrupt.
 //   commit <P> --generation <N> --digest <64hex> --subject-file <file>
 //       commit-tree of the checked tree on H0 with <P>'s identity, compare-and-swap update-ref,
-//       then the delivery bundle. Exit 0 {state:'committed', sha, branch, bundle, bundleError} |
+//       then the delivery bundle. The message ends with the trailers `Tech-Lead-Item: <id>` (the
+//       record's item_id, when it has one) and `Tech-Lead-Generation: <N>`. Exit 0 {state:'committed', sha, branch, bundle, bundleError} |
 //       {state:'unchanged'}; exit 3 no-attempt, work-changed, out-of-scope {paths}, index-only
 //       {paths}, tampered, clone-invalid, commit-failed (a read-tree of the commit or its
 //       compare-and-swap failed: the intent is cleared and the attempt stays open); exit 2 when
@@ -67,7 +71,8 @@
 //       <W>/.git/index is never written.
 //
 // Library (for 0c-3 and 0c-4): ensureClone(paths, opts), adoptBranches(W, prefix),
-// commitMessage({subject, generation, item}), checkClone (re-exported from clone-check.mjs).
+// commitMessage({subject, generation, item}) (item null or an ID_RE item id, else TypeError),
+// checkClone (re-exported from clone-check.mjs).
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -78,13 +83,14 @@ import { canonicalJson, sha256Hex } from './lib/canonical.mjs'
 import { chainStart, containedIn, resolveBase, retiredRefs, validPrefix } from './loop-start.mjs'
 import { baseRules, collect, currentRules, indexOnly, openWorkTree, recordRules, touched } from './lib/changes.mjs'
 import {
-  cloneVerdict, committedSha, createRecord, deleteRecord, isResolved, listRecords, ownerRecord, readRecord, updateRecord, vettedTip,
+  cloneVerdict, committedSha, createRecord, deleteRecord, isResolved, listRecords, ownerRecord, readRecord, recordItem, updateRecord,
+  vettedTip,
 } from './lib/run-record.mjs'
 import { DATED_BRANCH_RE, checkClone, cloneMeta, refsSnapshot } from './lib/clone-check.mjs'
 import { BASE_REF, bundleCurrent, bundlePath, syncBundles, writeBundle } from './lib/delivery.mjs'
 import { readBundle, resetEmpty, resetFor, saveFor } from './reflex-bundle.mjs'
 import { markScope } from './lib/loop-scope.mjs'
-import { nowLine } from './lib/loop-state.mjs'
+import { ID_RE, itemDigest, nowItem, nowLine } from './lib/loop-state.mjs'
 import { ledgerShas } from './lib/ledger.mjs'
 import { assertHeld, openPaths } from './loop-lock.mjs'
 import { quiesce } from './loop-codex.mjs'
@@ -261,11 +267,24 @@ function loopMdText(paths) {
   try { return fs.readFileSync(path.join(paths.S, 'LOOP.md'), 'utf8') } catch { return null }
 }
 
-function nowSha(paths) {
+// What the run record binds of <S>/STATE.md's ## Now (R19): now_sha256, the SHA-256 of the Now
+// line (nowLine), and the Now item's id and itemDigest (loop-state's nowItem), both null when
+// ## Now holds no item with a valid id (an empty Now, an item with no id, an invalid or doubled
+// id, a file loop-state refuses as crlf) or when the Now line is not that item's header (an
+// unparsed line above it; loop-recover reads the Now item the same way). An unreadable
+// STATE.md binds nothing.
+function nowFacts(paths) {
+  const none = { now_sha256: null, item_id: null, item_digest: null }
   let text
-  try { text = fs.readFileSync(path.join(paths.S, 'STATE.md'), 'utf8') } catch { return null }
+  try { text = fs.readFileSync(path.join(paths.S, 'STATE.md'), 'utf8') } catch { return none }
   const line = nowLine(text)
-  return line === null ? null : sha256Hex(line)
+  const item = nowItem(text)
+  const bound = item !== null && typeof item.id === 'string' && ID_RE.test(item.id) && item.header.trim() === line
+  return {
+    now_sha256: line === null ? null : sha256Hex(line),
+    item_id: bound ? item.id : null,
+    item_digest: bound ? itemDigest(item) : null,
+  }
 }
 
 // Every commit a record knows (R20): staged content found in one of them is never index-only.
@@ -303,8 +322,9 @@ const bundleRow = (paths, w, branch) => ({ branch, tip: w.tip, file: path.relati
 const dropped = c => c < 0x20 || c === 0x7f || (c >= 0x80 && c <= 0x9f) || c === 0x2028 || c === 0x2029
 
 // The commit message: the first line of the subject without control characters, trimmed and cut
-// to 200 characters; a blank line; the trailers (Tech-Lead-Item when 0c-3 passes one, then
-// Tech-Lead-Generation). Nothing else from the subject file reaches the message.
+// to 200 characters; a blank line; the trailers (Tech-Lead-Item when an item id is passed, then
+// Tech-Lead-Generation). Nothing else from the subject file reaches the message. item is null or
+// an item id (loop-state's ID_RE, R2, R19); anything else is a TypeError.
 export function commitMessage({ subject, generation, item = null } = {}) {
   if (!Number.isSafeInteger(generation) || generation < 1) throw new TypeError(`commitMessage: bad generation ${generation}`)
   const first = String(subject ?? '').split(/\r\n|\n|\r/)[0]
@@ -313,7 +333,7 @@ export function commitMessage({ subject, generation, item = null } = {}) {
   if (!s) throw usage('empty-subject: the subject file has no first line to commit with')
   const trailers = []
   if (item !== null) {
-    if (typeof item !== 'string' || !/^[!-~]+$/.test(item)) throw new TypeError(`commitMessage: bad item ${JSON.stringify(item)}`)
+    if (typeof item !== 'string' || !ID_RE.test(item)) throw new TypeError(`commitMessage: bad item ${JSON.stringify(item)}`)
     trailers.push(`Tech-Lead-Item: ${item}`)
   }
   trailers.push(`Tech-Lead-Generation: ${generation}`)
@@ -827,10 +847,14 @@ class Recovery {
     }), { guard: () => this.assertHeld() })
   }
 
+  // The bundle header carries the item r bound (R33): its v:2 item_id and item_digest, both null
+  // for a v:1 record, a record that bound no item, or no record.
   save(base, rules, also) {
+    const bound = this.r ? recordItem(this.r) : null
     try {
       return saveFor(this.paths, {
         saver: this.N, source: this.r ? this.r.generation : null, base, rules, why: 'clean-clone', also, env: this.env,
+        itemId: bound?.item_id ?? null, itemDigest: bound?.item_digest ?? null,
       })
     } catch (e) {
       throw saveError(e)
@@ -1094,7 +1118,7 @@ async function prepareCmd(a, env) {
   const branch = `${prefix}/${date}`
   const fields = {
     phase: 'prepared', branch, head_ref: `refs/heads/${branch}`, base: head, rules: null, intent: null, commit: null,
-    refs: refsSnapshot(W).refs, meta_sha: cloneMeta(W), now_sha256: nowSha(paths),
+    refs: refsSnapshot(W).refs, meta_sha: cloneMeta(W), ...nowFacts(paths),
   }
   assertHeld(paths, N, env)
   updateRecord(paths, N, fields, { guard: () => assertHeld(paths, N, env) })
@@ -1272,7 +1296,9 @@ function commitCmd(a, env) {
   const subject = readSubject(a['subject-file'])
   const { paths, rec, W } = openAttempt(a, env)
   const N = a.generation
-  const message = commitMessage({ subject, generation: N })
+  // The trailer names the item the record bound at prepare (R19); none for a v:1 record or a
+  // record that bound no item.
+  const message = commitMessage({ subject, generation: N, item: recordItem(rec).item_id })
   cloneInvalidIf(W)
   if (cloneMeta(W) !== rec.meta_sha) throw refused('tampered', "the clone's config, .git/info or special files changed since the last check")
   const headRefNow = symbolicHead(W)
