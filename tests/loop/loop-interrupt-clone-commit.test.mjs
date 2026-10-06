@@ -9,8 +9,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
-  ROWS, D2, PREFIX, SCRIPTS, T, assertRecovered, bundleTree, editState, git, go, interrupt, ledger, patches, project, recordOf, run,
-  sections, start, tipOf, titles, workSnap,
+  ROWS, D2, PREFIX, SCRIPTS, T, assertRecovered, bundleTree, editState, git, go, idOf, interrupt, itemHead, itemLines, ledger, patches, project,
+  recordOf, run, sections, start, tipOf, titles, workSnap,
 } from './interrupt-fixture.mjs'
 
 const BRANCH = `${PREFIX}/${D2}`
@@ -24,6 +24,9 @@ const committedSha = f => {
 }
 const isAncestor = (W, a, b) => spawnSync('git', ['-C', W, 'merge-base', '--is-ancestor', a, b]).status === 0
 const doneLine = (fx, title) => sections(fx).Done.find(l => l.includes(` ${title} `))
+// The planner's finish (R20): the commit, and the ## Now item it binds by id and digest.
+const finishOf = (generation, sha, title = 'item A', n = 0) => ({ generation, sha, item_id: idOf(title, n) })
+const finishSeen = p => p.finish && { generation: p.finish.generation, sha: p.finish.sha, item_id: p.finish.item_id }
 const verifyCli = (fx, sha) => spawnSync(process.execPath, [path.join(SCRIPTS, 'reflex-bundle.mjs'), 'verify', fx.P, '--sha', sha], { encoding: 'utf8', env: fx.env })
 
 describe('section 19 matrix: Save and reset and the commit', ROWS, () => {
@@ -121,7 +124,8 @@ describe('section 19 matrix: Save and reset and the commit', ROWS, () => {
     const f2 = await run(fx, work('two'))
     const p = f2.get('planned').plan
     assert.deepEqual(p.actions, ['finish-commit', 'ledger-recovered', 'write-bundle', 'note-leftovers'])
-    assert.deepEqual(p.finish, { generation: 1, sha: C })
+    assert.deepEqual(finishSeen(p), finishOf(1, C))
+    assert.match(p.finish.item_digest, /^[0-9a-f]{64}$/)
     assert.deepEqual(p.write_bundles, [BRANCH])
     assert.ok(doneLine(fx, 'item A').includes(C))
     assert.deepEqual(f2.get('prepared').out.recovered, [], 'nothing to save: only the index was stale')
@@ -219,7 +223,7 @@ describe('section 19 matrix: Save and reset and the commit', ROWS, () => {
     const f3 = await run(fx, work('three'))
     const p = f3.get('planned').plan
     assert.deepEqual(p.actions, ['finish-commit', 'ledger-recovered'])
-    assert.deepEqual(p.finish, { generation: 2, sha: C2 })
+    assert.deepEqual(finishSeen(p), finishOf(2, C2, 'item B'))
     assert.deepEqual(p.recovered.generations, [1, 2])
     assert.deepEqual(p.recovered.commits, [C1, C2])
     assert.ok(doneLine(fx, 'item A').includes(C1))
@@ -230,17 +234,24 @@ describe('section 19 matrix: Save and reset and the commit', ROWS, () => {
     assertRecovered(fx, { ...ex, rows: [3, 4], sections: { Done: ['item A', 'item B', 'item C', 'item D'] } })
   })
 
-  test('row 37: finish-commit binds the ## Now item by its recorded hash, with a byte-identical second line of it in ## Backlog', T, async t => {
-    const fx = project(t, { items: ['item A', 'item A', 'item B', 'item C'] })
+  // Stage 0c-3: two open items with one title park each other (duplicate-title, R7), so the
+  // byte-identical header is a second item a person adds to ## Backlog while the first sits in
+  // ## Now; it carries another id. finish-commit binds the ## Now item by its recorded hash, id
+  // and digest, and once that item is in ## Done the second one is the only open `item A`.
+  test('row 37: finish-commit binds the ## Now item by its recorded hash and id, with a byte-identical second header in ## Backlog', T, async t => {
+    const fx = project(t, { items: ['item A', 'item B', 'item C'] })
     const { snap, C } = await updateRefKilled(fx)
+    const second = itemLines({ title: 'item A', id: idOf('item A', 1) })
+    editState(fx, text => text.replace('## Backlog\n', `## Backlog\n${second.join('\n')}\n`))
     const before = sections(fx)
-    assert.equal(before.Backlog[0], before.Now[0], 'the second line is byte-identical')
+    assert.equal(before.Backlog[0], before.Now[0], 'the second header is byte-identical')
     const f2 = await run(fx, work('two'))
     const p = f2.get('planned').plan
-    assert.deepEqual(p.finish, { generation: 1, sha: C })
+    assert.deepEqual(finishSeen(p), finishOf(1, C))
     assert.equal(sections(fx).Done.filter(l => l.includes(' item A ') && l.includes(C)).length, 1, 'the Now item went to Done with the commit')
-    // The duplicate stayed in ## Backlog and is the item this firing picked.
-    assert.deepEqual(f2.get('picked').item, [before.Backlog[0]])
+    // The second item stayed in ## Backlog and is the item this firing picked.
+    assert.deepEqual(f2.get('picked').item, second)
+    assert.deepEqual(f2.get('picked').item, itemHead('item A', 1))
     assert.equal(sections(fx).Done.filter(l => l.includes(' item A ')).length, 2)
     const ex = { work: [{ snap, via: C }] }
     assertRecovered(fx, { ...ex, rows: [2], tip: committedSha(f2), sections: { Done: ['item A', 'item A'], Backlog: ['item B', 'item C'] } })

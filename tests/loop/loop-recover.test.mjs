@@ -1,5 +1,8 @@
 // tests/loop/loop-recover.test.mjs
-// The read-only recovery planner (stage 0c-2 brief section 14) against real temporary git
+// The read-only recovery planner (stage 0c-2 brief section 14; stage 0c-3 R19, R20: the item
+// binding of finish-commit, clear-now, the Done sha slot, recovered's item; R29: clear-now only for
+// identical copies of one item, with its anchored deletion, else now-conflict; R29a: identical
+// also in blocked-by:, origin-like, decided: and no-change-ok: lines) against real temporary git
 // repositories: a project <P> with its spine <S>, a real clone <W> = <V>/clone under a
 // temporary TECH_LEAD_CACHE, real run records (run-record.mjs), real recovery-bundle files in
 // <V>/patches and real delivery bundles (delivery.mjs). Every case runs the CLI as a child
@@ -14,7 +17,8 @@ import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import { ACTIONS, PLACEHOLDER, nowLine } from '../../scripts/loop-recover.mjs'
 import { ensureV, loopPaths } from '../../scripts/lib/loop-paths.mjs'
-import { createRecord } from '../../scripts/lib/run-record.mjs'
+import { createRecord, recordFile } from '../../scripts/lib/run-record.mjs'
+import { applyEdits, itemDigest, nowItem, parseState } from '../../scripts/lib/loop-state.mjs'
 import { checkClone } from '../../scripts/lib/clone-check.mjs'
 import { bundlePath, writeBundle } from '../../scripts/lib/delivery.mjs'
 import { acquire } from '../../scripts/loop-lock.mjs'
@@ -53,19 +57,28 @@ const sha256 = data => crypto.createHash('sha256').update(data).digest('hex')
 
 // The STATE.md separator the templates use; built from its code point to keep this file ASCII.
 const DOT = String.fromCodePoint(0xb7)
+const DASH = String.fromCodePoint(0x2014)
+// The ## Now item: ITEM is its header line (what nowLine reads and now_sha256 hashes), NOW the
+// whole block with its id, origin and notes (stage 0c-3), ID and DIGEST what prepare records.
 const ITEM = `- [ ] P1 ${DOT} fix the parser ${DOT} class: hard`
 const ITEM_EDITED = `- [ ] P1 ${DOT} fix the parser and the lexer ${DOT} class: hard`
-const state = ({ now = PLACEHOLDER, done = PLACEHOLDER } = {}) => [
+const ID = 'tl-0123abcd'
+const nowBlock = ({ id = ID, notes = 'parse every header form' } = {}) =>
+  [ITEM, ...(id === null ? [] : [`  - id: ${id}`]), '  - origin: human', `  - status: ${DASH}`, `  - notes: ${notes}`].join('\n')
+const NOW = nowBlock()
+// backlog adds a block at the top of ## Backlog; blocked replaces ## Blocked's (empty).
+const state = ({ now = PLACEHOLDER, done = PLACEHOLDER, backlog = null, blocked = PLACEHOLDER } = {}) => [
   '# Demo - Loop State', '',
   '## Now', now, '',
-  '## Backlog',
+  '## Backlog', ...(backlog === null ? [] : [backlog]),
   `- [ ] P2 ${DOT} later work ${DOT} class: unclassified`, '  - blocked-by: -', '  - status: -', '',
   '## Needs decision', '(empty)', '',
-  '## Blocked', '(empty)', '',
+  '## Blocked', blocked, '',
   '## Done', done, '',
   '## Last run', '(never run)', '',
 ].join('\n')
 const doneLine = sha => `- [x] fix the parser ${DOT} ${sha} ${DOT} 2026-10-01`
+const DIGEST = itemDigest(nowItem(state({ now: NOW })))
 
 const BRANCH = 'tech-lead-loop/2026-10-01'
 const HEAD_REF = `refs/heads/${BRANCH}`
@@ -135,7 +148,18 @@ const patchFile = (fx, content) => {
 const patchPath = (fx, sha) => path.join(fx.V, 'patches', `${sha}.patch`)
 
 const record = (fx, g, fields) => assert.equal(createRecord(fx.paths, g, fields), true)
-const onBranch = fx => ({ base: fx.H0, branch: BRANCH, head_ref: HEAD_REF, now_sha256: sha256(ITEM) })
+const onBranch = fx => ({ base: fx.H0, branch: BRANCH, head_ref: HEAD_REF, now_sha256: sha256(ITEM), item_id: ID, item_digest: DIGEST })
+// The same record as a 0.5.0 firing wrote it (v:1, no item keys): created as v:2, then rewritten.
+const recordV1 = (fx, g, fields) => {
+  record(fx, g, fields)
+  const file = recordFile(fx.paths, g)
+  const { item_id, item_digest, ...rest } = JSON.parse(fs.readFileSync(file, 'utf8'))
+  void item_id, void item_digest
+  fs.writeFileSync(file, `${JSON.stringify({ ...rest, v: 1 })}\n`)
+}
+// recovered's item (R21): the ## Now item's id and origin, null with nothing in ## Now.
+const NOW_ITEM = { item_id: ID, item_origin: 'human' }
+const NO_ITEM = { item_id: null, item_origin: null }
 
 const run = (fx, ...args) => {
   const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: fx.env })
@@ -181,15 +205,15 @@ const snapshot = root => {
 }
 
 test('the action list is closed and ordered', () => {
-  assert.deepEqual(ACTIONS, ['finish-commit', 'requeue-now', 'ledger-recovered', 'write-bundle', 'note-leftovers'])
+  assert.deepEqual(ACTIONS, ['clear-now', 'now-conflict', 'finish-commit', 'requeue-now', 'ledger-recovered', 'write-bundle', 'note-leftovers'])
 })
 
 test('no clone and no record: the full output shape; a Now item -> requeue-now; --reclaimed is echoed', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM, clone: false })
+  const fx = project(t, { now: NOW, clone: false })
   assert.deepEqual(ok(fx, 5, '--reclaimed', '4'), {
     generation: 5, reclaimed: 4, now: ITEM, now_sha256: sha256(ITEM),
     clone: { exists: false, valid: false, problems: [], head: null, branch: null, dirty: DIRTY_NONE, locks: [] },
-    records: [], finish: null, recovered: null, write_bundles: [], legacy: { worktree: LEGACY_NONE },
+    records: [], clear: null, conflict: null, finish: null, recovered: null, write_bundles: [], legacy: { worktree: LEGACY_NONE },
     actions: ['requeue-now'], notes: [],
   })
   await t.test('an unresolved record with no clone reads no-clone and is noted', () => {
@@ -227,7 +251,7 @@ test('a no-record dirty clone (a stray writer after a normal release) -> note-le
 })
 
 test('leftovers of a prepared record: requeue-now first, then note-leftovers; staged and locks reported', TIMEOUT, t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   record(fx, 3, { phase: 'prepared', ...onBranch(fx) })
   fs.writeFileSync(path.join(fx.W, 'new.txt'), 'new\n')
   git(fx.W, 'add', '--', 'new.txt')
@@ -253,7 +277,7 @@ test('untracked paths are capped at 50 with the rest counted', TIMEOUT, t => {
 })
 
 test('committed: finish-commit only when the Now line hash matches and neither Done nor the ledger names the commit', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   const c = commitInW(fx, 'feature.txt', 'feature\n')
   // Killed after the branch moved, before the record said committed (commit:after-update-ref).
   record(fx, 3, { phase: 'intent', ...onBranch(fx), intent: { tree: c.tree, parent: fx.H0, commit: c.sha } })
@@ -261,8 +285,8 @@ test('committed: finish-commit only when the Now line hash matches and neither D
   await t.test('the binding holds: finish-commit, ledger-recovered, write-bundle', () => {
     const out = ok(fx, 4)
     assert.deepEqual(out.records, [{ generation: 3, phase: 'intent', verdict: 'committed', sha: c.sha, ledgered: false }])
-    assert.deepEqual(out.finish, { generation: 3, sha: c.sha })
-    assert.deepEqual(out.recovered, { generations: [3], commits: [c.sha], bundles: [], task: ITEM })
+    assert.deepEqual(out.finish, { generation: 3, sha: c.sha, item_id: ID, item_digest: DIGEST })
+    assert.deepEqual(out.recovered, { generations: [3], commits: [c.sha], bundles: [], task: ITEM, ...NOW_ITEM })
     assert.deepEqual(out.write_bundles, [BRANCH])
     assert.deepEqual(out.actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
   })
@@ -276,14 +300,14 @@ test('committed: finish-commit only when the Now line hash matches and neither D
   })
 
   await t.test('## Done already names the full sha -> requeue-now', () => {
-    setState(fx, { now: ITEM, done: doneLine(c.sha) })
+    setState(fx, { now: NOW, done: doneLine(c.sha) })
     const out = ok(fx, 4)
     assert.equal(out.finish, null)
     assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
   })
 
   await t.test('a byte-identical second Now line after a pick, with Done naming a 7-hex prefix -> requeue-now', () => {
-    setState(fx, { now: ITEM, done: doneLine(c.sha.slice(0, 7)) })
+    setState(fx, { now: NOW, done: doneLine(c.sha.slice(0, 7)) })
     const out = ok(fx, 4)
     assert.equal(out.now_sha256, sha256(ITEM))
     assert.equal(out.finish, null)
@@ -291,12 +315,12 @@ test('committed: finish-commit only when the Now line hash matches and neither D
   })
 
   await t.test('six hex digits or a hex run inside a word are no sha', () => {
-    setState(fx, { now: ITEM, done: `${doneLine(c.sha.slice(0, 6))}\n- [x] x${c.sha.slice(0, 9)} ${DOT} 2026-10-01` })
+    setState(fx, { now: NOW, done: `${doneLine(c.sha.slice(0, 6))}\n- [x] x${c.sha.slice(0, 9)} ${DOT} 2026-10-01` })
     assert.deepEqual(ok(fx, 4).actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
   })
 
   await t.test('a ledger row names the commit -> requeue-now and no ledger-recovered', () => {
-    setState(fx, { now: ITEM })
+    setState(fx, { now: NOW })
     setLedger(fx, { iteration: 3, commits: [c.sha] })
     let out = ok(fx, 4)
     assert.equal(out.finish, null)
@@ -318,18 +342,18 @@ test('committed: finish-commit only when the Now line hash matches and neither D
   })
 
   await t.test('the record phase committed (killed before the ledger) binds the same way', () => {
-    setState(fx, { now: ITEM })
+    setState(fx, { now: NOW })
     record(fx, 4, { phase: 'committed', ...onBranch(fx), base: c.sha, commit: { sha: c.sha } })
     // Generation 4 is now the newest unresolved record; 3 is superseded, its commit still counts.
     const out = ok(fx, 5)
     assert.deepEqual(out.records.map(r => [r.generation, r.verdict, r.sha]), [[3, 'superseded', c.sha], [4, 'committed', c.sha]])
-    assert.deepEqual(out.finish, { generation: 4, sha: c.sha })
-    assert.deepEqual(out.recovered, { generations: [3, 4], commits: [c.sha], bundles: [], task: ITEM })
+    assert.deepEqual(out.finish, { generation: 4, sha: c.sha, item_id: ID, item_digest: DIGEST })
+    assert.deepEqual(out.recovered, { generations: [3, 4], commits: [c.sha], bundles: [], task: ITEM, ...NOW_ITEM })
   })
 })
 
 test('matrix rows 2, 28, 29 and 31: after a pick, Done written without a ledger row, after the ledger', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   await t.test('row 2: killed after the pick, before any record -> requeue-now only', () => {
     assert.deepEqual(ok(fx, 2, '--reclaimed', '1').actions, ['requeue-now'])
   })
@@ -340,7 +364,7 @@ test('matrix rows 2, 28, 29 and 31: after a pick, Done written without a ledger 
     setState(fx, { now: PLACEHOLDER, done: doneLine(c.sha.slice(0, 7)) })
     const out = ok(fx, 4)
     assert.equal(out.finish, null)
-    assert.deepEqual(out.recovered, { generations: [3], commits: [c.sha], bundles: [], task: null })
+    assert.deepEqual(out.recovered, { generations: [3], commits: [c.sha], bundles: [], task: null, ...NO_ITEM })
     assert.deepEqual(out.actions, ['ledger-recovered'])
   })
   await t.test('row 29: after the ledger -> nothing', () => {
@@ -352,7 +376,7 @@ test('matrix rows 2, 28, 29 and 31: after a pick, Done written without a ledger 
 })
 
 test('row 17: the recovering prepare killed mid-reset -> the older record\'s unfinished reset owns the clone over the bare preparing record', TIMEOUT, t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   const x = patchFile(fx, 'TECH-LEAD-RECOVERY v1 {"fixture":17}\n')
   // Generation 3 left leftovers; generation 4's prepare saved them as x and was killed while
   // resetting, after creating its own (bare) record. A half-reset tree stays behind. prepare
@@ -366,12 +390,12 @@ test('row 17: the recovering prepare killed mid-reset -> the older record\'s unf
     { generation: 4, phase: 'preparing', verdict: 'superseded', sha: null, ledgered: true },
   ])
   assert.ok(out.notes.some(n => n.includes('generation 4 is superseded by generation 3')), JSON.stringify(out.notes))
-  assert.deepEqual(out.recovered, { generations: [3], commits: [], bundles: [x], task: ITEM })
+  assert.deepEqual(out.recovered, { generations: [3], commits: [], bundles: [x], task: ITEM, ...NOW_ITEM })
   assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'note-leftovers'])
 })
 
 test('a committed older record behind a preparing record killed at prepare:after-preparing -> the committed record owns the clone', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   const c = commitInW(fx, 'feature.txt', 'feature\n')
   // Generation 3 committed and was killed before its bookkeeping; generation 4's prepare was
   // killed right after creating its record (phase preparing, no recovery, no save).
@@ -383,7 +407,7 @@ test('a committed older record behind a preparing record killed at prepare:after
       { generation: 3, phase: 'committed', verdict: 'committed', sha: c.sha, ledgered: false },
       { generation: 4, phase: 'preparing', verdict: 'superseded', sha: null, ledgered: true },
     ])
-    assert.deepEqual(out.finish, { generation: 3, sha: c.sha })
+    assert.deepEqual(out.finish, { generation: 3, sha: c.sha, item_id: ID, item_digest: DIGEST })
     assert.deepEqual(out.actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
     assert.ok(out.notes.some(n => n.includes('generation 4 is superseded by generation 3')), JSON.stringify(out.notes))
   })
@@ -498,13 +522,13 @@ test('an interrupted rewind -> note-leftovers, write-bundle withheld', TIMEOUT, 
 })
 
 test('resume (saved, STATE not written) -> requeue-now, ledger-recovered for the save, note-leftovers', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   const x = patchFile(fx, 'TECH-LEAD-RECOVERY v1 {"fixture":1}\n')
   record(fx, 3, { phase: 'saved', ...onBranch(fx), saves: [{ sha: x, why: 'delegate-flagged' }] })
   fs.writeFileSync(path.join(fx.W, 'a.txt'), 'flagged work\n')
   const out = ok(fx, 4)
   assert.deepEqual(out.records, [{ generation: 3, phase: 'saved', verdict: 'resume', sha: null, ledgered: false }])
-  assert.deepEqual(out.recovered, { generations: [3], commits: [], bundles: [x], task: ITEM })
+  assert.deepEqual(out.recovered, { generations: [3], commits: [], bundles: [x], task: ITEM, ...NOW_ITEM })
   assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'note-leftovers'])
 
   await t.test('resume-reset (resetting, the save ledgered) -> note-leftovers only', () => {
@@ -531,7 +555,7 @@ test('ledger-recovered: an unledgered commit, save or recovery bundle of any rec
     { generation: 1, phase: 'clean', verdict: 'resolved', sha: null, ledgered: false },
     { generation: 2, phase: 'prepared', verdict: 'resolved', sha: null, ledgered: false },
   ])
-  assert.deepEqual(out.recovered, { generations: [1, 2], commits: [], bundles: [z, y], task: null })
+  assert.deepEqual(out.recovered, { generations: [1, 2], commits: [], bundles: [z, y], task: null, ...NO_ITEM })
   assert.deepEqual(out.actions, ['ledger-recovered'])
 
   await t.test('a save named by a row\'s saves and a bundle by a row\'s recovered.bundles -> nothing', () => {
@@ -570,7 +594,7 @@ test('older records are reported resolved or superseded without consulting the c
 })
 
 test('exit 2: corrupt and record-from-the-future', TIMEOUT, t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   record(fx, 3, { phase: 'prepared', ...onBranch(fx) })
   refused(fx, 3, /^record-from-the-future: .*3\.json/)
   refused(fx, 2, /^record-from-the-future: .*3\.json/)
@@ -613,7 +637,7 @@ test('exit 2: a referenced patch byte-flipped, missing or replaced', TIMEOUT, t 
 })
 
 test('exit 2: clone-invalid, with the problems', TIMEOUT, t => {
-  const fx = project(t, { now: ITEM })
+  const fx = project(t, { now: NOW })
   fs.mkdirSync(path.join(fx.W, '.git', 'info'))
   fs.writeFileSync(path.join(fx.W, '.git', 'info', 'exclude'), 'secret/\n')
   let out = refused(fx, 1, /^clone-invalid: /)
@@ -663,7 +687,7 @@ test('legacy <S>/worktree facts are reported and planned no action', TIMEOUT, as
 })
 
 test('it never writes: <P> (with <S>), <V> (run, patches, out, lock) and <W> with its .git are byte- and time-identical', TIMEOUT, async t => {
-  const fx = project(t, { now: ITEM, legacy: true })
+  const fx = project(t, { now: NOW, legacy: true })
   const c = commitInW(fx, 'feature.txt', 'feature\n')
   writeBundle(fx.paths, BRANCH, { why: 'commit', guard: () => {} })
   const x = patchFile(fx, 'an anchored save\n')
@@ -726,7 +750,7 @@ test('refuses a <P> below the top level, a missing STATE.md and bad usage, with 
 
 test('nowLine is re-exported: the first line of ## Now, null when it is empty or missing', () => {
   assert.equal(PLACEHOLDER, '(empty)')
-  assert.equal(nowLine(state({ now: ITEM })), ITEM)
+  assert.equal(nowLine(state({ now: NOW })), ITEM)
   assert.equal(nowLine(state({ now: '(empty)' })), null)
   assert.equal(nowLine(state({ now: '' })), null)
   assert.equal(nowLine('## Now\r\n\r\n  - [ ] P1 task  \r\n  - status: -\r\n## Backlog\r\n'), '- [ ] P1 task')
@@ -855,4 +879,306 @@ test('write-bundle is withheld for a tip comparable with a kept retired tip <bra
   const out = ok(fx, 4)
   assert.deepEqual(out.write_bundles, [])
   assert.ok(out.notes.some(n => /retired/.test(n) && n.includes(BRANCH)), JSON.stringify(out.notes))
+})
+
+// ---------------------------------------------------------------- stage 0c-3: the item binding
+
+test('R20: finish-commit needs the record\'s item_id and item_digest to be the ## Now item\'s, and the Now line to match', TIMEOUT, async t => {
+  const fx = project(t, { now: NOW })
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  record(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+
+  await t.test('all three match -> finish-commit, naming the item', () => {
+    const out = ok(fx, 4)
+    assert.deepEqual(out.finish, { generation: 3, sha: c.sha, item_id: ID, item_digest: DIGEST })
+    assert.deepEqual(out.actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
+  })
+
+  await t.test('an upper-case copy of the id is the same id', () => {
+    setState(fx, { now: nowBlock({ id: ID.toUpperCase() }) })
+    assert.deepEqual(ok(fx, 4).actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
+  })
+
+  await t.test('the owner amended the notes of the interrupted item (same Now line) -> requeue-now, the commit stays', () => {
+    setState(fx, { now: nowBlock({ notes: 'parse every header form and the dates' }) })
+    const out = ok(fx, 4)
+    assert.equal(out.now_sha256, sha256(ITEM), 'the Now line is unchanged')
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+    assert.ok(out.notes.some(n => n.includes(c.sha.slice(0, 12)) && /changed/.test(n) && n.includes(ID)), JSON.stringify(out.notes))
+  })
+
+  await t.test('another id, or no id, on the Now item -> requeue-now', () => {
+    for (const id of ['tl-11111111', null, 'it-1']) {
+      setState(fx, { now: nowBlock({ id }) })
+      const out = ok(fx, 4)
+      assert.equal(out.finish, null, String(id))
+      assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'], String(id))
+    }
+  })
+
+  await t.test('a v:2 record that bound no item never finishes', () => {
+    setState(fx, { now: NOW })
+    fs.rmSync(recordFile(fx.paths, 3))
+    record(fx, 3, { phase: 'committed', ...onBranch(fx), item_id: null, item_digest: null, commit: { sha: c.sha } })
+    const out = ok(fx, 4)
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+    assert.ok(out.notes.some(n => /no item/.test(n)), JSON.stringify(out.notes))
+  })
+})
+
+test('R20: a v:1 record (an interrupted 0.5.0 firing) finishes on now_sha256 alone', TIMEOUT, async t => {
+  const fx = project(t, { now: nowBlock({ id: null }) })
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  recordV1(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+  assert.equal(JSON.parse(fs.readFileSync(recordFile(fx.paths, 3), 'utf8')).v, 1)
+
+  await t.test('an item without an id (0.5.0 wrote none): finish-commit, no item named', () => {
+    const out = ok(fx, 4)
+    assert.deepEqual(out.finish, { generation: 3, sha: c.sha, item_id: null, item_digest: null })
+    assert.deepEqual(out.recovered, { generations: [3], commits: [c.sha], bundles: [], task: ITEM, item_id: null, item_origin: 'human' })
+    assert.deepEqual(out.actions, ['finish-commit', 'ledger-recovered', 'write-bundle'])
+  })
+
+  await t.test('the notes amended: still finish-commit (v:1 binds the line only); an id on the item is named', () => {
+    const amended = nowBlock({ notes: 'amended' })
+    setState(fx, { now: amended })
+    const out = ok(fx, 4)
+    assert.deepEqual(out.finish, { generation: 3, sha: c.sha, item_id: ID, item_digest: itemDigest(nowItem(state({ now: amended }))) })
+  })
+
+  await t.test('the Now line edited -> requeue-now', () => {
+    setState(fx, { now: ITEM_EDITED })
+    const out = ok(fx, 4)
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+  })
+})
+
+// The clear-now edits, applied as the prose applies them: they delete the ## Now item's block
+// alone (R29), leave the other copy, and replay to expect_sha256.
+const clearApplied = (fx, out) => {
+  const before = fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8')
+  const after = applyEdits(before, out.clear.edits)
+  assert.equal(sha256(after), out.clear.expect_sha256)
+  assert.throws(() => applyEdits(after, out.clear.edits), /edit-anchor/)
+  return parseState(after)
+}
+
+test('clear-now: the ## Now item\'s id is carried by exactly one item in another section (an interrupted move)', TIMEOUT, async t => {
+  const fx = project(t, { now: NOW })
+  const copy = rest => [rest, `  - id: ${ID}`, '  - origin: human', `  - status: ${DASH}`, '  - notes: parse every header form'].join('\n')
+  const clearOf = out => (out.clear === null ? null : { id: out.clear.id, section: out.clear.section })
+
+  await t.test('a pick interrupted after its insertion (Backlog copy) -> clear-now only', () => {
+    setState(fx, { now: NOW, backlog: copy(ITEM) })
+    const out = ok(fx, 4)
+    assert.deepEqual(clearOf(out), { id: ID, section: 'Backlog' })
+    assert.equal(out.conflict, null)
+    assert.deepEqual(out.actions, ['clear-now'])
+    assert.ok(out.notes.some(n => n.includes(ID) && /Backlog/.test(n) && /edits/.test(n)), JSON.stringify(out.notes))
+    const after = clearApplied(fx, out)
+    assert.equal(nowLine(fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8')), ITEM, 'the planner itself never writes')
+    assert.deepEqual(after.items.filter(i => i.id === ID).map(i => i.section), ['Backlog'])
+    assert.equal(after.items.some(i => i.section === 'Now'), false)
+  })
+
+  await t.test('a move to ## Blocked interrupted -> clear-now', () => {
+    setState(fx, { now: NOW, blocked: copy(`- [ ] fix the parser ${DOT} attempts: 3 ${DOT} verify failed`) })
+    const out = ok(fx, 4)
+    assert.deepEqual(clearOf(out), { id: ID, section: 'Blocked' })
+    assert.deepEqual(out.actions, ['clear-now'])
+    assert.deepEqual(clearApplied(fx, out).items.filter(i => i.id === ID).map(i => i.section), ['Blocked'])
+  })
+
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  record(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+
+  await t.test('a finish (Now to Done) interrupted before the Now line went -> clear-now before anything else, no finish-commit', () => {
+    setState(fx, { now: NOW, done: copy(doneLine(c.sha)) })
+    const out = ok(fx, 4)
+    assert.deepEqual(clearOf(out), { id: ID, section: 'Done' })
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['clear-now', 'ledger-recovered', 'write-bundle'])
+  })
+
+  await t.test('a requeue interrupted with the binding intact still clears, never finishes', () => {
+    setState(fx, { now: NOW, backlog: copy(ITEM) })
+    const out = ok(fx, 4)
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['clear-now', 'ledger-recovered', 'write-bundle'])
+  })
+
+  await t.test('two other carriers are no single interrupted move -> now-conflict (R29), never requeue-now', () => {
+    setState(fx, { now: NOW, backlog: copy(ITEM), done: copy(doneLine(c.sha)) })
+    const out = ok(fx, 4)
+    assert.equal(out.clear, null)
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['now-conflict', 'ledger-recovered', 'write-bundle'])
+    assert.deepEqual(out.conflict.carriers.map(x => x.section), ['Backlog', 'Done'])
+    assert.ok(out.conflict.reasons.includes('several-carriers'), JSON.stringify(out.conflict))
+  })
+
+  await t.test('a Now item without an id is no interrupted move -> requeue-now', () => {
+    let out
+    const noId = nowBlock({ id: null })
+    setState(fx, { now: noId, backlog: noId })
+    out = ok(fx, 4)
+    assert.equal(out.clear, null)
+    assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+  })
+})
+
+// R29 (Codex g2#3, g2#4; Claude EP2): clear-now only when ## Now holds exactly one item block and
+// its id has exactly one other carrier with the same itemDigest; otherwise now-conflict, with the
+// details, and neither clear-now nor requeue-now nor finish-commit (the prose pauses, both copies kept).
+test('now-conflict: an amended ## Now copy, a second ## Now item, a raw carrier', TIMEOUT, async t => {
+  const fx = project(t, { now: NOW })
+  const OTHER = [`- [ ] P2 ${DOT} the lexer ${DOT} class: hard`, '  - id: tl-22222222', '  - origin: human'].join('\n')
+  const conflictOf = out => {
+    assert.equal(out.clear, null, JSON.stringify(out))
+    assert.equal(out.finish, null)
+    assert.deepEqual(out.actions, ['now-conflict'])
+    assert.equal(out.conflict.id, ID)
+    assert.ok(out.notes.some(n => n.includes(ID) && /conflict/.test(n)), JSON.stringify(out.notes))
+    return out.conflict
+  }
+
+  await t.test('the ## Now copy amended after the interruption (notes differ) -> now-conflict with both digests', () => {
+    const amended = nowBlock({ notes: 'parse every header form; OWNER: also the empty case' })
+    setState(fx, { now: amended, backlog: NOW })
+    const c = conflictOf(ok(fx, 4))
+    assert.deepEqual(c.reasons, ['digest-differs'])
+    const st = parseState(fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8'))
+    const [nowIt, other] = [st.items.find(i => i.section === 'Now'), st.items.find(i => i.section === 'Backlog' && i.id === ID)]
+    assert.deepEqual(c.now, { line: nowIt.line, digest: itemDigest(nowIt) })
+    assert.deepEqual(c.carriers, [{ section: 'Backlog', line: other.line, digest: itemDigest(other), raw: false }])
+    assert.notEqual(c.now.digest, c.carriers[0].digest)
+  })
+
+  await t.test('## Now holds a second item -> now-conflict (clearing would lose it)', () => {
+    setState(fx, { now: `${NOW}\n${OTHER}`, backlog: NOW })
+    const c = conflictOf(ok(fx, 4))
+    assert.deepEqual(c.reasons, ['several-now-items'])
+    assert.equal(c.now_items, 2)
+  })
+
+  await t.test('a block that holds the id without parsing to it (two id lines) -> now-conflict (raw carrier)', () => {
+    const damaged = [ITEM, `  - id: ${ID}`, '  - id: tl-33333333', '  - origin: human', `  - status: ${DASH}`, '  - notes: parse every header form'].join('\n')
+    setState(fx, { now: NOW, blocked: damaged.replace(`P1 ${DOT} fix the parser ${DOT} class: hard`, `fix the parser ${DOT} attempts: 2 ${DOT} verify failed`) })
+    const c = conflictOf(ok(fx, 4))
+    assert.ok(c.reasons.includes('raw-carrier'), JSON.stringify(c))
+    assert.deepEqual(c.carriers.map(x => [x.section, x.raw, x.digest]), [['Blocked', true, null]])
+  })
+
+  // Fix round 2 (Codex fix1-g1#4): the unrelated block sits right below the copy, and it survives
+  // the applied clear.edits byte for byte, as does the copy itself.
+  await t.test('an identical copy with an unrelated person-made Backlog item still clears', () => {
+    const UNRELATED = [`- [ ] P3 ${DOT} write the changelog ${DOT} class: easy`, '  - notes: a person added this by hand'].join('\n')
+    setState(fx, { now: NOW, backlog: `${NOW}\n${UNRELATED}` })
+    const out = ok(fx, 4)
+    assert.equal(out.conflict, null)
+    assert.deepEqual(out.actions, ['clear-now'])
+    const after = applyEdits(fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8'), out.clear.edits)
+    assert.equal(sha256(after), out.clear.expect_sha256)
+    assert.ok(after.includes(`## Backlog\n${NOW}\n${UNRELATED}\n`), after)
+    const st = parseState(after)
+    assert.deepEqual(st.items.filter(i => i.section === 'Backlog').map(i => i.title), ['fix the parser', 'write the changelog', 'later work'])
+    assert.equal(st.items.some(i => i.section === 'Now'), false)
+  })
+
+  // Fix round 2, R29a (Codex fix1-g2#1): the digest covers title, notes and decision only, so
+  // two copies with equal digests can still differ in what decides behaviour. A blocker, an
+  // origin-like line (as written), or a reserved decided:/no-change-ok: line on one copy only is
+  // a now-conflict naming the field, so clearing never discards a person's amendment.
+  const withLines = (block, ...lines) => [...block.split('\n'), ...lines].join('\n')
+  for (const [label, now, backlog, reason] of [
+    ['the ## Now copy gained a blocker', withLines(NOW, '  - blocked-by: tl-22222222'), NOW, 'blocked-by-differs'],
+    ['the copies name different blockers', withLines(NOW, '  - blocked-by: tl-22222222'), withLines(NOW, '  - blocked-by: tl-33333333'), 'blocked-by-differs'],
+    ['the ## Now copy\'s origin line changed', NOW.replace('  - origin: human', '  - origin: loop from tl-22222222'), NOW, 'origin-differs'],
+    ['the ## Now copy gained a capitalized Origin: line', withLines(NOW, '  - Origin: loop from tl-22222222'), NOW, 'origin-differs'],
+    ['the ## Now copy gained a decided: line', withLines(NOW, '  - decided: 2026-10-01'), NOW, 'decided-differs'],
+    ['the Backlog copy holds a no-change-ok: line the ## Now copy lacks', NOW, withLines(NOW, '  - no-change-ok: yes'), 'no-change-ok-differs'],
+  ]) {
+    await t.test(`${label}, the digests equal -> now-conflict (${reason})`, () => {
+      setState(fx, { now, backlog })
+      const st = parseState(fs.readFileSync(path.join(fx.S, 'STATE.md'), 'utf8'))
+      const [nowIt, other] = [st.items.find(i => i.section === 'Now'), st.items.find(i => i.section === 'Backlog' && i.id === ID)]
+      assert.equal(itemDigest(nowIt), itemDigest(other), 'the fixture keeps the digests equal')
+      const out = ok(fx, 4)
+      const c = conflictOf(out)
+      assert.deepEqual(c.reasons, [reason])
+      assert.ok(out.notes.some(n => n.includes(reason.replace(/-differs$/, ''))), JSON.stringify(out.notes))
+    })
+  }
+
+  // What a move itself rewrites is no difference: the status (a pick clears waiting-level, a
+  // block may set one), the class, the header form, and a recovery: line the block move adds.
+  await t.test('copies that differ only in status, class, header form and a recovery line still clear', () => {
+    const moved = withLines(
+      NOW.replace(ITEM, `- [ ] fix the parser ${DOT} attempts: 2 ${DOT} verify failed`).replace(`  - status: ${DASH}`, '  - status: waiting-level'),
+      '  - class: hard', `  - recovery: ${'a'.repeat(64)}`)
+    setState(fx, { now: NOW, blocked: moved })
+    const out = ok(fx, 4)
+    assert.equal(out.conflict, null, JSON.stringify(out.conflict))
+    assert.deepEqual(out.actions, ['clear-now'])
+    assert.equal(out.clear.section, 'Blocked')
+  })
+})
+
+test('R20: the Done check reads only the sha slot of a Done header, split from the right', TIMEOUT, async t => {
+  const fx = project(t, { now: NOW })
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  record(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+  const cases = [
+    ['the sha in the title with a dash in the slot', `- [x] revert ${c.sha.slice(0, 9)} ${DOT} ${DASH} ${DOT} 2026-10-01`, true],
+    ['a title with the separator, the prefix in the slot', `- [x] fix ${DOT} ${c.sha.slice(0, 9)} ${DOT} ${c.sha.slice(0, 7)} ${DOT} 2026-10-01`, false],
+    ['an upper-case slot', doneLine(c.sha.slice(0, 10).toUpperCase()), false],
+    ['another commit in the slot, ours in the title', `- [x] after ${c.sha} ${DOT} ${'0'.repeat(40)} ${DOT} 2026-10-01`, true],
+    ['an unparsed Done line holding the sha', `- [x] ${c.sha} done`, true],
+  ]
+  for (const [label, done, finishes] of cases) {
+    setState(fx, { now: NOW, done })
+    const out = ok(fx, 4)
+    assert.equal(out.finish !== null, finishes, `${label}: ${JSON.stringify(out.notes)}`)
+  }
+})
+
+test('a STATE.md with a carriage return: no clear-now and no finish-commit (crlf), the item requeued', TIMEOUT, t => {
+  const fx = project(t)
+  const c = commitInW(fx, 'feature.txt', 'feature\n')
+  record(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+  fs.writeFileSync(path.join(fx.S, 'STATE.md'), state({ now: NOW, backlog: NOW }).replace(/\n/g, '\r\n'))
+  const out = ok(fx, 4)
+  assert.equal(out.now, ITEM)
+  assert.equal(out.clear, null)
+  assert.equal(out.finish, null)
+  assert.deepEqual(out.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+  assert.ok(out.notes.some(n => /carriage return/.test(n)), JSON.stringify(out.notes))
+  // A v:1 record binds the Now line alone, which a CRLF file still yields: no finish either.
+  fs.rmSync(recordFile(fx.paths, 3))
+  recordV1(fx, 3, { phase: 'committed', ...onBranch(fx), commit: { sha: c.sha } })
+  const v1 = ok(fx, 4)
+  assert.equal(v1.finish, null)
+  assert.deepEqual(v1.actions, ['requeue-now', 'ledger-recovered', 'write-bundle'])
+})
+
+test('recovered names the ## Now item (R21): its id, null without a valid one, and its origin as written', TIMEOUT, t => {
+  const fx = project(t)
+  const x = patchFile(fx, 'TECH-LEAD-RECOVERY v1 {"fixture":"item"}\n')
+  record(fx, 3, { phase: 'clean', ...onBranch(fx), saves: [{ sha: x, why: 'pause' }] })
+  const withOrigin = (id, origin) => [ITEM, ...(id ? [`  - id: ${id}`] : []), `  - origin: ${origin}`].join('\n')
+  for (const [now, item] of [
+    [withOrigin(ID, `loop from tl-22222222`), { item_id: ID, item_origin: 'loop from tl-22222222' }],
+    [withOrigin(null, 'human'), { item_id: null, item_origin: 'human' }],
+    [withOrigin('it-1', 'a robot'), { item_id: null, item_origin: 'a robot' }],
+    [ITEM, { item_id: null, item_origin: null }],
+    // An unparsed line above the item is the Now line: no item is named.
+    [`* a stray note\n${withOrigin(ID, 'human')}`, { item_id: null, item_origin: null }],
+  ]) {
+    setState(fx, { now })
+    const task = now.startsWith('*') ? '* a stray note' : ITEM
+    assert.deepEqual(ok(fx, 4).recovered, { generations: [3], commits: [], bundles: [x], task, ...item }, now)
+  }
 })

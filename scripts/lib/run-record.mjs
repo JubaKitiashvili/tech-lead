@@ -1,16 +1,19 @@
 // scripts/lib/run-record.mjs
-// Owner of the run record (stage 0c-2, brief section 9; rulings R3, R4, R13, R20). One file
-// per write-capable firing, <V>/run/<N>.json, created once (atomic.createExclusive) and
-// replaced after (atomic.writeReplace), both fsynced. Callers hold the firing lock; a holder M
+// Owner of the run record (stage 0c-2, brief section 9; rulings R3, R4, R13, R20; stage 0c-3
+// R19 adds v:2). One file per write-capable firing, <V>/run/<N>.json, created once
+// (atomic.createExclusive) and replaced after (atomic.writeReplace), both fsynced. Callers hold the firing lock; a holder M
 // writes recovery fields into its own record and into older records g < M, never into g > M
 // (the schema refuses recovery.by < generation).
 //
-// Record (v 1; every key present, no other key):
-//   {v:1, generation:N,
+// Record (v 2; every key present, no other key):
+//   {v:2, generation:N,
 //    phase: preparing | prepared | intent | committed | saved | resetting | clean,
 //    pre_head: oid|null (the tip at creation), branch: '<prefix>/<date>'|null,
 //    head_ref: 'refs/heads/<branch>'|null (a dated branch; set together with branch),
-//    base: oid|null (H0), now_sha256: sha256|null, rules: null | {v:1, mode, ...} (changes.mjs
+//    base: oid|null (H0), now_sha256: sha256|null,
+//    item_id: id|null, item_digest: sha256|null (the ## Now item prepare saw: its ID_RE id and
+//              loop-state's itemDigest; both null or both set),
+//    rules: null | {v:1, mode, ...} (changes.mjs
 //    owns and checks the rest), refs: {'refs/...': oid}, meta_sha: sha256|null,
 //    intent: null | {tree, parent, commit}, commit: null | {sha},
 //    saves: [{sha: sha256, why: slug}], reset_sha: sha256|null, delegate_commits: [oid],
@@ -25,6 +28,10 @@
 // a base; intent an intent, committed a commit, saved a save, resetting a reset_sha; a
 // rewind-intent or rewound recovery a rewind and a base, a saved one a bundle, a resetting one
 // a reset_sha; a note only on a finished (done) recovery. An oid is 40 or 64 lowercase hex.
+// A v:1 record (written by 0.5.0, before item ids) is the same without item_id and item_digest.
+// It still reads, as it is (recordItem reads its item as null), and an update keeps it v:1: it
+// can never gain the item keys (an update that adds them, or changes v, throws bad-record).
+// createRecord writes v:2 only.
 //
 // Exports (paths is loopPaths' result; N a positive safe integer):
 //   recordFile(paths, N) -> '<V>/run/<N>.json'
@@ -55,6 +62,7 @@
 //   committedSha(rec) -> rec.commit?.sha ?? rec.intent?.commit ?? null.
 //   vettedTip({records, ledger, branch, tip, inBase}) -> boolean (see below; R28).
 //   cloneVerdict(rec | null, facts) -> {verdict, generation, ...} (pure; see below).
+//   recordItem(rec) -> {item_id, item_digest} (both null for a v:1 record), or null for no record.
 // <V>/run is checked with atomic.storageDir before create, update and delete write there: a
 // symlink at <V>/run throws CLONE_INVALID and nothing is written.
 // A record that would not pass the schema is never written: create and update throw
@@ -66,6 +74,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createExclusive, readJson, storageDir, writeReplace } from './atomic.mjs'
 import { DATED_BRANCH_RE } from './clone-check.mjs'
+import { ID_RE } from './loop-state.mjs'
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const SHA256 = /^[0-9a-f]{64}$/
@@ -82,9 +91,12 @@ const NOTES = new Set(['superseded', 'clone-missing'])
 const RULE_MODES = new Set(['recorded', 'current', 'base'])
 const NEEDS_BASE = new Set(['prepared', 'intent', 'committed', 'saved', 'resetting'])
 const KEYS = [
-  'v', 'generation', 'phase', 'pre_head', 'branch', 'head_ref', 'base', 'now_sha256', 'rules', 'refs', 'meta_sha',
-  'intent', 'commit', 'saves', 'reset_sha', 'delegate_commits', 'adopted', 'recovery', 'created_at', 'updated_at',
+  'v', 'generation', 'phase', 'pre_head', 'branch', 'head_ref', 'base', 'now_sha256', 'item_id', 'item_digest', 'rules', 'refs',
+  'meta_sha', 'intent', 'commit', 'saves', 'reset_sha', 'delegate_commits', 'adopted', 'recovery', 'created_at', 'updated_at',
 ]
+// The v:1 record's keys: v:2 less the item.
+const ITEM_KEYS = ['item_id', 'item_digest']
+const KEYS_V1 = KEYS.filter(k => !ITEM_KEYS.includes(k))
 const RECOVERY_KEYS = ['by', 'base', 'rewind', 'bundles', 'reset_sha', 'step', 'note']
 
 const isPlain = v => {
@@ -146,9 +158,9 @@ function recoveryProblem(r, generation) {
 // Why rec is not a valid record (of generation N when N is given), or null.
 function recordProblem(rec, N) {
   if (!isPlain(rec)) return 'not a JSON object'
-  const k = keysProblem(rec, KEYS, 'the record')
+  if (rec.v !== 1 && rec.v !== 2) return `v is ${JSON.stringify(rec.v)}, not 1 or 2`
+  const k = keysProblem(rec, rec.v === 1 ? KEYS_V1 : KEYS, `the v:${rec.v} record`)
   if (k) return k
-  if (rec.v !== 1) return `v is ${JSON.stringify(rec.v)}, not 1`
   if (!isGeneration(rec.generation)) return 'generation is not a positive integer'
   if (N !== undefined && rec.generation !== N) return `generation ${rec.generation} in the record of generation ${N}`
   if (!PHASES.has(rec.phase)) return `phase ${JSON.stringify(rec.phase)} is unknown`
@@ -160,6 +172,11 @@ function recordProblem(rec, N) {
   if ((rec.branch === null) !== (rec.head_ref === null)) return 'branch and head_ref are not set together'
   if (rec.branch !== null && rec.head_ref !== `refs/heads/${rec.branch}`) return 'head_ref does not name branch'
   for (const key of ['now_sha256', 'meta_sha', 'reset_sha']) if (!shaOrNull(rec[key])) return `${key} is not a sha256`
+  if (rec.v === 2) {
+    if (rec.item_id !== null && (typeof rec.item_id !== 'string' || !ID_RE.test(rec.item_id))) return 'item_id is not a tl- item id'
+    if (!shaOrNull(rec.item_digest)) return 'item_digest is not a sha256'
+    if ((rec.item_id === null) !== (rec.item_digest === null)) return 'item_id and item_digest are not set together'
+  }
   if (rec.rules !== null && !(isPlain(rec.rules) && rec.rules.v === 1 && RULE_MODES.has(rec.rules.mode))) {
     return 'rules is not a v1 rules object'
   }
@@ -339,10 +356,12 @@ export function createRecord(paths, N, fields = {}, opts = {}) {
   if (Object.hasOwn(fields, 'generation') && fields.generation !== N) {
     throw badRecord(`generation ${JSON.stringify(fields.generation)} in the record of generation ${N}`)
   }
+  // New records are v:2 (R19); a v:1 record is only ever one a 0.5.0 firing left.
+  if (Object.hasOwn(fields, 'v') && fields.v !== 2) throw badRecord(`a new record is v:2, not v:${JSON.stringify(fields.v)}`)
   const now = stamp()
   const rec = toRecord({
-    v: 1, phase: 'preparing', pre_head: null, branch: null, head_ref: null, base: null, now_sha256: null, rules: null,
-    refs: {}, meta_sha: null, intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [], adopted: [],
+    v: 2, phase: 'preparing', pre_head: null, branch: null, head_ref: null, base: null, now_sha256: null, item_id: null,
+    item_digest: null, rules: null, refs: {}, meta_sha: null, intent: null, commit: null, saves: [], reset_sha: null, delegate_commits: [], adopted: [],
     recovery: null, ...fields,
     generation: N, recovery: withRecoveryDefaults(fields.recovery ?? null), created_at: now, updated_at: now,
   }, N)
@@ -420,6 +439,15 @@ export function isResolved(rec) {
 
 export function committedSha(rec) {
   return rec?.commit?.sha ?? rec?.intent?.commit ?? null
+}
+
+// The ## Now item a record binds (R19, R20): {item_id, item_digest}, both null for a v:1 record
+// (written before item ids) and for a v:2 record whose prepare saw no item with a valid id; null
+// when there is no record.
+export function recordItem(rec) {
+  if (!rec) return null
+  if (rec.v !== 2) return { item_id: null, item_digest: null }
+  return { item_id: rec.item_id ?? null, item_digest: rec.item_digest ?? null }
 }
 
 // A bare record: phase preparing and anchoring nothing (no recovery, no save, no reset). A
