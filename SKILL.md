@@ -61,7 +61,7 @@ insurance against the cost tail on routine work. There are two exceptions:
 | Delegate | Model | Use for |
 |----------|-------|---------|
 | `Explore` (built-in) | Inherits the main model (capped at Opus) unless you pass `model`. Always pass `model: "sonnet"`, or `"haiku"` for pure lookups. A plugin cannot override the built-in. | Codebase search and read-only fan-out. Returns conclusions, not file dumps. |
-| `tech-lead:fast-worker` | Sonnet 5.5, `effort: medium` | Repetitive multi-file edits, boilerplate from a spec, running tests/builds and reporting. Needs a complete spec and a check (see "Who writes the code" below). |
+| `tech-lead:fast-worker` | Sonnet 5.5, `effort: high` | Repetitive multi-file edits, boilerplate from a spec, running tests/builds and reporting. Needs a complete spec and a check (see "Who writes the code" below). |
 | `tech-lead:deep-reasoner` | Opus 5.5, `effort: xhigh`, in a fresh context (sees only the brief) | Independent deep analysis of a well-scoped problem. Seat A of the panel. |
 | `tech-lead:triage` | Haiku 4.5, Read-only, schema-enforced via `tech-lead:triage` workflow | The loop's §4 second-check only (see `/tech-lead:loop`). |
 | Codex (`codex:codex-rescue`) | GPT, via the Codex CLI config | Peer engineer from a different model family. Seat B of the panel. |
@@ -160,7 +160,7 @@ a session raised to `xhigh` for a hard goal must not plan at `high`. Run
 **Pin effort on delegates.** With no `effort` in its frontmatter or its
 `agent()` call, a delegate's level depends on how the session was launched.
 An explicit `--effort` reaches it, and `CLAUDE_CODE_EFFORT_LEVEL` overrides
-even a pin. `fast-worker` pins `medium` and `deep-reasoner` pins `xhigh`;
+even a pin. `fast-worker` pins `high` and `deep-reasoner` pins `xhigh`;
 Haiku takes no effort. The built-in Explore cannot be pinned, so in a
 session launched with `--effort xhigh` or higher, pass it `model: "haiku"`
 for pure lookups. Keep Sonnet 5.5 at `high` or below for routine work: at

@@ -255,7 +255,7 @@ is installed.
 | Delegate | Model | Effort | Tools | Role |
 |---|---|---|---|---|
 | `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Session level; a plugin can't pin it | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
-| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `medium` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
+| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `high` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
 | `tech-lead:deep-reasoner` | `opus`: Opus 5.5, fresh context | `xhigh` | Read, Grep, Glob | Independent deep analysis of a well-scoped problem; panel seat A |
 | `tech-lead:triage` | `haiku`: Haiku 4.5 | none (Haiku has no effort parameter) | Read | The loop's escalate-only second check; runs only through its workflow |
 | Codex (`codex:codex-rescue`) | GPT, from `~/.codex/config.toml` | Set per call (panel: `xhigh`) | Codex CLI | A peer from another model family: panel seat B, and the loop's L3 implementer |
@@ -999,7 +999,7 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
   marketplace.json     makes the repo installable as tech-lead@tech-lead
 SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
 agents/
-  fast-worker.md       Sonnet, effort medium; mechanical execution
+  fast-worker.md       Sonnet, effort high; mechanical execution
   deep-reasoner.md     Opus, effort xhigh, read-only; independent analysis
   triage.md            Haiku, Read-only; loop triage via its workflow
 skills/
