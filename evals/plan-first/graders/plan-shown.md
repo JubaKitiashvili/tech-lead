@@ -1,6 +1,5 @@
 ---
 type: llm
-arm: with-only
 ---
 
 The final message presents a plan that splits the goal into separate tasks

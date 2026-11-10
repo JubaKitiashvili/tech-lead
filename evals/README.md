@@ -72,6 +72,20 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
     grader for a direct edit at that point; `no-write-before-approval` and
     `no-edit-before-approval` were added after this run.
 
+- 2026-11-11, plugin 0.7.2, `--case plan-first --runs 3 --scaffold`, on
+  `--model opus` ($4.25) and on `--model fable` ($6.62): with the plugin, 0 of
+  6 runs showed a plan or asked for approval. The lead dispatched agents at
+  once (every call carried a model), and in some runs also tried to write
+  files itself. With the first run that is 0 of 7.
+- 2026-11-11, plugin 0.7.3 (the "Stop after the plan" rule), same case,
+  `--runs 3 --ablation none`: 3 of 3 on `opus` ($0.64) and 3 of 3 on `fable`
+  ($1.33). Each run ended on a plan with an executor and stakes per task and
+  no agent, write or edit. `delegates-pin-model` on `opus`, `--runs 2`: 2 of 2
+  ($1.20), so an approved plan still executes without a second stop.
+
+Eval runs are non-interactive. A lead may behave differently when a user is
+there to answer, so these numbers describe `claude -p`, not a live session.
+
 ## Limits
 
 - The guard cases pass without the plugin too, so their difference is zero by
