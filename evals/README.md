@@ -61,6 +61,17 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   skill fired in the two guard cases. 12 agent runs, 252 s, $1.28. One run per
   arm, so this shows the suite works and gives no rate.
 
+- 2026-11-11, same versions, `--tag behaviour --runs 1 --model opus --scaffold`:
+  4 agent runs, 418 s, $2.03.
+  - `delegates-pin-model`: passed. Both `Agent` calls carried `model: opus` and
+    `effort: high`.
+  - `plan-first`: **failed** with the plugin. The skill fired and the lead read
+    the project, then called `Write` four times without showing a plan or
+    asking for approval. The calls were refused only because the run grants no
+    `Write`. One run, so it is a lead to follow up, not a rate. The case had no
+    grader for a direct edit at that point; `no-write-before-approval` and
+    `no-edit-before-approval` were added after this run.
+
 ## Limits
 
 - The guard cases pass without the plugin too, so their difference is zero by
