@@ -55,8 +55,8 @@ Workflow({name: "tech-lead:research-lanes",
 - **If the Workflow tool is not available, or says "not found":** dispatch the same lanes as
   general-purpose Agent calls with `model: "sonnet"`, in one message. Then
   dispatch one verifier Agent per lane with `model: "opus"`, using the lane
-  and fact-check prompts in `../../workflows/research.js`. Agent calls cannot
-  pin effort, so on this path every agent runs at the session's effort.
+  and fact-check prompts in `../../workflows/research.js`. On this path,
+  pass `effort: "high"` with each Agent call, as the workflow does.
 
 ## 3 · Synthesize
 

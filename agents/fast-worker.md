@@ -2,7 +2,7 @@
 name: fast-worker
 description: Use this agent for mechanical, well-specified execution work. It is pinned to Sonnet to keep the orchestrator's usage and context lean. Typical triggers include applying a defined pattern or repetitive edit across many files (renames, import updates, config changes), generating boilerplate or test scaffolding from an explicit spec, and running formatters, test suites, or builds and reporting the results. Do NOT use it for work that requires design decisions or open-ended debugging. It executes specs; it does not make judgment calls.
 model: sonnet
-effort: medium
+effort: high
 color: green
 tools: ["Read", "Grep", "Glob", "Write", "Edit", "Bash"]
 ---

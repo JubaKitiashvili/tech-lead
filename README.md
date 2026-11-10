@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.6.1.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.6.2.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -61,7 +61,7 @@ slash command. For stricter always-on routing, see
 
 ## Requirements
 
-- **Claude Code 2.1.284 or later** (`claude --version`). The model names in
+- **Claude Code 2.1.293 or later** (`claude --version`). The model names in
   this README assume the Anthropic API. On Bedrock, Vertex, Foundry, and
   Claude Platform on AWS, the model aliases resolve to older models.
 - **Dynamic workflows.** Workflows are available on paid plans and the API;
@@ -254,10 +254,10 @@ is installed.
 
 | Delegate | Model | Effort | Tools | Role |
 |---|---|---|---|---|
-| `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Session level; a plugin can't pin it | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
-| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `medium` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
+| `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Set per call with the Agent tool's `effort`; otherwise the model's default | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
+| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `high` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
 | `tech-lead:deep-reasoner` | `opus`: Opus 5.5, fresh context | `xhigh` | Read, Grep, Glob | Independent deep analysis of a well-scoped problem; panel seat A |
-| `tech-lead:triage` | `haiku`: Haiku 4.5 | none (Haiku has no effort parameter) | Read | The loop's escalate-only second check; runs only through its workflow |
+| `tech-lead:triage` | `haiku`: Haiku 5.5 | `high`, set by the workflow | Read | The loop's escalate-only second check; runs only through its workflow |
 | Codex (`codex:codex-rescue`) | GPT, from `~/.codex/config.toml` | Set per call (panel: `xhigh`) | Codex CLI | A peer from another model family: panel seat B, and the loop's L3 implementer |
 
 **Always kept in the main session:**
@@ -274,7 +274,7 @@ because a fork inherits your context and your leanings.
 ### Models and effort
 
 `SKILL.md` → *Models and effort* has the full guidance, checked against
-Anthropic's documentation on 2026-09-29. In short:
+Anthropic's documentation on 2026-11-10. In short:
 
 - **The orchestrator is Opus 5.5.** It is the default model, and the `opus`
   alias resolves to it from Claude Code 2.1.280.
@@ -296,10 +296,10 @@ Anthropic's documentation on 2026-09-29. In short:
   `/tech-lead` sets none, so it plans at your session level: use `high` or
   above.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
-  `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
-  announced, for example. The plugin never names `fable`, or `best`, which
-  resolves to Fable: a verified re-check on 2026-09-30 found no role for
-  Fable 5.1 here (see "No Fable tier" in SKILL.md).
+  `haiku`, so they follow the aliases when new models ship. The plugin never
+  names `fable` or `best` in an agent or workflow: a verified re-check on
+  2026-09-30 found no role for Fable 5.1 here (see "No Fable tier" in
+  SKILL.md).
 
 ### Workflow mode
 
@@ -846,7 +846,9 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
   - To resume: clear a `waiting-infra` status, or set `paused: false`.
 - **Triage.** Runs in `shadow` mode by default, which only logs the Haiku
   second check. Switch to `gate`, which applies it (escalate-only), only
-  after you have reviewed at least 20 logged rows.
+  after you have reviewed at least 20 logged rows. Count rows from plugin
+  0.6.2 on: the checker is now Haiku 5.5 at effort `high`, and older rows
+  came from a different checker.
 - **Never.**
   - Push, open PRs, or merge.
   - Write your working tree or `.git` outside `.tech-lead/` (the one-time
@@ -999,7 +1001,7 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
   marketplace.json     makes the repo installable as tech-lead@tech-lead
 SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
 agents/
-  fast-worker.md       Sonnet, effort medium; mechanical execution
+  fast-worker.md       Sonnet, effort high; mechanical execution
   deep-reasoner.md     Opus, effort xhigh, read-only; independent analysis
   triage.md            Haiku, Read-only; loop triage via its workflow
 skills/
