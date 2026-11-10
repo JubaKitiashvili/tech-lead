@@ -15,7 +15,9 @@ with arguments, treat them as the goal to orchestrate.
 
 The orchestrator is the main-session model. By default that is Opus 5.5:
 the `default` model on Pro, Max, Ultra, Team, Enterprise and the Anthropic API,
-and the target of the `opus` alias from Claude Code v2.1.280.
+and the target of the `opus` alias from Claude Code v2.1.280. It can also be
+Fable 5.2, which is a default nowhere: it runs only when the owner picks it
+with `/model fable`.
 
 - It keeps all substantive reasoning: architecture calls, iterative debugging,
   tradeoff decisions, synthesis, and final review.
@@ -36,6 +38,35 @@ and the target of the `opus` alias from Claude Code v2.1.280.
 - **Codex settings.** Never hardcode a GPT model name: Codex takes its model
   from `~/.codex/config.toml`. Valid Codex efforts are
   `none|minimal|low|medium|high|xhigh`; the plugin rejects `ultra` and `max`.
+
+**When the main session runs on Fable 5.2,** Fable leads. It does not
+execute, and it never delegates to itself.
+
+| Session model | Use it for |
+|---|---|
+| Fable 5.2 | `/tech-lead` on a long or ambiguous multi-part goal; a `/tech-lead:loop` run over many items; root-cause work across subsystems; synthesis after a panel or a research run. |
+| Opus 5.5 | `/tech-lead:quick`; one well-scoped item; anything security-shaped; and the rest of the week once Fable has used its share of the plan's limit. |
+
+- **No agent inherits the session model.** Every delegate keeps its own
+  alias, so the bench costs the same as on an Opus session. On an Agent
+  call, always pass `model`; never pass `"fable"`. For the workflows and the
+  bench, `node scripts/check.mjs` enforces both.
+- **A fork is Fable work.** It copies the lead's context onto the lead's
+  model. Fork only what would stay in the main session anyway.
+- **Delegates cannot spawn.** No bench agent has the Agent tool.
+- **Counts live in code.** Fable 5.2 delegates readily. When Workflow is
+  opted in and the shape matches, use the Workflow form: the script fixes
+  how many agents run.
+- **Effort.** Run at `high`. At `xhigh` and `max` Fable 5.2 starts
+  subagents to review its own work, and the panel and the Codex peer already
+  do that review. Go above `high` only for a turn that needs it, such as
+  reconciling a split panel.
+- **Security work.** A request flagged for cybersecurity or biology re-runs
+  on an older Opus model, and the session then stays on it. Give a security
+  audit an Opus executor from the first step and read its reports only.
+  Check `/model` after a security task.
+- **A declined task** is re-run unchanged on another tier. Never reword it
+  to get it through.
 
 Delegate two things only:
 
@@ -99,7 +130,7 @@ Code 2.1.321 on the Anthropic API.
 **Use aliases, not model IDs.** Agent frontmatter and `agent()` calls name
 `opus`, `sonnet` or `haiku`. Today these resolve to Opus 5.5, Sonnet 5.5 and
 Haiku 5.5 (`haiku` moved in Claude Code v2.1.293). Never name `fable` in an
-agent or workflow (see "No Fable tier" below). Avoid `best` too: it is the
+agent or workflow (see "Fable leads at most" below). Avoid `best` too: it is the
 same as `opus` since v2.1.321 and pointed at Fable before that, so it has
 already changed meaning once. Aliases move with new releases. Off the
 Anthropic API they can resolve to older models: `sonnet` is Sonnet 4.6 on
@@ -115,16 +146,20 @@ Anthropic API.
 | Sonnet 5.5 | "Well-scoped everyday tasks". It "fits best when the task has a clear spec and a way to check the result." |
 | Haiku 5.5 | "High-volume, latency-sensitive tasks such as classification, extraction, and routing", and lookups. It takes all five effort levels and defaults to `medium`. |
 
-**No Fable tier.** The owner removed Fable 5.1 on 2026-09-25, and a
-verified re-check on 2026-09-30 found no role for it in this plugin.
-Anthropic's coding and reasoning measurements, and most independent ones
-(Artificial Analysis, CursorBench, Vals, METR), put Opus 5.5 at or above
-Fable 5.1 at the same effort, at 2.5x lower token price; on a Max plan
-Fable also draws weekly limits faster. Two small tests favoured Fable
-(Endor Labs secure coding; a 15-run max-effort test by The New Stack), so
-re-check when a new Fable model ships. Anthropic's docs still suggest
-Fable when Opus at `xhigh` or `max` falls short; this plugin takes the
-step-4 route below instead.
+**Fable leads at most; it is never a delegate.** Fable 5.1 was removed on
+2026-09-25. Fable 5.2 (2026-11-09) was re-checked on 2026-11-10. It costs 2x
+Opus 5.5 per token, down from 2.5x, and a Max plan gives it at most half of
+the weekly limit. Anthropic's own measurements put Opus 5.5 at `xhigh` level
+with Fable 5.2 at `high` on coding for about half the cost, and found that
+Fable 5.2 leading Sonnet subagents cost 19% more than Opus 5.5 for about the
+same score. The first independent numbers (Vals, Artificial Analysis) show a
+lead of a few points on aggregate indices and ties with Opus 5.5 on coding.
+So the owner may run the main session on Fable 5.2 for long, ambiguous work,
+and no agent or workflow names it; the checks enforce that. On a Fable
+session the plugin keeps Fable's share of the limit for judgment. It does
+not lower the total cost of a run. None of this was measured on this
+plugin. Re-check when independent results on long-horizon work exist, or
+when the next Fable model ships.
 
 **Who writes the code.** Anthropic's sources disagree here. The Opus 5.5
 cost post (Sep 25, written before Sonnet 5.5) says to keep code edits, even
@@ -147,7 +182,15 @@ both default to `medium`, and Opus 5.5 at `medium` matches or beats Opus 5 at
 4. If Opus 5.5 at `xhigh` hits the same problem twice, change the approach
    (re-plan, split the problem, find the missing fact). Then get an
    independent look from the Codex peer or a fresh-context `deep-reasoner`.
-   `max` on Opus 5.5 is the last effort step.
+   If the problem is still open, tell the owner that moving the session to
+   Fable 5.2 (`/model fable`) is Anthropic's documented next step. It is the
+   owner's call, because it changes cost. `max` on Opus 5.5 is the last
+   effort step.
+
+On a Fable 5.2 main session the ladder is shorter: `high` is the working
+level. If Fable 5.2 at `high` hits the same problem twice, change the
+approach and get the independent look. There is no stronger Claude model to
+climb to.
 
 `max` lasts only for the current session in Claude Code, and the docs call it
 "prone to overthinking". More effort catches missed edge cases; it does not

@@ -16,7 +16,7 @@ const ids = A.options.map(o => String(o.id))
 if (new Set(ids).size !== ids.length) throw new Error('option ids must be unique')
 
 const seatModel = A.seatModel || 'opus'
-// Aliases only; no `fable`/`best` (SKILL.md "No Fable tier").
+// Aliases only; no `fable`/`best` (SKILL.md "Fable leads at most").
 if (!['opus', 'sonnet'].includes(seatModel)) throw new Error('args.seatModel must be opus or sonnet')
 const fallbackModel = seatModel === 'opus' ? 'sonnet' : null
 // Opus 5.5 thinks more per turn at xhigh/max than Opus 5, and Anthropic says to reserve both
