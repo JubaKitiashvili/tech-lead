@@ -20,6 +20,10 @@ the test suite.
 | `plan-first` | behaviour | The plan names a model per task and nothing is dispatched before approval |
 | `delegates-pin-model` | behaviour, costly | After approval, every `Agent` call carries a model |
 
+In the routing cases the "skill fired" grader is marked `arm: both`, so it is
+part of the score: a run without the plugin scores 0.5 by design, and a run
+with the plugin where the skill stays silent fails the case.
+
 The routing cases grant only `Skill`, `Read`, `Glob` and `Grep`, so a skill
 that fires cannot dispatch agents; they measure the skill descriptions, not the
 work. A run loads only this plugin: the user's `CLAUDE.md` and rule files are
@@ -49,6 +53,13 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   root as a skill folder, and the command warns when results land inside it.
 - `--max-cost-usd <n>` stops launching new runs once the ceiling is reached.
 - Do not run it beside other heavy jobs on the same machine.
+
+## Results so far
+
+- 2026-11-11, plugin 0.7.2, Claude Code 2.1.322, `--tag routing --runs 1 --model opus`:
+  6 of 6 cases passed, the right skill fired in all four routing cases, no
+  skill fired in the two guard cases. 12 agent runs, 252 s, $1.28. One run per
+  arm, so this shows the suite works and gives no rate.
 
 ## Limits
 
