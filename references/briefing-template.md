@@ -29,9 +29,13 @@ DONE MEANS
   (fast-worker, Codex); deep-reasoner is read-only>
 
 OUTPUT FORMAT
-Concise report for an orchestrator, not a human:
-recommendation/summary first, reasoning as 3-5 decisive points,
-cite code as file:line, no file dumps, under ~400 words.
+Concise report for an orchestrator, not a human, at most 40 lines:
+- verdict or recommendation first;
+- evidence as 3-5 decisive points: file:line, or a command and its result;
+- files changed, as absolute paths;
+- decisions the brief did not settle, returned as questions, not made.
+No file dumps. Long verbatim material (logs, diffs, listings) goes to a file
+at <absolute scratch path>, and the report gives the path.
 ```
 
 **Two substitutions:**
