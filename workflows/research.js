@@ -78,10 +78,12 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 if (A.effort && !EFFORTS.includes(A.effort)) throw new Error(`args.effort must be one of ${EFFORTS.join(', ')}`)
 // Effort is pinned (SKILL.md "Pin effort on delegates"). Lanes are context-heavy search, so they
 // run on Sonnet at high unless args say otherwise; Sonnet above high widens its own scope.
-// Fact-checkers are the gate: they stay on the session model at high, whatever the lanes use.
+// Fact-checkers are the gate: they run on Opus at high, whatever the lanes use. The model is
+// pinned because an unset model inherits the session's, and a Fable session would pay Fable
+// rates for every checker.
 // Effort is a no-op on Haiku 4.5 (Claude Code drops it).
 const laneOpt = { model: A.model || 'sonnet', effort: A.effort || 'high' }
-const verifyOpt = { effort: 'high' }
+const verifyOpt = { model: 'opus', effort: 'high' }
 
 // agent() throws when an agent cannot run (for example, once a token budget is spent). A lane
 // whose agent fails stays listed, and a failed fact-check keeps the lane's open questions.
