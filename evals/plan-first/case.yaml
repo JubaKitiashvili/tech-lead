@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: plan-first
+description: A multi-part goal gets a plan with a model per task, and nothing is dispatched before the user approves.
+tags: [behaviour]
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 25
+  timeout_seconds: 600
+  allowed_tools: [Skill, Read, Glob, Grep, Agent]
