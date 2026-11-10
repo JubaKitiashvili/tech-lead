@@ -846,7 +846,9 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
   - To resume: clear a `waiting-infra` status, or set `paused: false`.
 - **Triage.** Runs in `shadow` mode by default, which only logs the Haiku
   second check. Switch to `gate`, which applies it (escalate-only), only
-  after you have reviewed at least 20 logged rows.
+  after you have reviewed at least 20 logged rows. Count rows from plugin
+  0.6.2 on: the checker is now Haiku 5.5 at effort `high`, and older rows
+  came from a different checker.
 - **Never.**
   - Push, open PRs, or merge.
   - Write your working tree or `.git` outside `.tech-lead/` (the one-time
