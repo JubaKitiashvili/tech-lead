@@ -38,13 +38,13 @@ test('a lane whose agent or fact-checker throws stays listed as unverified; a fa
   assert.ok(logs.some(l => /verify:fit/.test(l) && /budget exhausted/.test(l)), logs.join('\n'))
 })
 
-test('lanes run on sonnet at high and fact-checkers on the session model at high; model and effort apply to lanes only', async () => {
+test('lanes run on sonnet at high and fact-checkers on opus at high; model and effort apply to lanes only', async () => {
   const opts = calls => calls.map(c => [c.opts.label.split(':')[0], c.opts.model, c.opts.effort])
   const uniq = xs => [...new Set(xs.map(x => JSON.stringify(x)))].map(x => JSON.parse(x))
   const d = await R.run({ question: 'q', scratch: '/tmp/s' }, ok)
-  assert.deepEqual(uniq(opts(d.calls)).map(x => x.map(v => v ?? null)), [['research', 'sonnet', 'high'], ['verify', null, 'high']])
+  assert.deepEqual(uniq(opts(d.calls)).map(x => x.map(v => v ?? null)), [['research', 'sonnet', 'high'], ['verify', 'opus', 'high']])
   const o = await R.run({ question: 'q', scratch: '/tmp/s', model: 'opus', effort: 'medium' }, ok)
-  assert.deepEqual(uniq(opts(o.calls)).map(x => x.map(v => v ?? null)), [['research', 'opus', 'medium'], ['verify', null, 'high']])
+  assert.deepEqual(uniq(opts(o.calls)).map(x => x.map(v => v ?? null)), [['research', 'opus', 'medium'], ['verify', 'opus', 'high']])
 })
 
 test('rejects an effort outside low, medium, high, xhigh and max', async () => {
