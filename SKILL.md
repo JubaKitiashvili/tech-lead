@@ -39,8 +39,8 @@ with `/model fable`.
   from `~/.codex/config.toml`. Valid Codex efforts are
   `none|minimal|low|medium|high|xhigh`; the plugin rejects `ultra` and `max`.
 
-**When the main session runs on Fable 5.2,** Fable leads. It does not
-execute, and it never delegates to itself.
+**When the main session runs on Fable 5.2,** Fable leads: it plans, decides,
+reviews and synthesizes, and no delegate runs on Fable.
 
 | Session model | Use it for |
 |---|---|
@@ -51,13 +51,20 @@ execute, and it never delegates to itself.
   alias, so the bench costs the same as on an Opus session. On an Agent
   call, always pass `model`; never pass `"fable"`. For the workflows and the
   bench, `node scripts/check.mjs` enforces both.
-- **A fork is Fable work.** It copies the lead's context onto the lead's
-  model. Fork only what would stay in the main session anyway.
+- **A fork is not delegation.** It copies the lead's context onto the lead's
+  model, so it costs what the main session costs. Never fork work a bench
+  agent could do.
+- **Code that needs judgment goes to Opus.** On a Fable session, an edit
+  tangled with judgment calls goes to a general-purpose agent with
+  `model: "opus"`, `effort: "high"` and a complete brief. Fable edits code
+  itself only when the edit cannot be briefed without the conversation.
+  This replaces "stay in the main session" in "Who writes the code" below.
 - **Delegates cannot spawn.** No bench agent has the Agent tool.
 - **Counts live in code.** Fable 5.2 delegates readily. When Workflow is
   opted in and the shape matches, use the Workflow form: the script fixes
   how many agents run.
-- **Effort.** Run at `high`. At `xhigh` and `max` Fable 5.2 starts
+- **Effort.** Run at `high`; the `research` skill sets `medium` for its own
+  turn, where the lead only routes. At `xhigh` and `max` Fable 5.2 starts
   subagents to review its own work, and the panel and the Codex peer already
   do that review. Go above `high` only for a turn that needs it, such as
   reconciling a split panel.
@@ -167,7 +174,8 @@ mechanical multi-file ones, on Opus 5.5 at `low`, and to move only lookups
 down to Sonnet or Haiku. The Sonnet 5.5 material (Sep 28) places well-scoped
 coding that has a check on Sonnet 5.5. This plugin's choice: spec-complete
 edits that have a verify step go to `fast-worker` on Sonnet 5.5, and edits
-tangled with judgment calls stay in the main session.
+tangled with judgment calls stay in the main session (on a Fable session,
+see Core principle).
 
 **Effort before tier.** Anthropic: "Tuning effort is often a better lever
 than switching models." Levels are calibrated per model, so do not carry a

@@ -167,8 +167,11 @@ export async function checkRepo(ctx, r) {
     const bad = []
     for (const f of agentFiles) {
       const a = frontmatter(rd(`agents/${f}`))
-      if (!a.model) bad.push(`agents/${f}: no model`)
-      for (const t of JSON.parse(a.tools || '[]')) if (/^(Agent|Task|Workflow)$/.test(t)) bad.push(`agents/${f}: tool ${t}`)
+      const model = (a.model || '').replace(/^['"]|['"]$/g, '')
+      // `inherit` names the session model. A missing tools line grants every tool, Agent included.
+      if (!model || model === 'inherit') bad.push(`agents/${f}: no model`)
+      if (!a.tools) bad.push(`agents/${f}: no tools list`)
+      for (const t of JSON.parse(a.tools || '[]')) if (/^(Agent|Task|Workflow)\b/.test(t)) bad.push(`agents/${f}: tool ${t}`)
     }
     assert.deepEqual(bad, [])
   })
