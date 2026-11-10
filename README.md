@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.7.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.7.1.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -401,7 +401,13 @@ typed decisions whose policy lives in code, never in a model's confidence.
 ### `/tech-lead`
 
 1. **Plan.** Restate the goal, decompose it, and tag each task with who does
-   it. The plan is shown before anything runs, unless you said to just go.
+   it and with its stakes, `normal` or `high`. A `high` task (auth, billing,
+   a migration, concurrency, a public API, a second attempt, or `deep` in
+   your request) raises its Opus delegate from `high` to `xhigh` and never
+   goes to Sonnet. When such a task needs the lead's own judgment and your
+   session is below `xhigh`, the plan ends with a recommendation to switch
+   with `/effort xhigh`; the skill cannot switch for you.
+   The plan is shown before anything runs, unless you said to just go.
    An existing plan or spec is executed as written, not re-planned.
 2. **Brief completely.** Every delegate starts with no context, so each
    brief is self-contained (`references/briefing-template.md`).
