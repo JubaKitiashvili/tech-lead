@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.6.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.6.1.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -290,9 +290,11 @@ Anthropic's documentation on 2026-09-29. In short:
   overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, change
   the approach, then bring in the Codex peer or a fresh-context
   deep-reasoner; `max` is the last effort step.
-- **Skills set their own effort.** `/tech-lead`, `quick`, `loop` and `panel`
-  run the invoking turn at `high`, and `research` at `medium`. After that
-  turn the session level returns. `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
+- **Sub-skills set their own effort.** `quick`, `loop` and `panel` run the
+  invoking turn at `high`, and `research` at `medium`. After that turn the
+  session level returns. `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
+  `/tech-lead` sets none, so it plans at your session level: use `high` or
+  above.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
   `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
   announced, for example. The plugin never names `fable`, or `best`, which
