@@ -205,7 +205,11 @@ reads the whole conversation, so it never replaces an independent panel seat.
    - If a task-list tool (TaskCreate or TodoWrite) appears in your tool list,
      track 3+ tasks there. Otherwise, the numbered plan in your message is
      the task list.
-   - Present the plan before executing, unless the user said to just go.
+   - **Stop after the plan.** Show the plan and end your turn. Until the
+     user approves it, dispatch no agent or workflow that changes files and
+     edit nothing yourself. Read-only scouting before the plan is fine.
+     Skip the stop only when the user said to just go, or when an approved
+     plan or spec already exists (next bullet).
    - If a plan or spec already exists (for example, from superpowers
      brainstorming or writing-plans), execute it with this bench. Do not
      re-plan it.
