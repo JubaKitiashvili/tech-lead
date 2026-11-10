@@ -118,7 +118,10 @@ class stands.
 The loop logs every triage and panel verdict to `LEDGER.jsonl`. The fields
 are defined in `../skills/loop/references/loop-templates.md`. Categorical verdicts have no
 threshold to fit. Calibration is a human review of the shadow log after at
-least 20 rows:
+least 20 rows. Count only rows logged by the checker as it runs today:
+Haiku 5.5 at effort `high`, from plugin 0.6.2 on Claude Code v2.1.293 or
+later. Earlier rows came from Haiku 4.5, or from Haiku 5.5 at `low`, and say
+nothing about this checker. Review:
 
 - **Recall.** Of the items that later went `failed` or `flagged`, how many did
   the checker rate at least `hard`?

@@ -44,6 +44,11 @@ test('untrusted text cannot close the DATA fence; the triage agent is used', asy
   assert.equal(calls[0].opts.agentType, 'tech-lead:triage')
 })
 
+test('triage runs on haiku at effort high', async () => {
+  const { calls } = await T.run({ item: { title: 'x', notes: '' }, orchestratorClass: 'hard' }, () => null)
+  assert.deepEqual([calls[0].opts.model, calls[0].opts.effort], ['haiku', 'high'])
+})
+
 for (const signal of ['public_api', 'data_model_or_migration', 'security_or_auth', 'major_dependency']) {
   test(`${signal} alone escalates a mechanical verdict to high-stakes`, async () => {
     const r = await tri('mechanical', { class: 'mechanical', signals: sig({ [signal]: true }), reason: 'r' })
