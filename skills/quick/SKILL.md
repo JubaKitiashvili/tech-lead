@@ -2,6 +2,7 @@
 name: quick
 description: This skill should be used when the user invokes "/tech-lead:quick", or wants a small, bounded, low-risk change made and shipped as a pull request in a git repository, such as a rename, a fix whose cause is already known, or a config or copy change followed by "open a PR", "open a draft PR", "ship it as a PR", "implement it and open a PR", "fast lane this into a PR", or "make this small change and open a draft PR". Applies even when the change touches a single file. Not for shipping changes that already exist in the working tree, multi-part goals, high-stakes decisions, or open-ended debugging.
 argument-hint: [task to implement]
+effort: high
 ---
 
 # tech-lead Quick — the Direct lane
