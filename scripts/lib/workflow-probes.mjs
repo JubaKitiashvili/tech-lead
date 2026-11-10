@@ -7,10 +7,21 @@ export const emptyProbeResult = () => ({
   schemas: {},
   observed: { fanoutStatus: new Set(), panelAgreement: new Set(), triageAgreement: new Set() },
   models: new Set(),
+  unpinned: new Set(),
   returned: {},
 })
 
-const recordModels = (got, calls) => { for (const c of calls) if (c.opts.model) got.models.add(c.opts.model) }
+// An agent the plugin does not own, whose own frontmatter pins its model.
+const EXTERNAL_PINNED = new Set(['codex:codex-rescue'])
+// A call is pinned by its own `model`, by a bench agent (whose frontmatter the repo check
+// holds to a model), or by a listed external agent. Anything else inherits the session model.
+const pinned = o => Boolean(o.model) || /^tech-lead:/.test(o.agentType || '') || EXTERNAL_PINNED.has(o.agentType)
+const recordModels = (got, calls) => {
+  for (const c of calls) {
+    if (c.opts.model) got.models.add(c.opts.model)
+    if (!pinned(c.opts)) got.unpinned.add(c.opts.label || '(no label)')
+  }
+}
 
 // One probe per workflow file. Each records into `got` and may throw; the caller
 // runs each one as its own check.

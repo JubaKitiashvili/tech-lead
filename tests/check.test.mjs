@@ -978,3 +978,27 @@ test('fails when README\'s invalid-id fix deletes a valid id, as the original ro
     assert.match(failBlock(r.stdout, name) ?? '', want, label)
   }
 })
+
+test('fails when a workflow agent() call pins no model and names no agent', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'workflows/research.js', "const verifyOpt = { model: 'opus', effort: 'high' }", "const verifyOpt = { effort: 'high' }")
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout.split('FAIL models: every probed agent() call pins a model')[1] || '', /verify:primary/)
+})
+
+test('fails when a bench agent pins no model, so it would inherit the session model', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'agents/triage.md', 'model: haiku\n', '')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout.split('FAIL bench: every agent pins a model and none can spawn agents')[1] || '', /agents\/triage\.md: no model/)
+})
+
+test('fails when a bench agent is given the Agent tool', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'agents/fast-worker.md', '"Edit", "Bash"]', '"Edit", "Bash", "Agent"]')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout.split('FAIL bench: every agent pins a model and none can spawn agents')[1] || '', /agents\/fast-worker\.md: tool Agent/)
+})
