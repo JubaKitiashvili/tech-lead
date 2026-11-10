@@ -15,7 +15,8 @@ export const emptyProbeResult = () => ({
 const EXTERNAL_PINNED = new Set(['codex:codex-rescue'])
 // A call is pinned by its own `model`, by a bench agent (whose frontmatter the repo check
 // holds to a model), or by a listed external agent. Anything else inherits the session model.
-const pinned = o => Boolean(o.model) || /^tech-lead:/.test(o.agentType || '') || EXTERNAL_PINNED.has(o.agentType)
+// `inherit` names the session model, so it is no pin.
+const pinned = o => (Boolean(o.model) && o.model !== 'inherit') || /^tech-lead:/.test(o.agentType || '') || EXTERNAL_PINNED.has(o.agentType)
 const recordModels = (got, calls) => {
   for (const c of calls) {
     if (c.opts.model) got.models.add(c.opts.model)
