@@ -148,6 +148,15 @@ both default to `medium`, and Opus 5.5 at `medium` matches or beats Opus 5 at
 "prone to overthinking". More effort catches missed edge cases; it does not
 fix a wrong approach, so change the approach first.
 
+**Skill effort.** The sub-skills set `effort` in their frontmatter: `high`
+for `quick`, `loop` and `panel`, and `medium` for `research`, where the lead
+only routes and reads verified output. The value holds for the turn that
+invokes the skill, then the session level returns. It replaces the session
+level in both directions, and `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
+`/tech-lead` itself sets none: its invoking turn is the planning turn, and
+a session raised to `xhigh` for a hard goal must not plan at `high`. Run
+`/tech-lead` at `high` or above.
+
 **Pin effort on delegates.** With no `effort` in its frontmatter or its
 `agent()` call, a delegate's level depends on how the session was launched.
 An explicit `--effort` reaches it, and `CLAUDE_CODE_EFFORT_LEVEL` overrides
