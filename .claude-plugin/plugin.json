@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "tech-lead",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Model-tiered orchestration: the main session (Opus 5.5, or Fable 5.2 by choice) plans and decides; Sonnet 5.5/Haiku do mechanical and exploration work; a fresh-context Opus seat + Codex give independent second opinions; Workflow scripts make panels, fan-outs and research deterministic; a Direct lane ships small changes as draft PRs",
   "author": {
     "name": "Juba",

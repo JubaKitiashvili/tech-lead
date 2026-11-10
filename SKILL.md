@@ -26,15 +26,10 @@ with `/model fable`.
   for the heavy reasoning, and send it `--effort xhigh`. Anthropic positions
   Sonnet 5.5 for well-scoped work: "For the hardest long-horizon work, an
   Opus model is the better choice."
-- **How a session ends up on Sonnet.** Only through a switch such as
-  `/model sonnet`, typically after an "Opus limit" message. `fallbackModel`
-  is not a rate-limit fallback: it fires only when the model is overloaded,
-  unavailable, or returns a non-retryable server error, and only for that
-  one turn. Session and weekly limits are shared across all models, so a
-  switch does not lift them. After a switch, the new model starts on a cold
-  cache. Fable 5.2 can read the earlier model's thinking; nothing else can
-  read Fable 5.2's, and Sonnet cannot read Opus 5.5's. So keep decisions in
-  plain text or a plan file.
+- **After a model switch,** such as `/model sonnet` after a limit message,
+  the new model starts on a cold cache and, unless it is Fable 5.2, cannot
+  read the earlier model's thinking. Keep decisions in plain text or a plan
+  file. A switch does not lift session or weekly limits.
 - **Codex settings.** Never hardcode a GPT model name: Codex takes its model
   from `~/.codex/config.toml`. Valid Codex efforts are
   `none|minimal|low|medium|high|xhigh`; the plugin rejects `ultra` and `max`.
@@ -87,11 +82,7 @@ Delegate two things only:
 
 Do NOT delegate reasoning that depends on accumulated session context.
 Quality is lost exactly where it matters most, and reasoning is cheap in
-context terms anyway. Anthropic's cost measurements (API benchmarks) point
-the same way. On one dependent chain of reasoning, the main model alone at
-lower effort came out ahead of delegating in every measured case.
-Delegation paid off in two cases: work larger than one context window, and
-insurance against the cost tail on routine work. There are two exceptions:
+context terms anyway. There are two exceptions:
 
 - **(a) The second-opinion panel below.** Delegation there buys
   independence, not savings.
@@ -135,62 +126,40 @@ value is independence. A fork inherits your context and your leanings.
 
 ## Models and effort
 
-This section was checked against Anthropic's docs on 2026-11-10, for Claude
-Code 2.1.321 on the Anthropic API.
+Checked against Anthropic's docs on 2026-11-10, for Claude Code 2.1.321 on
+the Anthropic API. Sources, measurements and history are in
+`references/models-and-effort.md`.
 
 **Use aliases, not model IDs.** Agent frontmatter and `agent()` calls name
-`opus`, `sonnet` or `haiku`. Today these resolve to Opus 5.5, Sonnet 5.5 and
-Haiku 5.5 (`haiku` moved in Claude Code v2.1.293). Never name `fable` in an
-agent or workflow (see "Fable leads at most" below). Avoid `best` too: it is the
-same as `opus` since v2.1.321 and pointed at Fable before that, so it has
-already changed meaning once. Aliases move with new releases. Off the
-Anthropic API they can resolve to older models: `sonnet` is Sonnet 4.6 on
-Claude Platform on AWS and Sonnet 4.5 on Bedrock, Vertex and Foundry, `opus`
-is Opus 4.6 on Foundry, and `haiku` is Haiku 4.5 everywhere off the
-Anthropic API.
+`opus`, `sonnet` or `haiku`: today Opus 5.5, Sonnet 5.5 and Haiku 5.5. Never
+name `fable` or `best` in an agent or workflow. Off the Anthropic API the
+aliases resolve to older models.
 
-**Which tier for what,** in Anthropic's words:
+**Which tier for what:**
 
 | Model | Fit |
 |---|---|
-| Opus 5.5 | "Complex work requiring careful judgment" and long-horizon agentic work. The default: "start with Claude Opus 5.5 for most workloads." |
-| Sonnet 5.5 | "Well-scoped everyday tasks". It "fits best when the task has a clear spec and a way to check the result." |
-| Haiku 5.5 | "High-volume, latency-sensitive tasks such as classification, extraction, and routing", and lookups. It takes all five effort levels and defaults to `medium`. |
+| Opus 5.5 | Complex work that needs careful judgment, and long-horizon agentic work. |
+| Sonnet 5.5 | Well-scoped work with a clear spec and a way to check the result. |
+| Haiku 5.5 | Classification, extraction, routing and lookups. It takes effort and defaults to `medium`. |
 
-**Fable leads at most; it is never a delegate.** Fable 5.1 was removed on
-2026-09-25. Fable 5.2 (2026-11-09) was re-checked on 2026-11-10. It costs 2x
-Opus 5.5 per token, down from 2.5x, and a Max plan gives it at most half of
-the weekly limit. Anthropic's own measurements put Opus 5.5 at `xhigh` level
-with Fable 5.2 at `high` on coding for about half the cost, and found that
-Fable 5.2 leading Sonnet subagents cost 19% more than Opus 5.5 for about the
-same score. The first independent numbers (Vals, Artificial Analysis) show a
-lead of a few points on aggregate indices and ties with Opus 5.5 on coding.
-So the owner may run the main session on Fable 5.2 for long, ambiguous work,
-and no agent or workflow names it; the checks enforce that. On a Fable
-session the plugin keeps Fable's share of the limit for judgment. It does
-not lower the total cost of a run. None of this was measured on this
-plugin. Re-check when independent results on long-horizon work exist, or
-when the next Fable model ships.
+**Fable leads at most; it is never a delegate.** The owner may run the main
+session on Fable 5.2 for long, ambiguous work (rules in Core principle). No
+agent or workflow names it, and the checks enforce that. Fable costs 2x Opus
+5.5 per token. On a Fable session the plugin keeps Fable's share of the
+limit for judgment; it does not lower the total cost of a run. Re-check when
+the next Fable model ships.
 
-**Who writes the code.** Anthropic's sources disagree here. The Opus 5.5
-cost post (Sep 25, written before Sonnet 5.5) says to keep code edits, even
-mechanical multi-file ones, on Opus 5.5 at `low`, and to move only lookups
-down to Sonnet or Haiku. The Sonnet 5.5 material (Sep 28) places well-scoped
-coding that has a check on Sonnet 5.5. This plugin's choice: spec-complete
-edits that have a verify step go to `fast-worker` on Sonnet 5.5, and edits
-tangled with judgment calls stay in the main session (on a Fable session,
-see Core principle).
+**Who writes the code.** Spec-complete edits that have a verify step go to
+`fast-worker` on Sonnet 5.5. Edits tangled with judgment calls stay in the
+main session (on a Fable session, see Core principle).
 
-**Effort before tier.** Anthropic: "Tuning effort is often a better lever
-than switching models." Levels are calibrated per model, so do not carry a
-setting over from Opus 5 or Sonnet 5. In Claude Code, Opus 5.5 and Sonnet 5.5
-both default to `medium`, and Opus 5.5 at `medium` matches or beats Opus 5 at
-`high`. Climb one step at a time:
+**Effort before tier.** Levels are calibrated per model, so do not carry a
+setting over from an older model. Climb one step at a time:
 
 1. `medium`: day-to-day work with a clear scope.
 2. `high`: work where verification matters or edge cases are likely.
-3. `xhigh`: long-running agentic work. "Reserve `xhigh` and `max` for work
-   where you've measured a quality gain."
+3. `xhigh`: long-running agentic work, and where a gain was measured.
 4. If Opus 5.5 at `xhigh` hits the same problem twice, change the approach
    (re-plan, split the problem, find the missing fact). Then get an
    independent look from the Codex peer or a fresh-context `deep-reasoner`.
@@ -204,29 +173,24 @@ level. If Fable 5.2 at `high` hits the same problem twice, change the
 approach and get the independent look. There is no stronger Claude model to
 climb to.
 
-`max` lasts only for the current session in Claude Code, and the docs call it
-"prone to overthinking". More effort catches missed edge cases; it does not
-fix a wrong approach, so change the approach first.
+More effort catches missed edge cases. It does not fix a wrong approach, so
+change the approach first.
 
 **Skill effort.** The sub-skills set `effort` in their frontmatter: `high`
-for `quick`, `loop` and `panel`, and `medium` for `research`, where the lead
-only routes and reads verified output. The value holds for the turn that
-invokes the skill, then the session level returns. It replaces the session
-level in both directions, and `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
-`/tech-lead` itself sets none: its invoking turn is the planning turn, and
-a session raised to `xhigh` for a hard goal must not plan at `high`. Run
-`/tech-lead` at `high` or above.
+for `quick`, `loop` and `panel`, and `medium` for `research`. The value
+holds for the invoking turn and replaces the session level in both
+directions. `/tech-lead` sets none, so that a session raised to `xhigh` does
+not plan at `high`. Run `/tech-lead` at `high` or above.
 
 **Pin effort on delegates.** With no `effort` in its frontmatter or its
-call, a delegate on the session's own model runs at the session's level. A
-delegate on another model runs at that model's default instead.
+call, a delegate on the session's own model runs at the session's level, and
+a delegate on another model runs at that model's default.
 `CLAUDE_CODE_EFFORT_LEVEL` overrides even a pin. `fast-worker` pins `high`
 and `deep-reasoner` pins `xhigh`; the workflows pin Haiku at `high` for
-triage and `low` for the seat-B mapping. A plugin cannot pin the built-in
-Explore, but the Agent call can: pass `effort` with the call (Claude Code
-v2.1.292 or later). With `model: "sonnet"` or `"haiku"` and no `effort`,
-Explore runs at that model's default, `medium`. Keep Sonnet 5.5 at `high` or below for routine work: at
-`xhigh` and `max` it starts its own review rounds and widens scope.
+triage and `low` for the seat-B mapping. Pass `effort` with an Explore call;
+without it, Explore runs at its model's default, `medium`. Keep Sonnet 5.5
+at `high` or below: at `xhigh` and `max` it starts its own review rounds and
+widens scope.
 
 **Advisor.** `/advisor opus` is Claude Code's documented pairing for a
 Sonnet main session. It is experimental and Anthropic-API only. The advisor
@@ -465,6 +429,8 @@ model is fixed by its agent file or by the row.
   fact-check.
 - **`/tech-lead:loop`**: one iteration of the backlog executor.
 - **`references/briefing-template.md`**: the brief template.
+- **`references/models-and-effort.md`**: the sources, measurements and
+  history behind Models and effort. Read it when a rule needs its reason.
 - **`references/panel-protocol.md`**: the panel protocol. It covers the
   Workflow and Agent dispatch forms, empty-seat detection, and Codex
   follow-ups.
