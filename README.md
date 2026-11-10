@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.6.2.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.7.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -276,8 +276,11 @@ because a fork inherits your context and your leanings.
 `SKILL.md` → *Models and effort* has the full guidance, checked against
 Anthropic's documentation on 2026-11-10. In short:
 
-- **The orchestrator is Opus 5.5.** It is the default model, and the `opus`
-  alias resolves to it from Claude Code 2.1.280.
+- **The orchestrator is Opus 5.5 by default, or Fable 5.2 when you pick
+  it** with `/model fable`. On a Fable session, Fable leads and never
+  executes: every delegate keeps its own model, and two checks stop an agent
+  from inheriting Fable. This keeps Fable's share of your limit for
+  judgment; it does not lower the total cost of a run.
 - **A session ends up on Sonnet only through a switch** such as
   `/model sonnet`, typically after an "Opus limit" message. `fallbackModel`
   is not a rate-limit fallback: it fires only on overload, unavailability, or
@@ -289,7 +292,8 @@ Anthropic's documentation on 2026-11-10. In short:
   for measured gains, and the Claude Code docs call `max` "prone to
   overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, change
   the approach, then bring in the Codex peer or a fresh-context
-  deep-reasoner; `max` is the last effort step.
+  deep-reasoner. After that, moving the session to Fable 5.2 is the owner's
+  call; `max` is the last effort step.
 - **Sub-skills set their own effort.** `quick`, `loop` and `panel` run the
   invoking turn at `high`, and `research` at `medium`. After that turn the
   session level returns. `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
@@ -297,8 +301,8 @@ Anthropic's documentation on 2026-11-10. In short:
   above.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
   `haiku`, so they follow the aliases when new models ship. The plugin never
-  names `fable` or `best` in an agent or workflow: a verified re-check on
-  2026-09-30 found no role for Fable 5.1 here (see "No Fable tier" in
+  names `fable` or `best` in an agent or workflow: Fable 5.2 may lead a
+  session, and it is never a delegate (see "Fable leads at most" in
   SKILL.md).
 
 ### Workflow mode

@@ -72,7 +72,7 @@ const VERDICT = {
   },
   required: ['confirmed_facts', 'verified_ideas', 'verified_risks', 'refuted', 'unverifiable', 'corrected_summary'],
 }
-// Aliases only; no `fable`/`best` (SKILL.md "No Fable tier").
+// Aliases only; no `fable`/`best` (SKILL.md "Fable leads at most").
 if (A.model && !['opus', 'sonnet', 'haiku'].includes(A.model)) throw new Error('args.model must be opus, sonnet or haiku')
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 if (A.effort && !EFFORTS.includes(A.effort)) throw new Error(`args.effort must be one of ${EFFORTS.join(', ')}`)
