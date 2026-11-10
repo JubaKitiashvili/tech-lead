@@ -54,11 +54,15 @@ reviews and synthesizes, and no delegate runs on Fable.
 - **A fork is not delegation.** It copies the lead's context onto the lead's
   model, so it costs what the main session costs. Never fork work a bench
   agent could do.
-- **Code that needs judgment goes to Opus.** On a Fable session, an edit
-  tangled with judgment calls goes to a general-purpose agent with
-  `model: "opus"`, `effort: "high"` and a complete brief. Fable edits code
-  itself only when the edit cannot be briefed without the conversation.
-  This replaces "stay in the main session" in "Who writes the code" below.
+- **Fable decides, Opus writes.** For code that needs judgment, Fable makes
+  the judgment calls first (the approach, the tradeoffs, the boundaries,
+  what done means) and writes them into the brief. A general-purpose agent
+  with `model: "opus"` and `effort: "high"` then writes the code. The brief
+  tells it to stop and return any decision the brief did not settle, not to
+  make it. Fable writes code itself only when deciding and writing cannot
+  be separated: iterative debugging, or an edit that cannot be briefed
+  without the conversation. This replaces "stay in the main session" in
+  "Who writes the code" below.
 - **Delegates cannot spawn.** No bench agent has the Agent tool.
 - **Counts live in code.** Fable 5.2 delegates readily. When Workflow is
   opted in and the shape matches, use the Workflow form: the script fixes
