@@ -100,6 +100,10 @@ export async function checkContracts(ctx, r) {
   await r.check('models: no probed agent() call dispatches fable or best', () => {
     assert.deepEqual([...got.models].filter(m => /fable|^best$/i.test(m)), [])
   })
+  await r.check('models: every probed agent() call pins a model', () => {
+    // An unpinned call runs on the session model: on a Fable session, at about twice Opus's price.
+    assert.deepEqual([...got.unpinned].sort(), [])
+  })
   const budget = s => s.match(/whose\s+outcome is ([^.]+)\./)[1].replace(/\n/g, ' ')
   await r.check('dup: daily-budget outcomes, loop SKILL.md §2 == loop-templates.md', () => {
     assert.deepEqual(ticks(budget(ctx.rd('skills/loop/SKILL.md'))).sort(), ticks(budget(templates)).sort())

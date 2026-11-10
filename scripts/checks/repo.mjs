@@ -161,6 +161,21 @@ export async function checkRepo(ctx, r) {
     assert.deepEqual(bad, [])
   })
 
+  await r.check('bench: every agent pins a model and none can spawn agents', () => {
+    // No model: the agent inherits the session model. The Agent tool: a delegate could start
+    // its own delegates, and the counts the workflows fix in code would stop holding.
+    const bad = []
+    for (const f of agentFiles) {
+      const a = frontmatter(rd(`agents/${f}`))
+      const model = (a.model || '').replace(/^['"]|['"]$/g, '')
+      // `inherit` names the session model. A missing tools line grants every tool, Agent included.
+      if (!model || model === 'inherit') bad.push(`agents/${f}: no model`)
+      if (!a.tools) bad.push(`agents/${f}: no tools list`)
+      for (const t of JSON.parse(a.tools || '[]')) if (/^(Agent|Task|Workflow)\b/.test(t)) bad.push(`agents/${f}: tool ${t}`)
+    }
+    assert.deepEqual(bad, [])
+  })
+
   await r.check('scripts: every scripts/*.mjs path the docs name exists', () => {
     // Paths the plugin owns: after `<T>/`, a backtick or a space. A companion path such as
     // `…/codex/*/scripts/codex-companion.mjs` belongs to another plugin and is skipped.
