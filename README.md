@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.7.1.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.7.2.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -273,8 +273,10 @@ because a fork inherits your context and your leanings.
 
 ### Models and effort
 
-`SKILL.md` → *Models and effort* has the full guidance, checked against
-Anthropic's documentation on 2026-11-10. In short:
+`SKILL.md` → *Models and effort* has the rules, and
+`references/models-and-effort.md` has the sources, measurements and history
+behind them, checked against Anthropic's documentation on 2026-11-10. In
+short:
 
 - **The orchestrator is Opus 5.5 by default, or Fable 5.2 when you pick
   it** with `/model fable`. On a Fable session, Fable leads and never
@@ -1028,6 +1030,7 @@ references/
   briefing-template.md   the brief every delegate gets
   panel-protocol.md      seats, independence, empty seats, follow-ups
   decision-contracts.md  the reflex rules and JSON contracts
+  models-and-effort.md   sources, measurements and history behind the model rules
 templates/
   rules-tech-lead.md     the optional always-on routing rule
 scripts/
