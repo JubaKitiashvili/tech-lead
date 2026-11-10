@@ -1,1 +1,4 @@
 .DS_Store
+
+# eval results (written by `claude plugin eval` when no --output-dir is given)
+evals/results/
