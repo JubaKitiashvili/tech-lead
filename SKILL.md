@@ -57,9 +57,9 @@ reviews and synthesizes, and no delegate runs on Fable.
 - **Fable decides, Opus writes.** For code that needs judgment, Fable makes
   the judgment calls first (the approach, the tradeoffs, the boundaries,
   what done means) and writes them into the brief. A general-purpose agent
-  with `model: "opus"` and `effort: "high"` then writes the code. The brief
-  tells it to stop and return any decision the brief did not settle, not to
-  make it. Fable writes code itself only when deciding and writing cannot
+  with `model: "opus"` then writes the code, at the effort its stakes set
+  (see Stakes in Process). The brief tells it to stop and return any
+  decision the brief did not settle, not to make it. Fable writes code itself only when deciding and writing cannot
   be separated: iterative debugging, or an edit that cannot be briefed
   without the conversation. This replaces "stay in the main session" in
   "Who writes the code" below.
@@ -236,7 +236,8 @@ reads the whole conversation, so it never replaces an independent panel seat.
 
 1. **Plan first.**
    - Restate the goal and constraints.
-   - Decompose the goal into tasks, and tag each task with its executor.
+   - Decompose the goal into tasks. Tag each task with its executor and its
+     stakes, `normal` or `high` (see Stakes below).
    - If a task-list tool (TaskCreate or TodoWrite) appears in your tool list,
      track 3+ tasks there. Otherwise, the numbered plan in your message is
      the task list.
@@ -251,7 +252,9 @@ reads the whole conversation, so it never replaces an independent panel seat.
    - Send independent tasks in one message as multiple Agent calls, or as
      one Workflow (see Workflow mode).
    - Agents run in the background and notify you on completion. Keep working
-     other lanes and act on each result as it lands.
+     other lanes. Act at once on a result that other work waits on. Results
+     that do not depend on each other are handled in one pass, not one turn
+     per agent.
    - Give an agent a `name` when you may need to follow up with it:
      `SendMessage` continues it with its context intact.
 4. **Verify against ground truth.** Treat a subagent's "done" as a claim.
@@ -259,8 +262,52 @@ reads the whole conversation, so it never replaces an independent panel seat.
      report's file list.
    - Run the narrowest real check (typecheck, affected tests) before building
      on the result or reporting success.
+   - A long check, such as a full suite or a build, goes to `fast-worker`.
+     Read the verdict line and the names of the failing tests.
 5. **Synthesize and decide.** Integration, conflict resolution, and the final
    call stay in the main session.
+
+**Stakes.** A task is `high` when any of these holds, and `normal`
+otherwise:
+
+- auth, permissions, tenant scoping, or secrets;
+- billing or payments;
+- a schema or data migration, or anything that can lose data;
+- concurrency: locks, queues, caches, shared state;
+- a public API or a contract that other code depends on;
+- a second attempt after a failed first one;
+- the user wrote `deep` in the request.
+
+The plan shows each task's tag, so the user can change it before execution.
+The tag sets the delegate's effort, passed with the call:
+
+| Delegate | `normal` | `high` |
+|---|---|---|
+| An Opus implementer, debugger or diff reviewer (`model: "opus"`) | `high` | `xhigh` |
+| `fast-worker` | `high`, pinned | Not used. A high-stakes task does not go to Sonnet. |
+| Panel seats | `xhigh` | `xhigh` |
+
+Never pick `max` for a delegate. It stays the owner's last step in "Effort
+before tier".
+
+**Effort recommendation.** The session's effort when this skill loaded:
+`${CLAUDE_EFFORT}`. A skill cannot change it on later turns, so recommend
+and let the user switch. End the plan with the block below only when both
+hold:
+
+- a `high` task needs your own judgment: reconciling a split panel, planning
+  an ambiguous long goal, or a second attempt after a failure;
+- the level above is below `xhigh`. If it shows a placeholder, not a level,
+  treat it as unknown and add "if you are not on it already".
+
+```
+Effort: xhigh recommended for this run.
+Reason: <which tasks, and why>.
+Switch: /effort xhigh. Go back to high when the run ends.
+```
+
+When such a run ends, remind the user in one line to go back to `high`. On
+ordinary work print nothing: a line on every plan stops being read.
 
 ## Workflow mode
 
@@ -326,9 +373,9 @@ all happen in the main session, before or after the Workflow call.
 
 | `status` | What you do |
 |---|---|
-| `ok` | Keep the task's changes. |
+| `ok` | Keep the task's changes. Read nothing more of that task until the final verify. |
 | `incomplete` | The worker skipped part of the spec. Inspect the diff, then finish the task or re-dispatch it. |
-| `needs-decision` | Decide the judgment call yourself. Re-dispatch that task with an Agent call that includes your decision. |
+| `needs-decision` | Decide the judgment call yourself. Decide all such calls of the run in one pass, then re-dispatch each task with an Agent call that includes your decision. |
 | `out-of-scope` | Inspect the diff, then fix or re-dispatch. |
 | `verify-failed` | Inspect the diff, then fix or re-dispatch. |
 | `no-report` | Inspect the diff, then fix or re-dispatch. |
@@ -379,6 +426,9 @@ Apply these rules whenever you route work, classify it, or accept a
 delegate's report.
 
 ## Delegation decision guide
+
+Apply the first row that matches. Do not weigh models per call: a delegate's
+model is fixed by its agent file or by the row.
 
 - **10+ file reads to answer:** `Explore` with `model: "sonnet"`.
 - **Spec complete, zero design decisions left:** `fast-worker`. With 3+
