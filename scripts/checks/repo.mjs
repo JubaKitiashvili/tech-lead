@@ -147,7 +147,7 @@ export async function checkRepo(ctx, r) {
   })
 
   await r.check('models: no agent or workflow names fable or best', () => {
-    // A string that is a Fable model name or id, or the `best` alias (which resolves to Fable),
+    // A string that is a Fable model name or id, or the `best` alias (same as `opus` since v2.1.321, Fable before),
     // anywhere in workflow code: a default, an allow-list, a registry entry, a model field.
     const fableName = s => /^(best|(claude-)?fable[-\w.]*)$/i.test(s.trim())
     const bad = []

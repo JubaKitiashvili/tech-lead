@@ -88,7 +88,7 @@ phase('Normalize')
 let seatB = { model: 'codex (~/.codex/config.toml default)', empty: true, empty_reason: 'no output', verdict: null, raw: seatBRaw || '' }
 const raw = typeof seatBRaw === 'string' ? seatBRaw.trim() : ''
 if (raw.length > 0 && !/^SEAT-EMPTY:/m.test(raw)) {
-  // effort is a no-op on Haiku 4.5 (Claude Code drops it); it takes effect once `haiku` moves to an effort-capable model.
+  // `haiku` is Haiku 5.5 from Claude Code v2.1.293, so this effort is live. `low` fits a pure mapping task.
   const n = await agent(`Map the panel answer below onto the structured output. Do not add reasoning of your own; copy the answer's own points. Valid recommendation ids: ${ids.join(', ')}, or "other".
 Set empty=true (and leave verdict out) if the text is not an analysis: empty, an error, a job id, a "queued"/"running in the background" notice, or a status message.
 

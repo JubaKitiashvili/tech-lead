@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.6.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.6.2.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -61,7 +61,7 @@ slash command. For stricter always-on routing, see
 
 ## Requirements
 
-- **Claude Code 2.1.284 or later** (`claude --version`). The model names in
+- **Claude Code 2.1.293 or later** (`claude --version`). The model names in
   this README assume the Anthropic API. On Bedrock, Vertex, Foundry, and
   Claude Platform on AWS, the model aliases resolve to older models.
 - **Dynamic workflows.** Workflows are available on paid plans and the API;
@@ -254,10 +254,10 @@ is installed.
 
 | Delegate | Model | Effort | Tools | Role |
 |---|---|---|---|---|
-| `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Session level; a plugin can't pin it | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
-| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `medium` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
+| `Explore` (built-in) | Inherits the main model (capped at Opus). The skill always passes `model: "sonnet"`, or `"haiku"` for pure lookups | Set per call with the Agent tool's `effort`; otherwise the model's default | Built-in, read-only | Search fan-out that returns conclusions, not file dumps |
+| `tech-lead:fast-worker` | `sonnet`: Sonnet 5.5 | `high` | Read, Grep, Glob, Write, Edit, Bash | Complete specs that have a check: repetitive multi-file edits, boilerplate, test and build runs. Stops on judgment calls |
 | `tech-lead:deep-reasoner` | `opus`: Opus 5.5, fresh context | `xhigh` | Read, Grep, Glob | Independent deep analysis of a well-scoped problem; panel seat A |
-| `tech-lead:triage` | `haiku`: Haiku 4.5 | none (Haiku has no effort parameter) | Read | The loop's escalate-only second check; runs only through its workflow |
+| `tech-lead:triage` | `haiku`: Haiku 5.5 | `high`, set by the workflow | Read | The loop's escalate-only second check; runs only through its workflow |
 | Codex (`codex:codex-rescue`) | GPT, from `~/.codex/config.toml` | Set per call (panel: `xhigh`) | Codex CLI | A peer from another model family: panel seat B, and the loop's L3 implementer |
 
 **Always kept in the main session:**
@@ -274,7 +274,7 @@ because a fork inherits your context and your leanings.
 ### Models and effort
 
 `SKILL.md` → *Models and effort* has the full guidance, checked against
-Anthropic's documentation on 2026-09-29. In short:
+Anthropic's documentation on 2026-11-10. In short:
 
 - **The orchestrator is Opus 5.5.** It is the default model, and the `opus`
   alias resolves to it from Claude Code 2.1.280.
@@ -290,11 +290,16 @@ Anthropic's documentation on 2026-09-29. In short:
   overthinking". If Opus 5.5 at `xhigh` hits the same problem twice, change
   the approach, then bring in the Codex peer or a fresh-context
   deep-reasoner; `max` is the last effort step.
+- **Sub-skills set their own effort.** `quick`, `loop` and `panel` run the
+  invoking turn at `high`, and `research` at `medium`. After that turn the
+  session level returns. `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
+  `/tech-lead` sets none, so it plans at your session level: use `high` or
+  above.
 - **Aliases, not model IDs.** Agents and scripts name `opus`, `sonnet`, and
-  `haiku`, so they follow the aliases when new models ship. Haiku 5.5 is
-  announced, for example. The plugin never names `fable`, or `best`, which
-  resolves to Fable: a verified re-check on 2026-09-30 found no role for
-  Fable 5.1 here (see "No Fable tier" in SKILL.md).
+  `haiku`, so they follow the aliases when new models ship. The plugin never
+  names `fable` or `best` in an agent or workflow: a verified re-check on
+  2026-09-30 found no role for Fable 5.1 here (see "No Fable tier" in
+  SKILL.md).
 
 ### Workflow mode
 
@@ -315,7 +320,7 @@ The plugin registers four workflows at session start:
 |---|---|---|---|
 | `tech-lead:panel-seats` | **Required:** `briefPath` (absolute) and `options` (2+ `{id, label}` with unique ids). **Optional:** `seatModel` (default `opus`), `seatEffort` (default `xhigh`; one of `low`…`max`), `codexEffort` (default `xhigh`) | `agreement`, plus `seatA` and `seatB`, each with its model, verdict, and the option order it saw | Typed verdicts; agreement computed from the two option ids; seat B sees the options in reverse order; empty-seat detection; one retry on Sonnet at `high` if the Opus seat returns nothing |
 | `tech-lead:fanout` | `repo` (absolute) and `tasks` (`{id, brief, files: [absolute paths]}`, with unique ids and disjoint file sets) | `summary` (count per status) and `results` (one entry per task: `id`, `status`, `report`, `out_of_scope`, `error`) | Paths are normalized, kept inside the repo, and never shared or nested between two tasks; directory entries are refused; every task gets a status, also when its worker could not run |
-| `tech-lead:research-lanes` | **Required:** `question` and `scratch` (absolute). **Optional:** `context`, `lanes` (a non-empty list of default lane keys and `{key, prompt}` entries, with unique keys; replaces the default set), `model` (lanes only; default `sonnet`), `effort` (lanes only; default `high`) | `lanes` (one entry per lane, with `corrected_summary`, `confirmed_facts`, `verified_ideas`, `verified_risks`, `refuted`, `unverifiable`) and `unverified_lanes` | An independent fact-checker on the session model at `high` verifies every lane, and only the verifier's output is returned; a lane whose agent fails is still listed in `unverified_lanes` |
+| `tech-lead:research-lanes` | **Required:** `question` and `scratch` (absolute). **Optional:** `context`, `lanes` (a non-empty list of default lane keys and `{key, prompt}` entries, with unique keys; replaces the default set), `model` (lanes only; default `sonnet`), `effort` (lanes only; default `high`) | `lanes` (one entry per lane, with `corrected_summary`, `confirmed_facts`, `verified_ideas`, `verified_risks`, `refuted`, `unverifiable`) and `unverified_lanes` | An independent fact-checker on Opus at `high` verifies every lane, and only the verifier's output is returned; a lane whose agent fails is still listed in `unverified_lanes` |
 | `tech-lead:triage` | `item` (`{title, notes}`) and `orchestratorClass` | `agreement`, `checker`, `derived`, `signals` | A Haiku verdict under a schema; the class is derived from the signals in code; it can only escalate |
 
 **What stays outside the scripts.** Scripts cannot touch files, git, clocks,
@@ -448,8 +453,8 @@ The fast lane for a small change that ships as a draft PR.
 - **Lanes.** By default four lanes run in parallel: `primary` (the source
   itself), `ecosystem` (real-world use), `alternatives`, and `fit` (with your
   code). Every lane gets its own adversarial fact-checker, so a run starts 8
-  agents. Lanes run on Sonnet at effort `high`, and fact-checkers on your
-  session model at `high`. Custom `lanes` replace the defaults; list a
+  agents. Lanes run on Sonnet at effort `high`, and fact-checkers on Opus
+  at `high`. Custom `lanes` replace the defaults; list a
   default's key to keep it.
 - **Synthesis** uses only what survived verification:
   - refuted claims never enter it;
@@ -841,7 +846,9 @@ node <plugin>/scripts/loop-review.mjs retire <project> <prefix>/<date>   # rejec
   - To resume: clear a `waiting-infra` status, or set `paused: false`.
 - **Triage.** Runs in `shadow` mode by default, which only logs the Haiku
   second check. Switch to `gate`, which applies it (escalate-only), only
-  after you have reviewed at least 20 logged rows.
+  after you have reviewed at least 20 logged rows. Count rows from plugin
+  0.6.2 on: the checker is now Haiku 5.5 at effort `high`, and older rows
+  came from a different checker.
 - **Never.**
   - Push, open PRs, or merge.
   - Write your working tree or `.git` outside `.tech-lead/` (the one-time
@@ -994,7 +1001,7 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
   marketplace.json     makes the repo installable as tech-lead@tech-lead
 SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
 agents/
-  fast-worker.md       Sonnet, effort medium; mechanical execution
+  fast-worker.md       Sonnet, effort high; mechanical execution
   deep-reasoner.md     Opus, effort xhigh, read-only; independent analysis
   triage.md            Haiku, Read-only; loop triage via its workflow
 skills/

@@ -14,7 +14,7 @@ with arguments, treat them as the goal to orchestrate.
 ## Core principle
 
 The orchestrator is the main-session model. By default that is Opus 5.5:
-the `default` model on Pro, Max, Team, Enterprise and the Anthropic API,
+the `default` model on Pro, Max, Ultra, Team, Enterprise and the Anthropic API,
 and the target of the `opus` alias from Claude Code v2.1.280.
 
 - It keeps all substantive reasoning: architecture calls, iterative debugging,
@@ -29,9 +29,10 @@ and the target of the `opus` alias from Claude Code v2.1.280.
   is not a rate-limit fallback: it fires only when the model is overloaded,
   unavailable, or returns a non-retryable server error, and only for that
   one turn. Session and weekly limits are shared across all models, so a
-  switch does not lift them. After any switch, the new model cannot read
-  Opus 5.5's thinking and starts on a cold cache, so keep decisions in plain
-  text or a plan file.
+  switch does not lift them. After a switch, the new model starts on a cold
+  cache. Fable 5.2 can read the earlier model's thinking; nothing else can
+  read Fable 5.2's, and Sonnet cannot read Opus 5.5's. So keep decisions in
+  plain text or a plan file.
 - **Codex settings.** Never hardcode a GPT model name: Codex takes its model
   from `~/.codex/config.toml`. Valid Codex efforts are
   `none|minimal|low|medium|high|xhigh`; the plugin rejects `ultra` and `max`.
@@ -61,12 +62,13 @@ insurance against the cost tail on routine work. There are two exceptions:
 | Delegate | Model | Use for |
 |----------|-------|---------|
 | `Explore` (built-in) | Inherits the main model (capped at Opus) unless you pass `model`. Always pass `model: "sonnet"`, or `"haiku"` for pure lookups. A plugin cannot override the built-in. | Codebase search and read-only fan-out. Returns conclusions, not file dumps. |
-| `tech-lead:fast-worker` | Sonnet 5.5, `effort: medium` | Repetitive multi-file edits, boilerplate from a spec, running tests/builds and reporting. Needs a complete spec and a check (see "Who writes the code" below). |
+| `tech-lead:fast-worker` | Sonnet 5.5, `effort: high` | Repetitive multi-file edits, boilerplate from a spec, running tests/builds and reporting. Needs a complete spec and a check (see "Who writes the code" below). |
 | `tech-lead:deep-reasoner` | Opus 5.5, `effort: xhigh`, in a fresh context (sees only the brief) | Independent deep analysis of a well-scoped problem. Seat A of the panel. |
-| `tech-lead:triage` | Haiku 4.5, Read-only, schema-enforced via `tech-lead:triage` workflow | The loop's §4 second-check only (see `/tech-lead:loop`). |
+| `tech-lead:triage` | Haiku 5.5, `effort: high` set by the workflow, Read-only, schema-enforced via `tech-lead:triage` workflow | The loop's §4 second-check only (see `/tech-lead:loop`). |
 | Codex (`codex:codex-rescue`) | GPT, via the Codex CLI config | Peer engineer from a different model family. Seat B of the panel. |
 
-Model names assume the Anthropic API and Claude Code v2.1.284 or later. See
+Model names assume the Anthropic API and Claude Code v2.1.293 or later
+(v2.1.321 for a Fable 5.2 main session). See
 Models and effort below.
 
 **Codex prompts.**
@@ -91,16 +93,19 @@ value is independence. A fork inherits your context and your leanings.
 
 ## Models and effort
 
-This section was checked against Anthropic's docs on 2026-09-29, for Claude
-Code 2.1.284 on the Anthropic API.
+This section was checked against Anthropic's docs on 2026-11-10, for Claude
+Code 2.1.321 on the Anthropic API.
 
 **Use aliases, not model IDs.** Agent frontmatter and `agent()` calls name
 `opus`, `sonnet` or `haiku`. Today these resolve to Opus 5.5, Sonnet 5.5 and
-Haiku 4.5. Never name `fable`, or `best`, which resolves to Fable (see "No
-Fable tier" below). Aliases move with new releases (Haiku 5.5 is
-announced). Off the Anthropic API they can resolve to older models:
-`sonnet` is Sonnet 4.6 on Claude Platform on AWS and Sonnet 4.5 on Bedrock,
-Vertex and Foundry, and `opus` is Opus 4.6 on Foundry.
+Haiku 5.5 (`haiku` moved in Claude Code v2.1.293). Never name `fable` in an
+agent or workflow (see "No Fable tier" below). Avoid `best` too: it is the
+same as `opus` since v2.1.321 and pointed at Fable before that, so it has
+already changed meaning once. Aliases move with new releases. Off the
+Anthropic API they can resolve to older models: `sonnet` is Sonnet 4.6 on
+Claude Platform on AWS and Sonnet 4.5 on Bedrock, Vertex and Foundry, `opus`
+is Opus 4.6 on Foundry, and `haiku` is Haiku 4.5 everywhere off the
+Anthropic API.
 
 **Which tier for what,** in Anthropic's words:
 
@@ -108,7 +113,7 @@ Vertex and Foundry, and `opus` is Opus 4.6 on Foundry.
 |---|---|
 | Opus 5.5 | "Complex work requiring careful judgment" and long-horizon agentic work. The default: "start with Claude Opus 5.5 for most workloads." |
 | Sonnet 5.5 | "Well-scoped everyday tasks". It "fits best when the task has a clear spec and a way to check the result." |
-| Haiku 4.5 | Lookups and simple sub-agent tasks. It has no effort parameter, and Claude Code drops one if you pass it. |
+| Haiku 5.5 | "High-volume, latency-sensitive tasks such as classification, extraction, and routing", and lookups. It takes all five effort levels and defaults to `medium`. |
 
 **No Fable tier.** The owner removed Fable 5.1 on 2026-09-25, and a
 verified re-check on 2026-09-30 found no role for it in this plugin.
@@ -148,13 +153,24 @@ both default to `medium`, and Opus 5.5 at `medium` matches or beats Opus 5 at
 "prone to overthinking". More effort catches missed edge cases; it does not
 fix a wrong approach, so change the approach first.
 
+**Skill effort.** The sub-skills set `effort` in their frontmatter: `high`
+for `quick`, `loop` and `panel`, and `medium` for `research`, where the lead
+only routes and reads verified output. The value holds for the turn that
+invokes the skill, then the session level returns. It replaces the session
+level in both directions, and `CLAUDE_CODE_EFFORT_LEVEL` overrides it.
+`/tech-lead` itself sets none: its invoking turn is the planning turn, and
+a session raised to `xhigh` for a hard goal must not plan at `high`. Run
+`/tech-lead` at `high` or above.
+
 **Pin effort on delegates.** With no `effort` in its frontmatter or its
-`agent()` call, a delegate's level depends on how the session was launched.
-An explicit `--effort` reaches it, and `CLAUDE_CODE_EFFORT_LEVEL` overrides
-even a pin. `fast-worker` pins `medium` and `deep-reasoner` pins `xhigh`;
-Haiku takes no effort. The built-in Explore cannot be pinned, so in a
-session launched with `--effort xhigh` or higher, pass it `model: "haiku"`
-for pure lookups. Keep Sonnet 5.5 at `high` or below for routine work: at
+call, a delegate on the session's own model runs at the session's level. A
+delegate on another model runs at that model's default instead.
+`CLAUDE_CODE_EFFORT_LEVEL` overrides even a pin. `fast-worker` pins `high`
+and `deep-reasoner` pins `xhigh`; the workflows pin Haiku at `high` for
+triage and `low` for the seat-B mapping. A plugin cannot pin the built-in
+Explore, but the Agent call can: pass `effort` with the call (Claude Code
+v2.1.292 or later). With `model: "sonnet"` or `"haiku"` and no `effort`,
+Explore runs at that model's default, `medium`. Keep Sonnet 5.5 at `high` or below for routine work: at
 `xhigh` and `max` it starts its own review rounds and widens scope.
 
 **Advisor.** `/advisor opus` is Claude Code's documented pairing for a

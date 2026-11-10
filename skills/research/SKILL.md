@@ -2,6 +2,7 @@
 name: research
 description: This skill should be used when the user invokes "/tech-lead:research", or asks to research, vet, check, or deeply evaluate an external library, tool, model, dataset, or repository before adopting it, depending on it, or borrowing from it ("research X before we adopt it", "check whether X is any good before we adopt it", "vet this repo", "evaluate X against alternatives"). Not for quick factual or opinion questions with no adoption decision attached ("is X worth using?", "is X still maintained?"), for questions answerable from the local codebase alone, or for a hard-to-reverse choice between well-known options (tech-lead:panel).
 argument-hint: [what to research]
+effort: medium
 ---
 
 # tech-lead Research — verified evaluation
@@ -11,7 +12,7 @@ This skill runs every research lane past an independent fact-checker, and
 you synthesize only from what survived.
 
 **Cost check.** A research run spends many agents: 4 lanes (Sonnet at effort
-`high`) and 4 fact-checkers (the session model at `high`) by default, with
+`high`) and 4 fact-checkers (Opus at `high`) by default, with
 repository clones and web searches.
 
 **Workflow opt-in.** Run §2 as a Workflow in these cases:
@@ -50,12 +51,12 @@ Workflow({name: "tech-lead:research-lanes",
   with two subjects:
   `lanes: ["ecosystem", "alternatives", "fit", {key: "primary-drizzle", prompt: "…"}, {key: "primary-prisma", prompt: "…"}]`.
 - **Model and effort:** `args.model` and `args.effort` change the lanes only.
-  Fact-checkers always run on the session model at `high`.
+  Fact-checkers always run on Opus at `high`, whatever the session model is.
 - **If the Workflow tool is not available, or says "not found":** dispatch the same lanes as
   general-purpose Agent calls with `model: "sonnet"`, in one message. Then
-  dispatch one verifier Agent per lane on the session model, using the lane
-  and fact-check prompts in `../../workflows/research.js`. Agent calls cannot
-  pin effort, so on this path every agent runs at the session's effort.
+  dispatch one verifier Agent per lane with `model: "opus"`, using the lane
+  and fact-check prompts in `../../workflows/research.js`. On this path,
+  pass `effort: "high"` with each Agent call, as the workflow does.
 
 ## 3 · Synthesize
 
