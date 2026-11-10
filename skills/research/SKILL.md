@@ -2,6 +2,7 @@
 name: research
 description: This skill should be used when the user invokes "/tech-lead:research", or asks to research, vet, check, or deeply evaluate an external library, tool, model, dataset, or repository before adopting it, depending on it, or borrowing from it ("research X before we adopt it", "check whether X is any good before we adopt it", "vet this repo", "evaluate X against alternatives"). Not for quick factual or opinion questions with no adoption decision attached ("is X worth using?", "is X still maintained?"), for questions answerable from the local codebase alone, or for a hard-to-reverse choice between well-known options (tech-lead:panel).
 argument-hint: [what to research]
+effort: medium
 ---
 
 # tech-lead Research — verified evaluation
