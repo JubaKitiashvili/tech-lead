@@ -81,7 +81,7 @@ if (A.effort && !EFFORTS.includes(A.effort)) throw new Error(`args.effort must b
 // Fact-checkers are the gate: they run on Opus at high, whatever the lanes use. The model is
 // pinned because an unset model inherits the session's, and a Fable session would pay Fable
 // rates for every checker.
-// Effort is a no-op on Haiku 4.5 (Claude Code drops it).
+// With `model: 'haiku'` the lanes run on Haiku 5.5 at the given effort.
 const laneOpt = { model: A.model || 'sonnet', effort: A.effort || 'high' }
 const verifyOpt = { model: 'opus', effort: 'high' }
 
