@@ -7,6 +7,11 @@ hooks:
     - hooks:
         - type: command
           command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/model-switch.mjs\""
+  SessionStart:
+    - matcher: "compact"
+      hooks:
+        - type: command
+          command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/resume.mjs\""
 ---
 
 # Tech Lead — Model-Tiered Orchestration
@@ -228,7 +233,11 @@ reads the whole conversation, so it never replaces an independent panel seat.
      the task list. `next` names the tasks that can run now, `mark` records
      each start and each verified result, and `status` restores the run
      after compaction or in a new session. Do not track order or readiness
-     in your head.
+     in your head. After a compaction a hook reminds you of an unfinished
+     plan (`[tech-lead] This project has an unfinished /tech-lead plan`):
+     run the `status` command it gives before anything else. If `create` is
+     refused or fails, tell the user so in one line with the reason and keep
+     the plan in the message; never drop the plan file silently.
 2. **Brief completely.** Subagents start with zero session context. Every
    brief is self-contained and follows `references/briefing-template.md`. A
    brief that needs the conversation to make sense is not ready to send.

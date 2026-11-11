@@ -62,7 +62,7 @@ import { fileURLToPath } from 'node:url'
 import { createExclusive, readJson, writeReplace } from './lib/atomic.mjs'
 import { ledgerFloor } from './lib/ledger.mjs'
 import { frontList } from './lib/loop-md.mjs'
-import { ensureV, loopPaths } from './lib/loop-paths.mjs'
+import { checkIdentity, ensureV, loopPaths } from './lib/loop-paths.mjs'
 import { groupAlive, isAlive, killGroup, resolveHolder, startToken, sweepOthers } from './lib/loop-proc.mjs'
 import { maxRecordGeneration } from './lib/run-record.mjs'
 import { quiesce } from './loop-codex.mjs'
@@ -118,10 +118,7 @@ function listDir(dir) {
 
 // The lock paths of P without creating anything. A <V> bound to another R is refused.
 export function openPaths(P, env = process.env) {
-  const paths = loopPaths(P, { env })
-  const id = readJson(path.join(paths.V, 'identity.json'))
-  if (id && id.R !== paths.R) throw new Error(`identity-mismatch: ${paths.V} belongs to ${id.R}`)
-  return paths
+  return checkIdentity(loopPaths(P, { env }))
 }
 
 // The highest N with a slots/<N>.json, or null.

@@ -58,8 +58,8 @@ const DRAFT = {
     { id: 'review', title: 'review', executor: 'codex', model: 'codex', depends_on: ['cli', 'docs'] },
   ],
 }
-const create = (fx, draft = DRAFT, now = NOW) => {
-  const r = run(fx, ['create', fx.P, '--file', input(fx, draft)], { now })
+const create = (fx, draft = DRAFT, now = NOW, P = fx.P) => {
+  const r = run(fx, ['create', P, '--file', input(fx, draft)], { now })
   assert.equal(r.code, 0, JSON.stringify(r.out))
   return r.out
 }
@@ -232,7 +232,7 @@ test('a corrupt plan is exit 2 corrupt-plan and is left as it is', t => {
   assert.deepEqual(run(fx, ['next', fx.P]).out.problems.map(p => p.kind), ['wrong-project'])
 })
 
-test('usage errors, a non-repository <P> and a bad clock are exit 2', t => {
+test('usage errors, a <P> that is no directory or below a repository\'s top, and a bad clock are exit 2', t => {
   const fx = project(t)
   for (const args of [[], ['nope'], ['next'], ['next', fx.P, '--bogus', 'x'], ['create', fx.P], ['next', fx.P, '--run', 'latest'], ['validate', fx.P, '--file', 'x']]) {
     const r = run(fx, args)
@@ -240,9 +240,14 @@ test('usage errors, a non-repository <P> and a bad clock are exit 2', t => {
     assert.deepEqual([r.out.state, r.out.error], ['error', 'usage'])
   }
   const plain = tmp(t, 'tl-plan-plain-')
-  const r = run(fx, ['next', plain])
-  assert.equal(r.code, 2)
-  assert.equal(r.out.error, 'not-a-repo')
+  const none = run(fx, ['next', plain])
+  assert.deepEqual([none.code, none.out.reason], [3, 'no-open-run'], 'a folder in no repository is a valid <P>')
+  const sub = path.join(fx.P, 'sub')
+  fs.mkdirSync(sub)
+  for (const [P, error] of [[sub, 'not-toplevel'], [path.join(plain, 'absent'), 'not-a-directory'], [input(fx, {}), 'not-a-directory']]) {
+    const r = run(fx, ['next', P])
+    assert.deepEqual([r.code, r.out.state, r.out.error], [2, 'error', error], P)
+  }
   const clock = run(fx, ['list', fx.P], { now: 'soon' })
   assert.deepEqual([clock.code, clock.out.error], [2, 'bad-now'])
   // create refuses an invalid draft before it writes anything.
@@ -293,4 +298,32 @@ test('--json passes the draft inline: validate, create and add accept it; both o
   assert.equal(bad.out.problems[0].kind, 'not-json')
   assert.equal(run(fx, ['validate']).code, 2)
   assert.equal(run(fx, ['validate', '--json', draft, '--file', '/dev/null']).code, 2)
+})
+
+test('a workspace folder holding two repositories: create at the folder, files below both, overlap still held', t => {
+  const fx = project(t)
+  const W = tmp(t, 'tl-plan-ws-')
+  for (const r of ['api', 'web']) execFileSync('git', ['init', '-q', path.join(W, r)])
+  const c = create(fx, {
+    goal: 'cross-repo change',
+    tasks: [
+      main('a', { files: ['api/src/'] }),
+      main('b', { files: ['web/src/app.js'] }),
+      main('c', { files: ['API/src/x.js'] }),
+      main('d', { depends_on: ['a', 'b'], files: ['api/', 'web/'] }),
+    ],
+  }, NOW, W)
+  assert.equal(JSON.parse(fs.readFileSync(c.file, 'utf8')).project, fs.realpathSync.native(W))
+  assert.deepEqual(c.waves, [['a', 'b'], ['c'], ['d']])
+  let nx = run(fx, ['next', W])
+  assert.deepEqual(nx.out.wave.map(w => w.id), ['a', 'b'])
+  assert.deepEqual(nx.out.held, [{ id: 'c', overlaps: 'a' }])
+  assert.equal(run(fx, ['mark', W, '--task', 'a', '--status', 'running']).code, 0)
+  const held = run(fx, ['mark', W, '--task', 'c', '--status', 'running'])
+  assert.deepEqual([held.code, held.out.reason], [3, 'files-held'])
+  // The inner repositories are their own <P>, with no plan; the workspace keeps its own.
+  assert.equal(run(fx, ['next', path.join(W, 'api')]).out.reason, 'no-open-run')
+  nx = run(fx, ['status', W])
+  assert.deepEqual([nx.code, nx.out.run_id], [0, c.run_id])
+  assert.equal(fs.readFileSync(path.join(path.dirname(path.dirname(c.file)), 'identity.json'), 'utf8').includes(JSON.stringify(fs.realpathSync.native(W))), true)
 })
