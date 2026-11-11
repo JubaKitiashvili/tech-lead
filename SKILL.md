@@ -2,6 +2,11 @@
 name: tech-lead
 description: This skill should be used when the user hands over a multi-part goal (a feature, refactor, migration, or audit that touches 3+ files or 2+ subsystems, such as backend and frontend, API server and mobile client, or the whole repo), including when a design or plan is already approved and only execution remains. Also when the user asks to "orchestrate" a task, "act as tech lead", "delegate this", "run the model-tiered workflow", "run this as a workflow", or to split work across subagents, or asks how to split work between Opus/Sonnet/Haiku/Codex. Not for questions, explanations, single-file edits, one mechanical change repeated over files (a rename or find-and-replace), debugging, or trivial tasks, and not from inside a subagent, workflow agent, or teammate. A single expensive-to-reverse decision belongs to tech-lead:panel, and a small change shipped as a PR to tech-lead:quick.
 argument-hint: [goal or task to orchestrate]
+hooks:
+  PostModelSwitch:
+    - hooks:
+        - type: command
+          command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/model-switch.mjs\""
 ---
 
 # Tech Lead — Model-Tiered Orchestration
@@ -29,7 +34,10 @@ with `/model fable`.
 - **After a model switch,** such as `/model sonnet` after a limit message,
   the new model starts on a cold cache and, unless it is Fable 5.2, cannot
   read the earlier model's thinking. Keep decisions in plain text or a plan
-  file. A switch does not lift session or weekly limits.
+  file. A switch does not lift session or weekly limits. Once this skill
+  has run in a session, a hook tells you when the session model changes,
+  an automatic fallback included: a `[tech-lead] The session model changed`
+  notice arrives with your next request. Act on it.
 - **Codex settings.** Never hardcode a GPT model name: Codex takes its model
   from `~/.codex/config.toml`. Valid Codex efforts are
   `none|minimal|low|medium|high|xhigh`; the plugin rejects `ultra` and `max`.
