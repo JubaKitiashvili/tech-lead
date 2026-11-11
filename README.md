@@ -1059,3 +1059,7 @@ docs/superpowers/        design specs and implementation plans
   either: a JSON-schema `agent()` call is the typed decision primitive.
 - The loop methodology draws on
   [loop-engineering](https://github.com/cobusgreyling/loop-engineering).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
