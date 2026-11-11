@@ -113,6 +113,63 @@ model starts on a cold cache. Fable 5.2 can read the earlier model's
 thinking; nothing else can read Fable 5.2's, and Sonnet cannot read Opus
 5.5's.
 
+## Prompting Fable 5.2
+
+Read on 2026-11-11: Anthropic's guide
+(https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2).
+These findings are behind the Fable rules in `SKILL.md`.
+
+- **It applies rules as written.** "If your system prompt has approval rules,
+  name the exact actions they cover, because the model applies them as
+  written." Under a bare "never" rule the model took an approved step "in
+  about one try in ten"; "when the rule itself said to get a go-ahead first,
+  the model took the step in about nine tries in ten". A separate line
+  clearing approved steps "didn't change that rate much".
+- **Caution piles up.** "Cautious instructions build up wherever context
+  carries over: memory, notes, instruction files, and messages between
+  agents." With a reviewer's "stop at the first error" in context, Fable 5.2
+  "didn't retry in about a third of the tries. Claude Fable 5.1 and Claude
+  Opus 5.5 retried." "A general instruction to act more freely changed
+  nothing": name the steps that need no approval.
+- **It can stop early.** "Claude Fable 5.2 sometimes ends a turn before the
+  work is done … with a list of what remains, an offer to continue, or a stop
+  at an ordinary obstacle such as a timeout. This occurs more often at `low`
+  and `medium` effort." Anthropic's finishing text halved the sessions that
+  "ended with doable work left" for about 30 percent more output tokens, and
+  "separates two kinds of obstacle": ordinary ones to work through, and
+  deliberate blockers to leave alone. "Finish the run" is this plugin's
+  version; the plan stop is one of its named exceptions.
+- **Effort.** "Start at `high`." "Most of the gain in capability is already
+  present at `high`." `xhigh` "raised scores slightly and used many more
+  tokens"; `max` is "for measuring the model's ceiling". "At `high` and
+  above, the model thinks before almost every reply", and "an instruction to
+  answer directly without deliberating didn't stop the model from thinking at
+  `medium` and above": lower the effort, do not add such a line.
+- **Subagents.** It "delegates readily" where prompts invite it, and at
+  `xhigh` and `max` uses "subagents to review its own work". A description
+  that "puts cost first" cut delegation by about a third with the same task
+  success. "Subagents can account for a large part of what a session costs,
+  so check which model your harness runs subagents on by default."
+- **Who owns the code.** With no ownership statement the model "tended to add
+  to the existing structure" and "to report nearby problems instead of fixing
+  them". Told "this codebase is yours", it merged repeated code in about half
+  of tries, for "about 1.5 times the output tokens" and "several changes that
+  nobody had asked for"; a "no drive-by refactors" rule elsewhere "doesn't
+  cancel the ownership sentence". This plugin says nothing about ownership,
+  which keeps diffs small. Add the sentence to a brief only when a
+  restructuring is the task.
+- **Quiet runs and reports.** It "sometimes writes little user-facing text
+  during long runs of tool calls". Readers of a final report "usually haven't
+  seen the tool calls or files behind it. The report needs to make sense on
+  its own."
+- **Reasoning in the reply.** A request that "asks the model to reproduce its
+  internal reasoning in the response text" can be declined
+  (`reasoning_extraction`). Ask a Fable lead for conclusions and their
+  grounds, not for its reasoning.
+- **Hard style limits.** It "follows style rules closely, so a hard limit …
+  can make its prose choppy". The report contract's 40-line cap is for
+  delegates, which are never Fable.
+
 ## When delegation pays
 
 Anthropic's cost measurements (API benchmarks): on one dependent chain of

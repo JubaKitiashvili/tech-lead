@@ -39,7 +39,9 @@ with `/model fable`.
 - **After a model switch,** such as `/model sonnet` after a limit message,
   the new model starts on a cold cache and, unless it is Fable 5.2, cannot
   read the earlier model's thinking. Keep decisions in plain text or a plan
-  file. A switch does not lift session or weekly limits. Once this skill
+  file. A switch does not lift session or weekly limits. Before a switch
+  you choose, run `/compact`: the new model pays the cache-write price on
+  the whole conversation. Once this skill
   has run in a session, a hook tells you when the session model changes,
   an automatic fallback included: a `[tech-lead] The session model changed`
   notice arrives with your next request. Act on it.
@@ -86,6 +88,12 @@ reviews and synthesizes, and no delegate runs on Fable.
   Check `/model` after a security task.
 - **A declined task** is re-run unchanged on another tier. Never reword it
   to get it through.
+- **Rules you write down.** Fable 5.2 applies a written rule to the letter,
+  its own included. When you put a rule into a brief, the plan file or a
+  memory, state its scope and its reason, and put the exception in the same
+  sentence ("get a go-ahead first, then …", not a bare "never"). Drop a
+  caution when its reason is gone. A reviewer's "stop at the first error"
+  covers that review, not the rest of the run.
 
 Delegate two things only:
 
@@ -93,7 +101,7 @@ Delegate two things only:
    Subagents burn their own context and return conclusions.
 2. **Mechanical work.** Well-specified execution with no judgment calls.
 
-Do NOT delegate reasoning that depends on accumulated session context.
+Do not delegate reasoning that depends on accumulated session context.
 Quality is lost exactly where it matters most, and reasoning is cheap in
 context terms anyway. There are two exceptions:
 
@@ -168,7 +176,9 @@ the next Fable model ships.
 main session (on a Fable session, see Core principle).
 
 **Effort before tier.** Levels are calibrated per model, so do not carry a
-setting over from an older model. Climb one step at a time:
+setting over from an older model. Before you raise anything, check that the
+delegate can verify its own work (a test, a build, a script): that is often
+cheaper than more effort. Then climb one step at a time:
 
 1. `medium`: day-to-day work with a clear scope.
 2. `high`: work where verification matters or edge cases are likely.
@@ -252,7 +262,9 @@ reads the whole conversation, so it never replaces an independent panel seat.
      `SendMessage` continues it with its context intact.
    - With a plan file, dispatch the `wave` that `next` prints, with each
      task's `model` and `effort` from the plan, and mark each task `running`.
-4. **Verify against ground truth.** Treat a subagent's "done" as a claim.
+4. **Verify against ground truth.** Treat a subagent's "done" as a claim,
+   and its "cannot be done" as one too: check it before you drop or re-plan
+   the task.
    - Check what actually changed with `git status` / `git diff`, not with the
      report's file list.
    - Run the narrowest real check (typecheck, affected tests) before building
@@ -261,6 +273,22 @@ reads the whole conversation, so it never replaces an independent panel seat.
      Read the verdict line and the names of the failing tests.
 5. **Synthesize and decide.** Integration, conflict resolution, and the final
    call stay in the main session.
+
+**Finish the run.** Once the plan is approved, carry it through. An error, a
+timeout, a locked file, an empty result or a failing tool is an ordinary
+obstacle: diagnose it and work through it. Do not end the turn with a list
+of what remains or an offer to continue. Stop only where the run cannot move
+without the user: the plan stop in step 1, a decision that is theirs, a
+destructive or irreversible step, or a blocker someone put there on purpose
+(leave that alone and say what you found). Work that does not depend on
+their answer continues meanwhile.
+
+**Report for a reader who saw none of it.** Before the first dispatch, say
+in one line what you are about to do; during a long run, one line every few
+steps. The final report stands on its own: what was done, what was verified
+and how, what was not verified, what is left. Lead with the outcome. Use
+plain words and full sentences, and no label you made up during the run:
+the reader has not seen the briefs, the tool calls or the plan file.
 
 **Stakes.** A task is `high` when any of these holds, and `normal`
 otherwise:
