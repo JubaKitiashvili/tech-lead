@@ -30,8 +30,9 @@ Anthropic API.
 **Fable leads at most; it is never a delegate.** Fable 5.1 was removed on
 2026-09-25. Fable 5.2 (2026-11-09) was re-checked on 2026-11-10. It costs 2x
 Opus 5.5 per token, down from 2.5x, and a Max plan gives it at most half of
-the weekly limit. Anthropic's own measurements put Opus 5.5 at `xhigh` level
-with Fable 5.2 at `high` on coding for about half the cost, and found that
+the weekly limit. Anthropic's own measurements put Fable 5.2 at `high` level
+with Opus 5.5 at `max` on coding ("45.3% vs. 45.5%") "for roughly half the
+cost per task", so per task Fable is the cheaper of the two there, and found that
 Fable 5.2 leading Sonnet subagents cost 19% more than Opus 5.5 for about the
 same score. The first independent numbers (Vals, Artificial Analysis) show a
 lead of a few points on aggregate indices and ties with Opus 5.5 on coding.
@@ -152,6 +153,80 @@ Nothing here changes a rule above; it gives the rules their numbers.
   with one to three resets by length of subscription. The announcement does
   not mention the Max plan; the Max figure above comes from the Claude Code
   model-config page.
+
+## Choosing a model: Anthropic's playbook
+
+Read on 2026-11-11: "Which Claude model should you build with?"
+(https://claude.dev/blog/which-claude-model-should-you-build-with/, 2026-11-09).
+
+- **Start and move.** "Start most work on Opus 5.5 at its default effort
+  level, `medium`." Down to Sonnet 5.5 "for well-scoped everyday work, like a
+  bug fix or a feature built against a spec", to Haiku 5.5 for
+  "classification, routing, and extraction", and up to Fable 5.2 "when Opus
+  5.5 at `high` still falls short, or for long unattended runs". Its task
+  table gives Fable 5.2 "major refactors and migrations, architecture
+  planning, and leading many subagents", at "`medium`, then `high`".
+- **A clear spec is not enough for Sonnet.** "A migration or a performance
+  optimization can have clear specs and still be difficult enough to warrant
+  Opus 5.5."
+- **When a model is not good enough,** in this order: "Check that the model
+  can verify its own work, with a test, a build or a script that calls the
+  endpoint." Then "raise effort one level." Then "move to the next model up,
+  starting at a lower effort level than you used on the smaller one."
+- **Past `high`, compare with the next model.** "Past `high`, one more effort
+  level can cost as much as a bigger model." On SWE-bench Pro, Opus 5.5 "at
+  `xhigh` … scored about 1.4 points higher for 2.5 times the cost of `high`";
+  at `medium` it scored "about 2.5 points lower for about 70% of the cost".
+- **Cheap first, retry the failures.** "Opus 5.5 at `low` with failures
+  re-run at `high` passed about 97% of tasks for about $0.17 each, against
+  95.3% for $0.29 with every task at `high`."
+- **What goes to subagents.** "Keep small models on work where a mistake is
+  cheap to spot, like finding files, running tests and reading logs. Keep
+  code edits and judgment calls on the main model." And: "a lean main context
+  matters more the bigger the main model is." The article calls `opusplan`
+  (plan on Opus, edit on Sonnet) "the reverse" of this advice and says to
+  measure it first. The plugin's `fast-worker` and "Fable decides, Opus
+  writes" are on the `opusplan` side of that line: they trade the article's
+  default for a smaller share of the lead's limit, and the only measurement
+  of them here is the eval suite.
+- **Bulk workers.** "An Opus 5.5 lead over Sonnet 5.5 workers, up to 25 at a
+  time, cost about a third less than Opus 5.5 alone at its default effort. It
+  scored about the same" (a defect search over about 22 million tokens).
+  "Skip it for one chain of dependent steps or for work that fits in one
+  context window. There, the planning and merging cost more than they save."
+- **Routing in code.** "When the routing rule is simple, such as one model
+  for each step type, let code pick the model rather than asking a model to."
+- **Advisor.** "Of the four pairings in its advisor table, none clearly beat
+  its executor alone"; an Opus 5.5 executor with a Fable advisor gained 1.7
+  points "for about 2.1 times the money".
+- **Switching models.** "The prompt cache belongs to the model that wrote it.
+  Your first turn on a new model pays the cache-write price on the whole
+  conversation." So "run `/compact` first in Claude Code, or start a fresh
+  session with a short written plan." "A move down a tier loses the earlier
+  reasoning."
+- **Defaults.** API defaults are `medium` for Haiku 5.5 and Opus 5.5 and
+  `high` for Sonnet 5.5 and Fable 5.2; in Claude Code Sonnet 5.5 and Fable
+  5.2 default to `medium`. `/effort status` shows the session's.
+
+## A thousand agents: what carries over
+
+Read on 2026-11-11: "Safely scaling multi-agent teams with Claude Fable 5.2"
+(https://claude.dev/blog/safely-scaling-multi-agent-teams-with-fable-5-2/,
+2026-11-09). One experiment (a lead and 999 helpers formalizing a proof), not
+a guide. Four findings match this plugin's design:
+
+- **State lives outside the agents.** Earlier attempts "failed because agents
+  lost track of the project's state". The lead's first act was a shared store
+  with orders, assignments, notes, claimable subtasks and a log of finished
+  work. The plan file is the small version of that.
+- **A hard check decides what is done.** A statement "counted as proved only
+  once Lean's checker accepted a finished proof".
+- **A worker's "cannot be done" is a claim too.** "Agents tend to give up on
+  hard problems and misjudge their difficulty": helpers judged "47 of the 60
+  statements infeasible", and "the team went on to prove most of them".
+- **One flagged action stops the team for a person.** "When the classifier
+  blocks a tool call, the whole agent team stops and a person must review the
+  block."
 
 ## When delegation pays
 
