@@ -46,8 +46,4 @@ jobs:
           git config --global user.name "ci"
           git config --global user.email "ci@example.invalid"
           git config --global init.defaultBranch main
-          # No background housekeeping in the fixture repositories: a maintenance.lock that
-          # appears and vanishes while a test snapshots .git fails that snapshot.
-          git config --global gc.auto 0
-          git config --global maintenance.auto false
       - run: node --test $(find tests -name '*.test.mjs' | sort)
