@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.7.3.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.7.4.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -306,6 +306,13 @@ short:
   names `fable` or `best` in an agent or workflow: Fable 5.2 may lead a
   session, and it is never a delegate (see "Fable leads at most" in
   SKILL.md).
+
+**Model-switch notice.** `/tech-lead` registers one hook for the rest of the
+session (`PostModelSwitch`, declared in the skill's frontmatter, so it costs
+nothing before the skill runs). When the session model changes, an automatic
+fallback included, the lead gets a short notice with its next request: which
+model it is on now, which rules apply, and to tell you when nobody chose the
+switch. The script is `scripts/hooks/model-switch.mjs`.
 
 ### Workflow mode
 
