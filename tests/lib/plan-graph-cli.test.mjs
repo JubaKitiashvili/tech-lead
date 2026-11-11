@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
+import { freshPlan } from '../../scripts/plan-graph.mjs'
 
 const SCRIPT = path.join(ROOT, 'scripts', 'plan-graph.mjs')
 // Keep the user's git config out of the fixture repositories; the CLI children inherit this.
@@ -248,4 +249,31 @@ test('usage errors, a non-repository <P> and a bad clock are exit 2', t => {
   const bad = run(fx, ['create', fx.P, '--file', input(fx, { goal: 'g', tasks: [main('a', { depends_on: ['a'] })] })])
   assert.equal(bad.code, 3)
   assert.equal(fs.existsSync(path.join(fx.cache, 'tech-lead')), false)
+})
+
+// Review findings (2026-11-11): each test below failed before its fix.
+
+test('finding 4: the clock takes only a four-digit-year ISO-8601 UTC instant, and create writes only a valid plan', t => {
+  const fx = project(t)
+  for (const now of ['+010000-01-01T00:00:00.000Z', '2026-02-30T00:00:00Z', '2026-11-11T10:00:00+04:00', '2026-11-11', '1700000000000']) {
+    const r = run(fx, ['create', fx.P, '--file', input(fx, { goal: 'g', tasks: [main('a')] })], { now })
+    assert.deepEqual([r.code, r.out.state, r.out.error], [2, 'error', 'bad-now'], now)
+  }
+  assert.equal(fs.existsSync(path.join(fx.cache, 'tech-lead')), false, 'nothing written')
+  assert.equal(run(fx, ['validate', '--file', input(fx, { goal: 'g', tasks: [main('a')] })], { now: '2026-11-11T10:00:00.5Z' }).code, 0)
+  // The second end: a plan that fails validatePlan is never handed to the writer.
+  const draft = { goal: 'g', tasks: [main('a')] }
+  assert.throws(() => freshPlan(draft, { runId: '+0100000101T000000Z-abcd', project: '/repo', now: '+010000-01-01T00:00:00.000Z' }),
+    e => e.error === 'invalid-plan' && e.extra.problems.some(p => p.kind === 'bad-run-id'))
+  assert.equal(freshPlan(draft, { runId: '20261111T100000Z-abcd', project: '/repo', now: NOW }).run_id, '20261111T100000Z-abcd')
+})
+
+test('finding 2: mark refuses to start a task whose files a running task holds, unless --force', t => {
+  const fx = project(t)
+  create(fx, { goal: 'g', tasks: [main('a', { files: ['src/x.js'] }), main('b', { files: ['SRC/'] })] })
+  assert.equal(run(fx, ['mark', fx.P, '--task', 'a', '--status', 'running']).code, 0)
+  const r = run(fx, ['mark', fx.P, '--task', 'b', '--status', 'running'])
+  assert.deepEqual([r.code, r.out.state, r.out.reason], [3, 'refused', 'files-held'])
+  assert.match(r.out.detail, /\ba\b/)
+  assert.equal(run(fx, ['mark', fx.P, '--task', 'b', '--status', 'running', '--force']).out.task.status, 'running')
 })

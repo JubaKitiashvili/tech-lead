@@ -16,7 +16,17 @@
 //   buildPlan(draft, {runId, project, now}) -> plan (the draft must be valid)
 //   nextWave(tasks, {ignoreDecisions}) -> {wave, held, blocked, running, counts, total, finished}
 //   schedule(tasks) -> [[id]]: the waves in order, assuming every task succeeds, decisions ignored
-//   readiness(tasks, id) -> {ready, blocked}    overlaps(a, b) -> bool (two paths)
+//   readiness(tasks, id) -> {ready, blocked}    heldBy(tasks, id) -> the running task holding id's files | null
+//   overlaps(a, b) -> bool: two paths compared in a normalized form (one trailing / stripped,
+//           case folded) overlap when equal or when either is a path-segment prefix of the other,
+//           so `a`, `a/` and `A/b.js` all overlap and `a` and `ab.js` do not; a false overlap only
+//           delays a task, a missed one lets two workers edit one file. Entries of one task that
+//           normalize alike are a duplicate-path.
+//   a stored task's fields must fit its status (bad-state): pending has started_at and
+//           finished_at null; running has attempts >= 1, started_at set, finished_at null; done
+//           and failed have attempts >= 1 and both times set; skipped has finished_at set
+//   a plan holds at most MAX_TASKS tasks (too-many-tasks); the cycle walk is iterative
+//   isIsoInstant(s) -> bool: a four-digit-year ISO-8601 UTC instant that names a real time
 //   transition(plan, id, to, {now, result, force}) -> {plan} | {refused: {reason, detail}}
 //   decide(plan, id, {now, result}) -> {plan} | {refused}
 //   addTask(plan, draftTask, {now}) -> {plan} | {problems}
@@ -33,8 +43,9 @@ export const RUN_ID_RE = /^\d{8}T\d{6}Z-[0-9a-f]{4}$/
 export const GOAL_MAX = 500
 export const TITLE_MAX = 200
 export const RESULT_MAX = 500
+export const MAX_TASKS = 500
 
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
 const PLAN_KEYS = ['v', 'run_id', 'project', 'goal', 'session_model', 'created_at', 'updated_at', 'tasks']
 const DRAFT_KEYS = ['goal', 'session_model', 'tasks']
 const DRAFT_TASK_KEYS = ['id', 'title', 'executor', 'model', 'effort', 'stakes', 'files', 'depends_on', 'verify', 'needs_decision']
@@ -47,7 +58,13 @@ const MOVES = { pending: ['running', 'skipped'], running: ['done', 'failed', 'sk
 const WAVE_FIELDS = ['id', 'title', 'executor', 'model', 'effort', 'stakes', 'files', 'verify']
 
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
-const isIso = v => typeof v === 'string' && ISO_RE.test(v) && !Number.isNaN(Date.parse(v))
+// The round trip refuses what Date rolls over (2026-02-30, 24:00:00) instead of naming.
+export const isIsoInstant = v => {
+  if (typeof v !== 'string' || !ISO_RE.test(v)) return false
+  const d = new Date(v)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 19) === v.slice(0, 19)
+}
+const isIso = isIsoInstant
 const isText = (v, max) => typeof v === 'string' && v.length >= 1 && v.length <= max
 const json = v => JSON.stringify(v)
 const clone = v => structuredClone(v)
@@ -71,15 +88,22 @@ function pathProblem(p) {
   return null
 }
 
-// Two paths overlap when equal, or when one is a directory entry (ends in /) that prefixes the other.
+// The form paths are compared in: one trailing / stripped, case folded.
+const normPath = p => (p.endsWith('/') ? p.slice(0, -1) : p).toLowerCase()
+
 export function overlaps(a, b) {
-  return a === b || (a.endsWith('/') && b.startsWith(a)) || (b.endsWith('/') && a.startsWith(b))
+  const x = normPath(a), y = normPath(b)
+  return x === y || y.startsWith(`${x}/`) || x.startsWith(`${y}/`)
 }
 
 const filesOverlap = (fa, fb) => {
   for (const a of fa) for (const b of fb) if (overlaps(a, b)) return true
   return false
 }
+
+// The first of others (in their order), the task itself aside, whose files overlap t's: the
+// one rule both the wave and a start (transition to running) hold a task by.
+const clashOf = (t, others) => others.find(o => o.id !== t.id && filesOverlap(t.files, o.files)) ?? null
 
 // The problems of one task's own fields (not its links to other tasks).
 function taskProblems(t, where, { plan }) {
@@ -126,12 +150,13 @@ function taskProblems(t, where, { plan }) {
   const files = v('files')
   if (!Array.isArray(files)) add('bad-files', 'files must be an array of repo-relative paths')
   else {
-    const seen = new Set()
+    const seen = new Map()
     for (const p of files) {
       const why = pathProblem(p)
-      if (why) add('bad-path', `path ${json(p)} ${why}`)
-      else if (seen.has(p)) add('duplicate-path', `path ${json(p)} is listed twice`)
-      seen.add(p)
+      if (why) { add('bad-path', `path ${json(p)} ${why}`); continue }
+      const key = normPath(p)
+      if (seen.has(key)) add('duplicate-path', `path ${json(p)} is the same path as ${json(seen.get(key))} (compared without a trailing / and case folded)`)
+      else seen.set(key, p)
     }
     if (executor === 'fast-worker' && files.length === 0) add('fast-worker-needs-files', 'executor fast-worker needs at least one path in files')
   }
@@ -151,11 +176,31 @@ function taskProblems(t, where, { plan }) {
     if (Object.hasOwn(t, 'result') && t.result !== null && !(typeof t.result === 'string' && t.result.length <= RESULT_MAX)) {
       add('bad-result', `result must be null or a string of at most ${RESULT_MAX} characters`)
     }
+    let timesOk = true
     for (const k of ['started_at', 'finished_at']) {
-      if (Object.hasOwn(t, k) && t[k] !== null && !isIso(t[k])) add(`bad-${k.replace('_', '-')}`, `${k} must be null or an ISO-8601 UTC timestamp`)
+      if (Object.hasOwn(t, k) && t[k] !== null && !isIso(t[k])) {
+        add(`bad-${k.replace('_', '-')}`, `${k} must be null or an ISO-8601 UTC timestamp`)
+        timesOk = false
+      }
+    }
+    if (timesOk && STATUSES.includes(t.status) && Number.isSafeInteger(t.attempts) && t.attempts >= 0) {
+      const why = stateProblem(t)
+      if (why) add('bad-state', `a ${t.status} task ${why}`)
     }
   }
   return out
+}
+
+// What a stored task's attempts and times say against its status, or null when they fit it.
+function stateProblem({ status, attempts, started_at: started, finished_at: finished }) {
+  const ran = attempts >= 1 && started !== null
+  switch (status) {
+    case 'pending': return started !== null || finished !== null ? 'must have started_at and finished_at null' : null
+    case 'running': return !ran || finished !== null ? 'must have attempts >= 1, started_at set and finished_at null' : null
+    case 'done':
+    case 'failed': return !ran || finished === null ? 'must have attempts >= 1, started_at and finished_at set' : null
+    default: return finished === null ? 'must have finished_at set' : null
+  }
 }
 
 // The id of each task (null when it is not a valid id) and the problems of ids and links.
@@ -187,21 +232,32 @@ function graphProblems(tasks) {
     }
     if (!edges.has(id)) edges.set(id, good)
   }
-  // Three-colour DFS in plan order; each back edge closes one cycle, reported from its first node.
-  const colour = new Map(), stack = []
-  const visit = id => {
-    colour.set(id, 1)
-    stack.push(id)
-    for (const d of edges.get(id) || []) {
+  // Three-colour DFS in plan order, iterative (a deep chain must not overflow the call stack);
+  // each back edge closes one cycle, reported from its first node. path holds the grey nodes.
+  const colour = new Map()
+  for (const root of edges.keys()) {
+    if (colour.has(root)) continue
+    const path = [root], next = [0]
+    colour.set(root, 1)
+    while (path.length) {
+      const top = path.length - 1, id = path[top], deps = edges.get(id) || []
+      if (next[top] === deps.length) {
+        colour.set(id, 2)
+        path.pop()
+        next.pop()
+        continue
+      }
+      const d = deps[next[top]++]
       if (colour.get(d) === 1) {
-        const cyc = stack.slice(stack.indexOf(d))
+        const cyc = path.slice(path.indexOf(d))
         out.push({ task: cyc[0], kind: 'cycle', detail: `the dependencies form a cycle: ${[...cyc, cyc[0]].join(' -> ')}` })
-      } else if (!colour.has(d)) visit(d)
+      } else if (!colour.has(d)) {
+        colour.set(d, 1)
+        path.push(d)
+        next.push(0)
+      }
     }
-    stack.pop()
-    colour.set(id, 2)
   }
-  for (const id of edges.keys()) if (!colour.has(id)) visit(id)
   return out
 }
 
@@ -209,6 +265,7 @@ function tasksProblems(tasks, { plan }) {
   if (!Array.isArray(tasks)) return [{ task: null, kind: 'bad-tasks', detail: 'tasks must be an array' }]
   const out = []
   if (tasks.length === 0) out.push({ task: null, kind: 'bad-tasks', detail: 'tasks must hold at least one task' })
+  if (tasks.length > MAX_TASKS) out.push({ task: null, kind: 'too-many-tasks', detail: `a plan holds at most ${MAX_TASKS} tasks, not ${tasks.length}` })
   tasks.forEach((t, i) => {
     if (!isObject(t)) out.push({ task: null, kind: 'not-an-object', detail: `task ${i + 1} is not a JSON object` })
     else out.push(...taskProblems(t, typeof t.id === 'string' && TASK_ID_RE.test(t.id) ? t.id : null, { plan }))
@@ -279,6 +336,11 @@ export function readiness(tasks, id) {
   return { ready: blocked === null, blocked }
 }
 
+export function heldBy(tasks, id) {
+  const t = tasks.find(x => x.id === id)
+  return t ? clashOf(t, tasks.filter(x => x.status === 'running')) : null
+}
+
 export function nextWave(tasks, { ignoreDecisions = false } = {}) {
   const byId = new Map(tasks.map(t => [t.id, t]))
   const running = tasks.filter(t => t.status === 'running')
@@ -287,7 +349,7 @@ export function nextWave(tasks, { ignoreDecisions = false } = {}) {
     if (t.status !== 'pending') continue
     const why = blockOf(t, byId, ignoreDecisions)
     if (why) { blocked.push(why); continue }
-    const clash = [...running, ...wave].find(o => filesOverlap(t.files, o.files))
+    const clash = clashOf(t, [...running, ...wave])
     if (clash) held.push({ id: t.id, overlaps: clash.id })
     else wave.push(t)
   }
@@ -340,6 +402,8 @@ export function transition(plan, id, to, { now, result, force = false } = {}) {
       const why = blocked.reason === 'needs-decision' ? `it needs a decision: ${blocked.needs_decision}` : `${blocked.reason} ${blocked.dependencies.join(', ')}`
       return refused('not-ready', `task ${id} is not ready (${why}); pass --force to start it anyway`)
     }
+    const holder = heldBy(plan.tasks, id)
+    if (holder) return refused('files-held', `task ${id}'s files overlap those of running task ${holder.id}; pass --force to start it anyway`)
   }
   return withTask(plan, id, now, x => {
     if (to === 'running') Object.assign(x, { attempts: x.attempts + 1, started_at: now, finished_at: null, result: null })

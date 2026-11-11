@@ -16,7 +16,15 @@ const draft = (tasks, extra = {}) => ({ goal: 'ship it', tasks, ...extra })
 const kinds = problems => problems.map(p => p.kind)
 const plan = (tasks, extra) => buildPlan(draft(tasks, extra), { runId: '20261111T100000Z-abcd', project: '/repo', now: NOW })
 // A plan whose tasks have the given statuses ({id: status}).
-const withStatus = (p, statuses) => ({ ...p, tasks: p.tasks.map(t => (statuses[t.id] ? { ...t, status: statuses[t.id] } : t)) })
+// A plan whose tasks have the given statuses ({id: status}), each with the fields its status needs.
+const STATE_OF = {
+  pending: { attempts: 0, started_at: null, finished_at: null },
+  running: { attempts: 1, started_at: NOW, finished_at: null },
+  done: { attempts: 1, started_at: NOW, finished_at: NOW },
+  failed: { attempts: 1, started_at: NOW, finished_at: NOW },
+  skipped: { attempts: 0, started_at: null, finished_at: NOW },
+}
+const withStatus = (p, statuses) => ({ ...p, tasks: p.tasks.map(t => (statuses[t.id] ? { ...t, status: statuses[t.id], ...STATE_OF[statuses[t.id]] } : t)) })
 const one = (tasks, kind) => {
   const ks = kinds(validateDraft(draft(tasks)))
   assert.ok(ks.includes(kind), `expected ${kind}, got ${JSON.stringify(ks)}`)
@@ -139,7 +147,7 @@ test('overlaps: equal paths and a directory prefix, in either order', () => {
   assert.ok(overlaps('a/', 'a/b.js'))
   assert.ok(overlaps('a/b.js', 'a/'))
   assert.ok(overlaps('a/', 'a/c/'))
-  assert.ok(!overlaps('a', 'a/b.js'), 'a file entry is no directory')
+  assert.ok(overlaps('a', 'a/b.js'), 'a written without its slash still covers what is under it')
   assert.ok(!overlaps('ab/', 'a/b.js'))
   assert.ok(!overlaps('a/b.js', 'a/b.jsx'))
 })
@@ -282,4 +290,93 @@ test('addTask appends a validated task: a retry depending on a failed task\'s re
   assert.deepEqual(kinds(addTask(p, main('z', { depends_on: ['nope'] }), { now: LATER }).problems), ['unknown-dependency'])
   assert.deepEqual(kinds(addTask(p, { ...main('z'), status: 'done' }, { now: LATER }).problems), ['unknown-key'])
   assert.deepEqual(validatePlan(p), [])
+})
+
+// Review findings (2026-11-11): each test below failed before its fix.
+
+test('finding 1: overlap compares a normalized form: one trailing slash stripped, case folded, segment prefixes', () => {
+  assert.ok(overlaps('a', 'a/'), 'a and a/ are one path')
+  assert.ok(overlaps('src/A.js', 'src/a.js'), 'case is folded')
+  assert.ok(overlaps('a', 'a/b.js'))
+  assert.ok(overlaps('A/', 'a/b/c.js'))
+  assert.ok(!overlaps('a', 'ab.js'), 'a segment prefix, not a string prefix')
+  assert.ok(!overlaps('src/a', 'src/ab/'))
+  const r = nextWave(plan([main('x', { files: ['a'] }), main('y', { files: ['a/'] }), main('z', { files: ['src/A.js'] }), main('w', { files: ['src/a.js'] })]).tasks)
+  assert.deepEqual(r.wave.map(w => w.id), ['x', 'z'])
+  assert.deepEqual(r.held, [{ id: 'y', overlaps: 'x' }, { id: 'w', overlaps: 'z' }])
+  one([main('a', { files: ['lib', 'lib/'] })], 'duplicate-path')
+  one([main('a', { files: ['src/A.js', 'src/a.js'] })], 'duplicate-path')
+  assert.deepEqual(validateDraft(draft([main('a', { files: ['lib/', 'lib/x.js'] })])), [], 'a directory and a file in it are not a duplicate')
+})
+
+test('finding 2: starting a task whose files overlap a running task is refused files-held, unless forced', () => {
+  const p = withStatus(plan([main('a', { files: ['src/x.js'] }), main('b', { files: ['src/x.js'] }), main('c', { files: ['SRC/'] }), main('d', { files: ['lib/'] })]), { a: 'running' })
+  for (const id of ['b', 'c']) {
+    const r = transition(p, id, 'running', { now: LATER })
+    assert.equal(r.refused?.reason, 'files-held', id)
+    assert.match(r.refused.detail, /\ba\b/, 'the detail names the running task')
+  }
+  assert.equal(transition(p, 'd', 'running', { now: LATER }).plan.tasks[3].status, 'running')
+  assert.equal(transition(p, 'b', 'running', { now: LATER, force: true }).plan.tasks[1].status, 'running')
+  // Not running any more: no hold.
+  const q = transition(p, 'a', 'done', { now: LATER }).plan
+  assert.equal(transition(q, 'b', 'running', { now: LATER }).plan.tasks[1].status, 'running')
+})
+
+test('finding 3: validatePlan refuses impossible stored states', () => {
+  const p = plan([main('a')])
+  const t = p.tasks[0]
+  const bad = fields => kinds(validatePlan({ ...p, tasks: [{ ...t, ...fields }] }))
+  assert.deepEqual(bad({ status: 'done', attempts: 0, started_at: null, finished_at: null }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'pending', finished_at: NOW }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'pending', attempts: 2, started_at: NOW }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'running', attempts: 0, started_at: NOW }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'running', attempts: 1, started_at: null }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'running', attempts: 1, started_at: NOW, finished_at: NOW }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'failed', attempts: 1, started_at: NOW, finished_at: null }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'done', attempts: 1, started_at: null, finished_at: NOW }), ['bad-state'])
+  assert.deepEqual(bad({ status: 'skipped', finished_at: null }), ['bad-state'])
+  for (const s of Object.keys(STATE_OF)) assert.deepEqual(bad({ status: s, ...STATE_OF[s] }), [], s)
+  assert.deepEqual(bad({ status: 'pending', attempts: 3 }), [], 'a retried task keeps its attempts')
+})
+
+test('finding 3: every transition, retry and skip from each state included, leaves a valid plan', () => {
+  const ok = (r, label) => {
+    assert.ok(r.plan, `${label}: ${JSON.stringify(r.refused)}`)
+    assert.deepEqual(validatePlan(r.plan), [], label)
+    return r.plan
+  }
+  let p = plan([main('a'), main('b')])
+  p = ok(transition(p, 'a', 'running', { now: NOW }), 'pending -> running')
+  p = ok(transition(p, 'a', 'failed', { now: LATER }), 'running -> failed')
+  p = ok(transition(p, 'a', 'pending', { now: LATER }), 'failed -> pending')
+  p = ok(transition(p, 'a', 'skipped', { now: LATER }), 'pending (retried) -> skipped')
+  p = ok(transition(p, 'a', 'pending', { now: LATER }), 'skipped -> pending')
+  p = ok(transition(p, 'a', 'running', { now: LATER }), 'pending -> running again')
+  p = ok(transition(p, 'a', 'skipped', { now: LATER }), 'running -> skipped')
+  p = ok(transition(p, 'a', 'pending', { now: LATER }), 'skipped -> pending')
+  p = ok(transition(p, 'a', 'running', { now: LATER }), 'pending -> running')
+  p = ok(transition(p, 'a', 'done', { now: LATER }), 'running -> done')
+  p = ok(transition(p, 'b', 'skipped', { now: LATER }), 'fresh pending -> skipped')
+  p = ok(transition(p, 'b', 'pending', { now: LATER }), 'skipped -> pending')
+  p = ok(transition(p, 'b', 'running', { now: LATER }), 'pending -> running')
+  p = ok(transition(p, 'b', 'failed', { now: LATER }), 'running -> failed')
+  ok(transition(p, 'b', 'skipped', { now: LATER }), 'failed -> skipped')
+})
+
+const chain = (n, { loop = false } = {}) => Array.from({ length: n }, (_, i) => main(`t${i}`, { depends_on: i > 0 ? [`t${i - 1}`] : loop ? [`t${n - 1}`] : [] }))
+// Each task depends on the next one, so a walk in plan order goes the whole depth at once.
+const forward = n => Array.from({ length: n }, (_, i) => main(`t${i}`, { depends_on: i + 1 < n ? [`t${i + 1}`] : [] }))
+
+test('finding 5: the cycle walk is iterative, and a plan holds at most 500 tasks', () => {
+  assert.deepEqual(kinds(validateDraft(draft(forward(100000)))), ['too-many-tasks'], 'a 100000-deep chain neither overflows the stack nor passes')
+  assert.deepEqual(validateDraft(draft(chain(500))), [], 'a chain at the cap is valid')
+  assert.deepEqual(validateDraft(draft(forward(500))), [], 'and walked depth-first from its far end')
+  const cyc = validateDraft(draft(chain(500, { loop: true })))
+  assert.deepEqual(kinds(cyc), ['cycle'])
+  assert.match(cyc[0].detail, /^the dependencies form a cycle: t0 -> t499 -> t498 -> .* -> t1 -> t0$/)
+  assert.deepEqual(kinds(validateDraft(draft(chain(501)))), ['too-many-tasks'])
+  const full = plan(chain(500))
+  assert.deepEqual(kinds(addTask(full, main('extra'), { now: LATER }).problems), ['too-many-tasks'])
+  assert.equal(schedule(full.tasks).length, 500)
 })

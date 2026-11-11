@@ -12,11 +12,15 @@
 // A plan file that does not parse, or fails validatePlan, or whose run_id or project is not its
 // own, is never repaired: exit 2 corrupt-plan. Read-modify-write is not locked: two concurrent
 // writers to one plan can lose an update (one lead session owns a run).
-// The clock is TECH_LEAD_NOW (an ISO-8601 string) when set, else the real clock.
+// The clock is TECH_LEAD_NOW when set, else the real clock. TECH_LEAD_NOW must be a four-digit-year
+// ISO-8601 UTC instant (yyyy-mm-ddThh:mm:ss[.sss]Z, a real time: isIsoInstant), else exit 2 bad-now.
+// create validates the finished plan (run id and timestamps included) before it writes it, as
+// every other write does: a plan that fails validatePlan is exit 2 invalid-plan {problems},
+// never written.
 //
 // Usage: node plan-graph.mjs <command> [<P>] [flags]; one JSON line on stdout, exit 0 (ok), 2
 // ({state:'error', error, detail}: usage, bad-now, not-a-repo, not-toplevel, bad-cache,
-// identity-mismatch, io, corrupt-plan {file, problems}) or 3 ({state:'invalid', problems:[{task,
+// identity-mismatch, io, corrupt-plan {file, problems}, invalid-plan {problems}) or 3 ({state:'invalid', problems:[{task,
 // kind, detail}]}, {state:'refused', reason, detail}, or {state:'clone-invalid', detail} when
 // <V>/plans is not a real directory in <V>).
 //   validate --file <draft.json>              -> {state:'valid', tasks, waves:[[id]]} (waves: the
@@ -31,7 +35,9 @@
 //                                             -> {state:'marked', run_id, task:{id, status, attempts},
 //                                                finished}; refused: unknown-task, bad-status,
 //                                                done-is-final, illegal-transition, not-ready,
-//                                                result-too-long, no-open-decision
+//                                                files-held (its files overlap a running task's;
+//                                                --force starts it anyway), result-too-long,
+//                                                no-open-decision
 //   add <P> --file <task.json> [--run <id>]   -> {state:'added', run_id, task: id}
 //   status <P> [--run <id>]                   -> {state:'ok', run_id, file, goal, session_model, counts,
 //                                                total, finished, tasks:[{id, title, executor, model,
@@ -49,7 +55,8 @@ import { fileURLToPath } from 'node:url'
 import { createExclusive, readJson, storageDir, writeReplace } from './lib/atomic.mjs'
 import { ensureV } from './lib/loop-paths.mjs'
 import {
-  RUN_ID_RE, addTask, buildPlan, decide, draftTasks, nextWave, runIdOf, schedule, transition, validateDraft, validatePlan,
+  RUN_ID_RE, addTask, buildPlan, decide, draftTasks, isIsoInstant, nextWave, runIdOf, schedule, transition, validateDraft,
+  validatePlan,
 } from './lib/plan-graph.mjs'
 import { openPaths } from './loop-lock.mjs'
 
@@ -109,9 +116,10 @@ function parseArgs(argv) {
 
 function clock(env) {
   if (!env.TECH_LEAD_NOW) return new Date().toISOString()
-  const d = new Date(env.TECH_LEAD_NOW)
-  if (Number.isNaN(d.getTime())) throw new Failed('bad-now', `TECH_LEAD_NOW is not a date: ${JSON.stringify(env.TECH_LEAD_NOW)}`)
-  return d.toISOString()
+  if (!isIsoInstant(env.TECH_LEAD_NOW)) {
+    throw new Failed('bad-now', `TECH_LEAD_NOW is not a four-digit-year ISO-8601 UTC instant (yyyy-mm-ddThh:mm:ss[.sss]Z): ${JSON.stringify(env.TECH_LEAD_NOW)}`)
+  }
+  return new Date(env.TECH_LEAD_NOW).toISOString()
 }
 
 // An input file's JSON value: exit 2 io when it cannot be read, exit 3 invalid when it is not JSON.
@@ -174,11 +182,18 @@ function selectRun(paths, run) {
 
 const others = n => (n > 0 ? { other_open_runs: n } : {})
 
-// Writes plan back; a plan that fails its own validation is a bug here, never written.
-function save(file, plan) {
+// A plan is written only once it passes validatePlan; one that does not is a bug here.
+function checked(plan) {
   const problems = validatePlan(plan)
-  if (problems.length) throw new Failed('internal', `refusing to write an invalid plan: ${JSON.stringify(problems)}`)
-  writeReplace(file, plan)
+  if (problems.length) throw new Failed('invalid-plan', `refusing to write a plan that fails validation (${problems.map(p => p.kind).join(', ')})`, { problems })
+  return plan
+}
+
+// The plan create writes, validated: throws invalid-plan instead of returning one that fails.
+export const freshPlan = (draft, { runId, project, now }) => checked(buildPlan(draft, { runId, project, now }))
+
+function save(file, plan) {
+  writeReplace(file, checked(plan))
 }
 
 function changed(r) {
@@ -205,7 +220,7 @@ const COMMANDS = {
     const now = clock(env)
     for (let i = 0; i < CREATE_ATTEMPTS; i++) {
       const runId = runIdOf(now, crypto.randomBytes(2).toString('hex'))
-      const plan = buildPlan(draft, { runId, project: paths.R, now })
+      const plan = freshPlan(draft, { runId, project: paths.R, now })
       const file = path.join(dir, `${runId}.json`)
       if (createExclusive(file, plan)) return { state: 'created', run_id: runId, file, tasks: plan.tasks.length, waves: schedule(plan.tasks) }
     }
