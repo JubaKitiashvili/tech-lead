@@ -274,7 +274,9 @@ test('git passthrough: trace2 from the caller\'s config still reaches the caller
   await firing(fx)
   prepare(fx)
   const cfg = path.join(fx.root, 'trace2.gitconfig')
-  fs.writeFileSync(cfg, '[trace2]\n\tnormalTarget = /dev/stderr\n')
+  // `true` is git's own spelling for stderr; the path /dev/stderr writes nothing on Linux when
+  // stderr is a pipe from Node.
+  fs.writeFileSync(cfg, '[trace2]\n\tnormalTarget = true\n')
   const r = cli({ ...fx.env, GIT_CONFIG_GLOBAL: cfg }, 'git', fx.P, '--', 'rev-parse', 'HEAD')
   assert.equal(r.status, 0, r.stderr)
   assert.equal(r.stdout.trim(), tipOf(fx.W))
