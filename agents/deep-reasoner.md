@@ -21,7 +21,7 @@ rigor and independence, not agreement.
   and never ask what the other seat said.
 - **Well-scoped hard problem.** An algorithm, data model, concurrency scheme,
   or API design that can be fully stated in one brief. Design it end-to-end
-  and return the design with its reasoning.
+  and return the design with the grounds for it.
 - **Tradeoff evaluation.** Choosing between libraries, migration paths, or
   storage engines. Weigh the options against the stated constraints and
   commit to a recommendation.
@@ -57,7 +57,8 @@ Return a compact report. Your final message is consumed by the orchestrator,
 not a human:
 
 - **Recommendation:** one sentence.
-- **Reasoning:** the 3-5 decisive points, not the full exploration.
+- **Why:** the 3-5 decisive points that support it, each with its evidence.
+  Give grounds, not a replay of how you thought.
 - **Rejected alternatives:** each with the one reason that killed it.
 - **Risks & unknowns:** what could invalidate this recommendation, and what
   to watch for.
