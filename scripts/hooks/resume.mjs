@@ -6,10 +6,18 @@
 // notice that Claude Code adds to the lead's context: where the plan is, how far it got, and the
 // command that restores it. The plan file is the record; the summary is not.
 //
-// stdin: the hook input JSON (cwd). stdout: the notice, or nothing when there is no git project
-// at cwd, no unfinished plan, or anything fails. Always exits 0: a hook that fails here must
-// never get in the way of the session.
+// The project is the first of these with an unfinished plan: the git top level of cwd (when cwd
+// is in a working tree), cwd itself, then each ancestor of cwd, at most MAX_UP levels up and
+// never the home directory or the filesystem root or above them. A plan can sit at a workspace
+// folder holding several repositories, so a session started in one of them finds it. A
+// candidate the CLI refuses (a folder below a repository's top level is not-toplevel) is
+// skipped. Every child has a timeout and the whole search a deadline (BUDGET_MS).
+//
+// stdin: the hook input JSON (cwd). stdout: the notice, or nothing when no candidate has an
+// unfinished plan, or anything fails. Always exits 0: a hook that fails here must never get in
+// the way of the session.
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -17,21 +25,44 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLI = path.join(HERE, '..', 'plan-graph.mjs')
 
-const toplevel = cwd => {
-  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout: 5000 })
+const MAX_UP = 6
+const BUDGET_MS = 20000
+
+const toplevel = (cwd, timeout) => {
+  const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', timeout })
   return r.status === 0 ? r.stdout.trim() : null
 }
 
-// The open run of the project at cwd, as `plan-graph.mjs status` reports it; null when none.
+// The folders to try, in order, without repeats (see the header).
+const candidates = (cwd, top, home) => {
+  const out = [top, cwd]
+  const stops = new Set([home, path.parse(cwd).root].filter(Boolean).map(p => path.resolve(p)))
+  let dir = cwd
+  for (let i = 0; i < MAX_UP; i++) {
+    const up = path.dirname(dir)
+    if (up === dir || stops.has(up)) break
+    out.push(up)
+    dir = up
+  }
+  return [...new Set(out.filter(Boolean))]
+}
+
+// The open run of the project for cwd, as `plan-graph.mjs status` reports it; null when none.
 export const openRun = (cwd, env = process.env) => {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return null
-  const P = toplevel(cwd)
-  if (!P) return null
-  const r = spawnSync(process.execPath, [CLI, 'status', P], { encoding: 'utf8', timeout: 10000, env })
-  if (r.status !== 0) return null
-  let out
-  try { out = JSON.parse(r.stdout) } catch { return null }
-  return out && out.state === 'ok' && out.finished === false ? { P, ...out } : null
+  const deadline = Date.now() + BUDGET_MS
+  const left = cap => Math.min(cap, deadline - Date.now())
+  const top = toplevel(cwd, left(5000))
+  for (const P of candidates(path.resolve(cwd), top, env.HOME || os.homedir())) {
+    const timeout = left(10000)
+    if (timeout <= 0) return null
+    const r = spawnSync(process.execPath, [CLI, 'status', P], { encoding: 'utf8', timeout, env })
+    if (r.status !== 0) continue
+    let out
+    try { out = JSON.parse(r.stdout) } catch { continue }
+    if (out && out.state === 'ok' && out.finished === false) return { P, ...out }
+  }
+  return null
 }
 
 const one = s => String(s).replace(/\s+/g, ' ').trim().slice(0, 200)

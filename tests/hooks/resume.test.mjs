@@ -82,3 +82,39 @@ test('the root skill registers the hook on SessionStart for compact, by a path t
   assert.equal(m[1], 'scripts/hooks/resume.mjs')
   assert.ok(fs.existsSync(path.join(ROOT, m[1])))
 })
+
+// A workspace folder holding two repositories, with a plan created at the folder itself.
+const workspace = t => {
+  const W = tmp(t, 'tl-resume-ws-')
+  for (const r of ['api', 'web']) execFileSync('git', ['init', '-q', path.join(W, r)])
+  return { P: W, env: { ...process.env, TECH_LEAD_CACHE: tmp(t, 'tl-resume-ws-cache-') } }
+}
+const WS_DRAFT = JSON.stringify({ goal: 'cross-repo', tasks: [{ id: 'a', title: 't', executor: 'main', files: ['api/src/', 'web/src/'] }] })
+
+test('a plan at a workspace folder is found from an inner repository, a subfolder of it, and the folder itself', t => {
+  const fx = workspace(t)
+  const made = cli(fx, ['create', fx.P, '--json', WS_DRAFT])
+  assert.equal(made.state, 'created', JSON.stringify(made))
+  const deep = path.join(fx.P, 'api', 'src', 'deep')
+  fs.mkdirSync(deep, { recursive: true })
+  for (const cwd of [path.join(fx.P, 'api'), deep, fx.P]) {
+    const r = hook(fx, JSON.stringify({ cwd }))
+    assert.equal(r.status, 0)
+    assert.ok(r.stdout.includes(made.run_id), cwd)
+    assert.ok(r.stdout.includes(`status "${fx.P}"`), cwd)
+  }
+})
+
+test('silent, exit 0: seven levels below the plan\'s folder, or when its only plan is finished', t => {
+  const fx = workspace(t)
+  cli(fx, ['create', fx.P, '--json', WS_DRAFT])
+  const six = path.join(fx.P, '1', '2', '3', '4', '5', '6')
+  const seven = path.join(six, '7')
+  fs.mkdirSync(seven, { recursive: true })
+  assert.match(hook(fx, JSON.stringify({ cwd: six })).stdout, /unfinished \/tech-lead plan/, 'six levels up is still searched')
+  assert.deepEqual([hook(fx, JSON.stringify({ cwd: seven })).status, hook(fx, JSON.stringify({ cwd: seven })).stdout], [0, ''])
+  cli(fx, ['mark', fx.P, '--task', 'a', '--status', 'running'])
+  cli(fx, ['mark', fx.P, '--task', 'a', '--status', 'done'])
+  const r = hook(fx, JSON.stringify({ cwd: path.join(fx.P, 'web') }))
+  assert.deepEqual([r.status, r.stdout], [0, ''])
+})
