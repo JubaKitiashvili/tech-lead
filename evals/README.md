@@ -27,6 +27,7 @@ the test suite.
 In the routing cases the "skill fired" grader is marked `arm: both`, so it is
 part of the score: a run without the plugin scores 0.5 by design, and a run
 with the plugin where the skill stays silent fails the case.
+| `plan-file` | behaviour, plan-graph, costly | An approved six-task plan with ordering is recorded with `plan-graph.mjs create`, and every `Agent` call carries a model. Needs `--allow-tools Bash`. The sandbox cannot run git, so `create` itself fails there and `next`/`mark` are not measured |
 | `loop-no-silent-bootstrap` | behaviour, loop | With no `.tech-lead/` spine the loop creates and dispatches nothing; it asks first or names the gap |
 
 The routing cases grant only `Skill`, `Read`, `Glob` and `Grep`, so a skill
@@ -98,6 +99,21 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   - One `skip-debug` run failed its `llm` grader although the answer was a
     direct diagnosis: the rubric asked for one cause and the reply listed
     several. The rubric was loosened and the case re-run: 3 of 3 ($0.47).
+
+- 2026-11-11, plugin 0.8.0, `--case plan-file --runs 1 --ablation none --model opus --scaffold`:
+  three single runs while the case and the script were adjusted ($3.10).
+  With `--allow-tools "Bash(node *)"` the lead's first `create` used a heredoc
+  and was denied (the script then gained `--json`); with the same grant and an
+  unrelated denied `git` call the lead skipped the plan file; with
+  `--allow-tools Bash` it called `create --json` with a valid draft, and the
+  call failed because git does not run in the eval sandbox. All five `Agent`
+  calls carried a model in every run.
+- 2026-11-11, same plugin, one live headless run outside the eval sandbox
+  (`claude -p --plugin-dir . --model opus` in a scratch git repository, same
+  prompt, $2.00): the plan file was created with six tasks, each task was
+  marked `running` and then `done`, and the run ended with every task `done`.
+  The lead never called `next`; it marked the tasks in dependency order, which
+  `mark` enforces.
 
 Eval runs are non-interactive. A lead may behave differently when a user is
 there to answer, so these numbers describe `claude -p`, not a live session.

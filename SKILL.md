@@ -221,6 +221,14 @@ reads the whole conversation, so it never replaces an independent panel seat.
    - If a plan or spec already exists (for example, from superpowers
      brainstorming or writing-plans), execute it with this bench. Do not
      re-plan it.
+   - **Plan file.** When the approved plan has five or more tasks, or a
+     delegated task waits for another, record it before the first dispatch:
+     `node ${CLAUDE_PLUGIN_ROOT}/scripts/plan-graph.mjs create <project>`
+     (`references/plan-graph.md` has the format). From then on the file is
+     the task list. `next` names the tasks that can run now, `mark` records
+     each start and each verified result, and `status` restores the run
+     after compaction or in a new session. Do not track order or readiness
+     in your head.
 2. **Brief completely.** Subagents start with zero session context. Every
    brief is self-contained and follows `references/briefing-template.md`. A
    brief that needs the conversation to make sense is not ready to send.
@@ -233,6 +241,8 @@ reads the whole conversation, so it never replaces an independent panel seat.
      per agent.
    - Give an agent a `name` when you may need to follow up with it:
      `SendMessage` continues it with its context intact.
+   - With a plan file, dispatch the `wave` that `next` prints, with each
+     task's `model` and `effort` from the plan, and mark each task `running`.
 4. **Verify against ground truth.** Treat a subagent's "done" as a claim.
    - Check what actually changed with `git status` / `git diff`, not with the
      report's file list.
@@ -441,6 +451,8 @@ model is fixed by its agent file or by the row.
   fact-check.
 - **`/tech-lead:loop`**: one iteration of the backlog executor.
 - **`references/briefing-template.md`**: the brief template.
+- **`references/plan-graph.md`**: the plan file. It covers the draft format,
+  the commands, and how to resume a run.
 - **`references/models-and-effort.md`**: the sources, measurements and
   history behind Models and effort. Read it when a rule needs its reason.
 - **`references/panel-protocol.md`**: the panel protocol. It covers the
