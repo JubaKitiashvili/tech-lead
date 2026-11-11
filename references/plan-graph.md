@@ -5,17 +5,20 @@ bookkeeping: it validates the plan, names the tasks that can run now, records
 status, and restores the run after compaction or in a new session. It runs no
 agent and decides nothing.
 
-`<T>` is the plugin root and `<P>` the project root (the top level of a git
-working tree). Every command prints one JSON line. Exit 0 is ok, 3 is a
+`<T>` is the plugin root and `<P>` the project folder: the top level of a git
+working tree, or a folder inside no repository. In a workspace folder that
+holds several repositories, `<P>` is that folder and `files` are paths below
+it (`api/src/`, `web/app.js`). A folder below a repository's top level is
+refused (`not-toplevel`). Every command prints one JSON line. Exit 0 is ok, 3 is a
 refusal or an invalid plan (read `problems` or `reason`), 2 is an error.
 
 ## When to write one
 
 After the user approved the plan and before the first dispatch, when the plan
 has five or more tasks, or when any delegated task waits for another. A
-smaller plan stays in the message and the task list. A project that is not a
-git repository cannot have a plan file (`not-a-repo`); keep the plan in the
-message there.
+smaller plan stays in the message and the task list. If `create` is refused
+or fails, tell the user the reason in one line and keep the plan in the
+message.
 
 ## The draft
 
@@ -97,6 +100,10 @@ After compaction, or in a new session on the same project:
 node <T>/scripts/plan-graph.mjs status <P>
 ```
 
+After a compaction, once `/tech-lead` has run in the session, a hook prints a
+notice with this command when the project has an unfinished plan. In a new
+session nothing reminds you: run it yourself.
+
 It prints the goal, every task with its status and result, and the file path.
 Continue from `next`. `list <P>` shows every run, finished ones included.
 Without `--run <id>` the commands use the newest unfinished plan.
@@ -105,6 +112,7 @@ Without `--run <id>` the commands use the newest unfinished plan.
 
 - One session owns a run. Two sessions writing the same plan at the same
   moment can lose an update.
-- The file lives outside the repository, under
+- The file lives outside the project folder, under
   `~/.cache/tech-lead/<project>/plans/` (or `TECH_LEAD_CACHE`). It is on this
-  machine only.
+  machine only. `<P>` must be a repository's top level or a folder in no
+  repository; a repository's subfolder is `not-toplevel`.

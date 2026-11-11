@@ -5,8 +5,11 @@
 // new session). It never runs an agent and never decides anything. All plan logic is
 // scripts/lib/plan-graph.mjs's; this file reads and writes the plan file and prints.
 //
-// Layout: <V>/plans/<run_id>.json, <V> from loop-paths.mjs (<P> must be the top level of a git
-// working tree, as for every loop helper), run_id = <UTC yyyymmddThhmmssZ>-<4 lower-case hex>.
+// Layout: <V>/plans/<run_id>.json, <V> from loop-paths.mjs's workspacePaths: <P> is an existing
+// directory that is either the top level of a git working tree (the loop's own <V>) or inside no
+// working tree at all, such as a workspace folder holding several repositories; a folder below a
+// repository's top level is refused not-toplevel. A plan's `files` are relative to <P>, repo or
+// not. run_id = <UTC yyyymmddThhmmssZ>-<4 lower-case hex>.
 // A plan is created with createExclusive and every change is written whole with writeReplace
 // (atomic.mjs), updated_at set; <V>/plans is checked with storageDir before any read or write.
 // A plan file that does not parse, or fails validatePlan, or whose run_id or project is not its
@@ -19,8 +22,8 @@
 // never written.
 //
 // Usage: node plan-graph.mjs <command> [<P>] [flags]; one JSON line on stdout, exit 0 (ok), 2
-// ({state:'error', error, detail}: usage, bad-now, not-a-repo, not-toplevel, bad-cache,
-// identity-mismatch, io, corrupt-plan {file, problems}, invalid-plan {problems}) or 3 ({state:'invalid', problems:[{task,
+// ({state:'error', error, detail}: usage, bad-now, not-a-directory, not-toplevel, git-failed,
+// bad-cache, identity-mismatch, io, corrupt-plan {file, problems}, invalid-plan {problems}) or 3 ({state:'invalid', problems:[{task,
 // kind, detail}]}, {state:'refused', reason, detail}, or {state:'clone-invalid', detail} when
 // <V>/plans is not a real directory in <V>).
 //   validate --file <draft.json>              -> {state:'valid', tasks, waves:[[id]]} (waves: the
@@ -55,12 +58,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createExclusive, readJson, storageDir, writeReplace } from './lib/atomic.mjs'
-import { ensureV } from './lib/loop-paths.mjs'
+import { checkIdentity, ensureV, workspacePaths } from './lib/loop-paths.mjs'
 import {
   RUN_ID_RE, addTask, buildPlan, decide, draftTasks, isIsoInstant, nextWave, runIdOf, schedule, transition, validateDraft,
   validatePlan,
 } from './lib/plan-graph.mjs'
-import { openPaths } from './loop-lock.mjs'
 
 const USAGE = 'usage: plan-graph.mjs validate (--file <draft.json> | --json <text>) | create <P> (--file <draft.json> | --json <text>) | next <P> [--run <id>]' +
   ' | mark <P> --task <id> (--status <s> [--force] | --decided) [--result <text>] [--run <id>]' +
@@ -146,6 +148,9 @@ function readInput({ file, json }) {
   }
 }
 
+// The paths of <P> without creating anything; a <V> bound to another R is refused.
+const openWorkspace = (P, env) => checkIdentity(workspacePaths(P, { env }))
+
 const plansDir = (paths, create) => storageDir(paths.V, path.join(paths.V, 'plans'), { create })
 
 // One plan, read and checked: null when the file is missing.
@@ -220,7 +225,7 @@ const COMMANDS = {
   },
 
   create(P, opts, env) {
-    const base = openPaths(P, env)
+    const base = openWorkspace(P, env)
     const draft = readInput(opts)
     const problems = validateDraft(draft)
     if (problems.length) throw invalid(problems)
@@ -237,12 +242,12 @@ const COMMANDS = {
   },
 
   next(P, { run }, env) {
-    const { file, plan, other } = selectRun(openPaths(P, env), run)
+    const { file, plan, other } = selectRun(openWorkspace(P, env), run)
     return { state: 'ok', run_id: plan.run_id, file, ...nextWave(plan.tasks), ...others(other) }
   },
 
   mark(P, { task, status, result, force, decided, run }, env) {
-    const { file, plan, other } = selectRun(openPaths(P, env), run)
+    const { file, plan, other } = selectRun(openWorkspace(P, env), run)
     const now = clock(env)
     const next = changed(decided ? decide(plan, task, { now, result }) : transition(plan, task, status, { now, result, force: Boolean(force) }))
     save(file, next)
@@ -251,7 +256,7 @@ const COMMANDS = {
   },
 
   add(P, opts, env) {
-    const { file, plan, other } = selectRun(openPaths(P, env), opts.run)
+    const { file, plan, other } = selectRun(openWorkspace(P, env), opts.run)
     const draftTask = readInput(opts)
     const next = changed(addTask(plan, draftTask, { now: clock(env) }))
     save(file, next)
@@ -259,7 +264,7 @@ const COMMANDS = {
   },
 
   status(P, { run }, env) {
-    const { file, plan, other } = selectRun(openPaths(P, env), run)
+    const { file, plan, other } = selectRun(openWorkspace(P, env), run)
     const { counts, total, finished } = nextWave(plan.tasks)
     return {
       state: 'ok', run_id: plan.run_id, file, goal: plan.goal, session_model: plan.session_model, counts, total, finished,
@@ -269,7 +274,7 @@ const COMMANDS = {
   },
 
   list(P, _opts, env) {
-    const runs = allPlans(openPaths(P, env)).map(({ file, plan }) => {
+    const runs = allPlans(openWorkspace(P, env)).map(({ file, plan }) => {
       const { counts, finished } = nextWave(plan.tasks)
       return { run_id: plan.run_id, file, goal: plan.goal, created_at: plan.created_at, finished, counts }
     })

@@ -6,6 +6,10 @@
 //   key     <slug>-<h>: slug from basename(R), h = first 16 hex of SHA-256 over R (UTF-8)
 //   V       <TECH_LEAD_CACHE or homedir/.cache>/tech-lead/<key>, the untrusted work area
 //   S       R/.tech-lead (governance); W = V/clone (from stage 0c-2); lockDir = V/lock
+// workspacePaths(P) gives {P, R, key, V} for a folder that is either the top level of a git
+// working tree (then exactly loopPaths' key and V) or inside no working tree at all (a workspace
+// folder holding several repositories); the plan-graph CLI uses it. checkIdentity(paths) is the
+// read-side twin of ensureV: a <V> whose identity.json records another R is refused.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -41,13 +45,55 @@ export function loopPaths(P, { env = process.env } = {}) {
   }
   const top = fs.realpathSync.native(out)
   if (R !== top) throw new Error(`not-toplevel: ${R} is inside ${top}`)
+  const { key, V } = keyAndV(R, env)
+  return { P, R, key, S: path.join(R, '.tech-lead'), V, W: path.join(V, 'clone'), lockDir: path.join(V, 'lock') }
+}
+
+// <key> and <V> of a real path, under the cache root.
+function keyAndV(R, env) {
   const cacheRoot = env.TECH_LEAD_CACHE || path.join(os.homedir(), '.cache')
   // A relative root would put <V>, and so the lock, under whatever directory a firing
   // happens to run in: two firings of one project would not share a lock.
   if (!path.isAbsolute(cacheRoot)) throw new Error(`bad-cache: TECH_LEAD_CACHE is not an absolute path: ${cacheRoot}`)
   const key = keyOf(R)
-  const V = path.join(cacheRoot, 'tech-lead', key)
-  return { P, R, key, S: path.join(R, '.tech-lead'), V, W: path.join(V, 'clone'), lockDir: path.join(V, 'lock') }
+  return { key, V: path.join(cacheRoot, 'tech-lead', key) }
+}
+
+// Pure, like loopPaths. <P> must be an existing directory (else not-a-directory). Inside a
+// working tree it must be the top level (loopPaths decides, so a repository's key and <V> are
+// the ones the loop uses; below the top: not-toplevel, one plan location per repository). A
+// directory in no working tree is decided by git's exit status alone: `rev-parse
+// --is-inside-work-tree` exits 128 when no repository encloses the directory; safe.directory=*
+// keeps git's dubious-ownership refusal (also 128) from passing for "no repository" there. A
+// directory inside a repository's git directory (the command prints `false`) is not-toplevel.
+export function workspacePaths(P, { env = process.env } = {}) {
+  let R
+  try {
+    if (!fs.statSync(P).isDirectory()) throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' })
+    R = fs.realpathSync.native(P)
+  } catch (e) {
+    throw new Error(`not-a-directory: ${P}: ${e.code || e.message}`)
+  }
+  let inside
+  try {
+    inside = safeGit(R, ['rev-parse', '--is-inside-work-tree'], { config: ['safe.directory=*'] })
+  } catch (e) {
+    if (e.code || e.status !== 128) throw new Error(`git-failed: ${R}: ${firstLine(e.stderr || e.message)}`)
+    inside = null
+  }
+  if (inside === 'true') {
+    const p = loopPaths(P, { env })
+    return { P, R: p.R, key: p.key, V: p.V }
+  }
+  if (inside !== null) throw new Error(`not-toplevel: ${R} is inside a git directory`)
+  return { P, R, ...keyAndV(R, env) }
+}
+
+// Refuses paths whose <V> already belongs to another R; creates nothing.
+export function checkIdentity(paths) {
+  const id = readJson(path.join(paths.V, 'identity.json'))
+  if (id && id.R !== paths.R) throw new Error(`identity-mismatch: ${paths.V} belongs to ${id.R}`)
+  return paths
 }
 
 // Creates <V> and binds it to R through identity.json ({v:1, R}, written exclusively, so

@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.8.0.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.8.2.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -313,6 +313,11 @@ nothing before the skill runs). When the session model changes, an automatic
 fallback included, the lead gets a short notice with its next request: which
 model it is on now, which rules apply, and to tell you when nobody chose the
 switch. The script is `scripts/hooks/model-switch.mjs`.
+
+**Resume notice.** A second hook from the same frontmatter (`SessionStart`,
+matcher `compact`) runs after a compaction. If the project has an unfinished
+plan file, the lead is told where it is, how far the run got, and the command
+that restores it. The script is `scripts/hooks/resume.mjs`.
 
 ### Workflow mode
 
