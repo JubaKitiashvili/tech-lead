@@ -113,6 +113,46 @@ model starts on a cold cache. Fable 5.2 can read the earlier model's
 thinking; nothing else can read Fable 5.2's, and Sonnet cannot read Opus
 5.5's.
 
+## Fable 5.2: what the announcement and Artificial Analysis add
+
+Read on 2026-11-11: Anthropic's announcement
+(https://www.anthropic.com/claude-fable-and-mythos-5-2) and the Artificial
+Analysis model page (https://artificialanalysis.ai/models/claude-fable-5-2).
+Nothing here changes a rule above; it gives the rules their numbers.
+
+- **The roles are Anthropic's own.** "Fable 5.2 can also play the role of
+  Advisor (where Haiku, Sonnet, or Opus models consult it to help solve
+  harder problems) or Orchestrator (where it delegates simpler tasks to
+  smaller models)." And for the default: "we recommend that users start with
+  Claude Opus 5.5, our strongest daily driver."
+- **Price.** "$8 per million input tokens and $40 per million output
+  tokens"; fast mode is $16 and $80 for output "up to 2.5 times" faster.
+- **Cost per task depends on effort more than on the per-token price.**
+  Anthropic's figures: at `high`, Fable 5.2 "scores about the same as Opus
+  5.5's best score (45.3% vs. 45.5%) for roughly half the cost per task"
+  (FrontierCode 2.0); at `medium` it "matches Opus 5.5's top score for about
+  40% of the cost per task" (WANDR). `medium` is "the default in Claude apps
+  and Claude Code".
+- **Why never `max`.** Artificial Analysis measured the `max` configuration:
+  45.0 minutes per task against a median of 12.6, 247.85 s to the first
+  answer token against a median of 12.29 s, $26.54 per task, and 275M output
+  tokens against a median of 72.8M. Its verdict: "notably slow per task and
+  very verbose." It ranks first on that index (65, median 40) and last on
+  cost.
+- **Which model answers a blocked request.** "Users will instead receive a
+  response from Opus 4.8 for cybersecurity and Opus 5 for biology", and
+  there are "transparent fallbacks to Opus 5 for a small set of topics" in AI
+  R&D, "including kernel development on certain nonstandard accelerators".
+  Both are older than the Opus 5.5 a delegate runs on, which is the reason
+  for the Security work rule: an Opus 5.5 executor does that work better than
+  a Fable lead that has fallen back. Anthropic reports "about 55% fewer
+  blocks with Fable 5.2 compared with Fable 5.1".
+- **Plan limits, launch promotion.** "Fable is included for up to 50% of
+  weekly usage limits for Pro plans and standard seats on the Team plan",
+  with one to three resets by length of subscription. The announcement does
+  not mention the Max plan; the Max figure above comes from the Claude Code
+  model-config page.
+
 ## When delegation pays
 
 Anthropic's cost measurements (API benchmarks): on one dependent chain of
