@@ -97,6 +97,10 @@ After compaction, or in a new session on the same project:
 node <T>/scripts/plan-graph.mjs status <P>
 ```
 
+After a compaction, once `/tech-lead` has run in the session, a hook prints a
+notice with this command when the project has an unfinished plan. In a new
+session nothing reminds you: run it yourself.
+
 It prints the goal, every task with its status and result, and the file path.
 Continue from `next`. `list <P>` shows every run, finished ones included.
 Without `--run <id>` the commands use the newest unfinished plan.
