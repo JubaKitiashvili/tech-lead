@@ -40,15 +40,19 @@ for (const k of ['TECH_LEAD_CACHE', 'TECH_LEAD_HOLDER_PID', 'TECH_LEAD_FAULT', '
   delete process.env[k]
 }
 
-// Plain git: the delegate's and the owner's view, and the control.
+// Plain git: the delegate's and the owner's view, and the control. Background housekeeping is
+// off: a fetch or merge here otherwise starts `git maintenance run --auto` detached, and its
+// objects/maintenance.lock appears and vanishes under a snapshot() of the same repository
+// (seen on the macOS CI runner as ENOENT in lstat).
+const QUIET = ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false']
 export function git(cwd, args, { buffer = false, input, env = process.env, check = true } = {}) {
-  const r = spawnSync('git', ['-C', cwd, ...args], { env, input, maxBuffer: 64 * 1024 * 1024 })
+  const r = spawnSync('git', [...QUIET, '-C', cwd, ...args], { env, input, maxBuffer: 64 * 1024 * 1024 })
   if (check && r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`)
   if (buffer) return r.stdout
   return r.stdout.toString('utf8').replace(/\n$/, '')
 }
 
-export const gitCode = (cwd, args) => spawnSync('git', ['-C', cwd, ...args], { env: process.env }).status
+export const gitCode = (cwd, args) => spawnSync('git', [...QUIET, '-C', cwd, ...args], { env: process.env }).status
 
 export const tmp = (t, prefix) => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
