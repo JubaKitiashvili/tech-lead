@@ -170,6 +170,53 @@ These findings are behind the Fable rules in `SKILL.md`.
   can make its prose choppy". The report contract's 40-line cap is for
   delegates, which are never Fable.
 
+## Opus 5.5 and Sonnet 5.5: the guides, re-read
+
+Read on 2026-11-11:
+https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5
+and
+https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5-5.
+Both say that prompts written for Opus 5 and Sonnet 5 "should perform well
+without changes". What they add for this plugin's delegates:
+
+- **Sonnet 5.5 adds things.** "The model tends to add tests, documentation,
+  and small supporting files that fit your repository's conventions, even
+  when you don't ask for them. It does this at every effort level, and more
+  at higher effort." `fast-worker` rule 2 is Anthropic's counter-text:
+  "Don't add features, tests, files, docs or refactors that weren't asked
+  for. If you think one would help, mention it at the end instead of doing
+  it."
+- **Sonnet 5.5 at `xhigh` and `max`.** "After it completes a task, it can
+  start its own rounds of review and verification, sometimes with subagents
+  if your harness provides them … so run routine work at `high` or below,
+  where it's rare." At `low` it "can skip verifying a change" and "sometimes
+  reports a change as done without running a check that exercises it".
+  Hence `fast-worker` at `high`, and its rule that a syntax-only check or a
+  command that failed to start does not count.
+- **Opus 5.5 at `xhigh` and `max`** "tends to think more per turn than Claude
+  Opus 5 … expect longer turns and more output tokens". "Reserve `xhigh` and
+  `max` for work where you've measured a quality gain." With the SWE-bench
+  Pro figure above (1.4 points for 2.5 times the cost), this is why only the
+  reviewer of a high-stakes task runs at `xhigh`; the implementer stays at
+  `high`.
+- **An end of turn is a report, not proof.** For unattended runs on Opus
+  5.5: "Treat a text-only end of turn as a report rather than as proof the
+  task is done", "keep the task's parts in a checklist the model updates,
+  such as a to-do tool or a file", and "stop after two or three automatic
+  continuations on the same task". The plan file is that checklist.
+- **Do not ask for reasoning in the reply.** On Opus 5.5, Sonnet 5.5 and
+  Fable 5.2 a prompt that "pushes the model to reproduce its reasoning in the
+  response text might be declined with the `reasoning_extraction` refusal
+  category". "You can still ask for a short explanation of the answer or a
+  summary of the actions taken." `deep-reasoner` therefore reports "Why",
+  the decisive points with their evidence.
+- **Reviewing.** Opus 5.5: "more bugs caught than on Claude Opus 5 and fewer
+  false alarms". "Finding vulnerabilities in source code is allowed.
+  High-risk dual-use cybersecurity activities are not."
+- **Not adopted.** The Opus 5.5 guide's "treat that answer as done" line is
+  for chat; it makes the model "less likely to point out a mistake in an
+  earlier answer", which a lead that verifies work must keep doing.
+
 ## When delegation pays
 
 Anthropic's cost measurements (API benchmarks): on one dependent chain of

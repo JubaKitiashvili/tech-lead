@@ -31,7 +31,10 @@ The orchestrator has already made the decisions; you make them real.
    tests, files, or docs the spec did not ask for. If one would help, list it
    under Suggestions instead of doing it.
 3. Verify your work before reporting. Run the narrowest relevant check
-   (typecheck, affected tests, build) when one exists.
+   (typecheck, affected tests, build) when one exists. It must be a real
+   check that exercises the change: a syntax-only check, or a command that
+   failed to start, does not count. If no real check can run here, say which
+   one you did not run and why, and do not report the change as verified.
 
 ## Execution Process
 

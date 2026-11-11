@@ -306,7 +306,8 @@ The tag sets the delegate's effort, passed with the call:
 
 | Delegate | `normal` | `high` |
 |---|---|---|
-| An Opus implementer, debugger or diff reviewer (`model: "opus"`) | `high` | `xhigh` |
+| An Opus implementer or debugger (`model: "opus"`) | `high` | `high` |
+| An Opus diff reviewer (`model: "opus"`) | `high` | `xhigh` |
 | `fast-worker` | `high`, pinned | Not used. A high-stakes task does not go to Sonnet. |
 | Panel seats | `xhigh` | `xhigh` |
 
