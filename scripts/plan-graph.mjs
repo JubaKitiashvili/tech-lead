@@ -46,6 +46,8 @@
 //                                                finished, counts}]} newest first
 // Without --run a command takes the newest plan that is not finished (run_ids sort by time);
 // none: exit 3 refused no-open-run; more than one: the newest, with other_open_runs: <n others>.
+// validate, create and add take the draft from --file <path> or inline from --json <text>, exactly
+// one of the two (inline needs no file and no shell redirection).
 // A --run naming no plan: exit 3 refused no-such-run. An unreadable or non-JSON input file: exit
 // 2 io, or exit 3 invalid not-json.
 import crypto from 'node:crypto'
@@ -60,16 +62,18 @@ import {
 } from './lib/plan-graph.mjs'
 import { openPaths } from './loop-lock.mjs'
 
-const USAGE = 'usage: plan-graph.mjs validate --file <draft.json> | create <P> --file <draft.json> | next <P> [--run <id>]' +
+const USAGE = 'usage: plan-graph.mjs validate (--file <draft.json> | --json <text>) | create <P> (--file <draft.json> | --json <text>) | next <P> [--run <id>]' +
   ' | mark <P> --task <id> (--status <s> [--force] | --decided) [--result <text>] [--run <id>]' +
-  ' | add <P> --file <task.json> [--run <id>] | status <P> [--run <id>] | list <P>'
+  ' | add <P> (--file <task.json> | --json <text>) [--run <id>] | status <P> [--run <id>] | list <P>'
 // The flags each command takes (a boolean one has no value), the ones it needs, and whether it takes <P>.
 const FLAGS = {
-  validate: ['file'], create: ['file'], next: ['run'], mark: ['task', 'status', 'result', 'force', 'decided', 'run'],
-  add: ['file', 'run'], status: ['run'], list: [],
+  validate: ['file', 'json'], create: ['file', 'json'], next: ['run'], mark: ['task', 'status', 'result', 'force', 'decided', 'run'],
+  add: ['file', 'json', 'run'], status: ['run'], list: [],
 }
 const BOOLEAN = new Set(['force', 'decided'])
-const REQUIRED = { validate: ['file'], create: ['file'], mark: ['task'], add: ['file'] }
+const REQUIRED = { mark: ['task'] }
+// The commands that read a draft: it comes from --file <path> or inline from --json <text>.
+const INPUT = new Set(['validate', 'create', 'add'])
 const RUN_FILE = /^(\d{8}T\d{6}Z-[0-9a-f]{4})\.json$/
 const CREATE_ATTEMPTS = 8
 
@@ -106,6 +110,7 @@ function parseArgs(argv) {
   if (pos.length !== (command === 'validate' ? 0 : 1)) throw usage(`${command} takes ${command === 'validate' ? 'no' : 'exactly one'} <P>`)
   const missing = (REQUIRED[command] ?? []).filter(k => !Object.hasOwn(opts, k))
   if (missing.length) throw usage(`${command} needs --${missing.join(', --')}`)
+  if (INPUT.has(command) && Object.hasOwn(opts, 'file') === Object.hasOwn(opts, 'json')) throw usage(`${command} takes exactly one of --file <path> and --json <text>`)
   if (command === 'mark') {
     if (Boolean(opts.decided) === Object.hasOwn(opts, 'status')) throw usage('mark takes exactly one of --status <s> and --decided')
     if (opts.decided && opts.force) throw usage('--force goes with --status, not --decided')
@@ -122,18 +127,22 @@ function clock(env) {
   return new Date(env.TECH_LEAD_NOW).toISOString()
 }
 
-// An input file's JSON value: exit 2 io when it cannot be read, exit 3 invalid when it is not JSON.
-function readInput(file) {
-  let text
-  try {
-    text = fs.readFileSync(file, 'utf8')
-  } catch (e) {
-    throw new Failed('io', `${file}: ${e.code || e.message}`)
+// The draft's JSON value, from --json <text> or --file <path>: exit 2 io when the file cannot be
+// read, exit 3 invalid when the text is not JSON.
+function readInput({ file, json }) {
+  let text = json
+  const what = file === undefined ? '--json' : file
+  if (file !== undefined) {
+    try {
+      text = fs.readFileSync(file, 'utf8')
+    } catch (e) {
+      throw new Failed('io', `${file}: ${e.code || e.message}`)
+    }
   }
   try {
     return JSON.parse(text)
   } catch (e) {
-    throw invalid([{ task: null, kind: 'not-json', detail: `${file} is not JSON: ${e.message}` }])
+    throw invalid([{ task: null, kind: 'not-json', detail: `${what} is not JSON: ${e.message}` }])
   }
 }
 
@@ -203,16 +212,16 @@ function changed(r) {
 }
 
 const COMMANDS = {
-  validate(_P, { file }) {
-    const draft = readInput(file)
+  validate(_P, opts) {
+    const draft = readInput(opts)
     const problems = validateDraft(draft)
     if (problems.length) throw invalid(problems)
     return { state: 'valid', tasks: draft.tasks.length, waves: schedule(draftTasks(draft)) }
   },
 
-  create(P, { file: input }, env) {
+  create(P, opts, env) {
     const base = openPaths(P, env)
-    const draft = readInput(input)
+    const draft = readInput(opts)
     const problems = validateDraft(draft)
     if (problems.length) throw invalid(problems)
     const paths = ensureV(base)
@@ -241,9 +250,9 @@ const COMMANDS = {
     return { state: 'marked', run_id: next.run_id, task: { id: t.id, status: t.status, attempts: t.attempts }, finished: isFinished(next), ...others(other) }
   },
 
-  add(P, { file: input, run }, env) {
-    const { file, plan, other } = selectRun(openPaths(P, env), run)
-    const draftTask = readInput(input)
+  add(P, opts, env) {
+    const { file, plan, other } = selectRun(openPaths(P, env), opts.run)
+    const draftTask = readInput(opts)
     const next = changed(addTask(plan, draftTask, { now: clock(env) }))
     save(file, next)
     return { state: 'added', run_id: next.run_id, task: draftTask.id, ...others(other) }
