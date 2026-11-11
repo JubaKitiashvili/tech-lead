@@ -15,14 +15,19 @@ the test suite.
 | `route-panel` | routing | An expensive-to-reverse decision invokes `tech-lead:panel` |
 | `route-research` | routing | Vetting a dependency invokes `tech-lead:research` |
 | `route-quick` | routing | A small change plus "open a draft PR" invokes `tech-lead:quick` |
+| `route-loop` | routing | "Start the loop on this backlog" invokes `tech-lead:loop` |
 | `skip-question` | routing, guard | A plain question invokes no tech-lead skill |
 | `skip-single-edit` | routing, guard | A one-line fix invokes no tech-lead skill |
+| `skip-rename` | routing, guard | One mechanical rename across files, no PR, invokes no skill |
+| `skip-debug` | routing, guard | A stack trace and "why does this fail" invokes no skill |
+| `skip-opinion` | routing, guard | A quick opinion on a library invokes no skill |
 | `plan-first` | behaviour | The plan names a model per task and nothing is dispatched before approval |
 | `delegates-pin-model` | behaviour, costly | After approval, every `Agent` call carries a model |
 
 In the routing cases the "skill fired" grader is marked `arm: both`, so it is
 part of the score: a run without the plugin scores 0.5 by design, and a run
 with the plugin where the skill stays silent fails the case.
+| `loop-no-silent-bootstrap` | behaviour, loop | With no `.tech-lead/` spine the loop creates and dispatches nothing; it asks first or names the gap |
 
 The routing cases grant only `Skill`, `Read`, `Glob` and `Grep`, so a skill
 that fires cannot dispatch agents; they measure the skill descriptions, not the
@@ -32,11 +37,11 @@ absent, so the routing rule in `~/.claude/rules/tech-lead.md` plays no part.
 ## Running
 
 Each case runs `runs` times with the plugin and the same number without it
-(default 3 + 3). Eight cases at the default are about 48 agent runs plus judge
+(default 3 + 3). Thirteen cases at the default are about 78 agent runs plus judge
 calls. Start small:
 
 ```bash
-# cheapest pass: routing only, one run per arm (12 agent runs)
+# cheapest pass: routing only, one run per arm (20 agent runs)
 claude plugin eval . --tag routing --runs 1 --model opus \
   --output-dir /tmp/tech-lead-evals --no-publish
 
@@ -82,6 +87,17 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   ($1.33). Each run ended on a plan with an executor and stakes per task and
   no agent, write or edit. `delegates-pin-model` on `opus`, `--runs 2`: 2 of 2
   ($1.20), so an approved plan still executes without a second stop.
+
+- 2026-11-11, plugin 0.7.3, `--runs 3 -j 2 --model opus`, all ten routing
+  cases ($6.05) and `loop-no-silent-bootstrap` ($2.02):
+  - The five `route-*` cases: the right skill fired, and no other, in 15 of 15
+    runs with the plugin.
+  - The five `skip-*` cases: no skill fired in 15 of 15 runs with the plugin.
+  - `loop-no-silent-bootstrap`: 3 of 3. The loop created nothing and
+    dispatched nothing, and named the missing spine. Without the plugin 0 of 3.
+  - One `skip-debug` run failed its `llm` grader although the answer was a
+    direct diagnosis: the rubric asked for one cause and the reply listed
+    several. The rubric was loosened and the case re-run: 3 of 3 ($0.47).
 
 Eval runs are non-interactive. A lead may behave differently when a user is
 there to answer, so these numbers describe `claude -p`, not a live session.
