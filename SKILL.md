@@ -228,6 +228,9 @@ reads the whole conversation, so it never replaces an independent panel seat.
    - If a task-list tool (TaskCreate or TodoWrite) appears in your tool list,
      track 3+ tasks there. Otherwise, the numbered plan in your message is
      the task list.
+   - End the plan with one line, `Done when:`. It names one measurable end
+     state, the command that proves it, and what must not change. The user
+     may hand that line to `/goal`; do not set a goal yourself.
    - **Stop after the plan.** Show the plan and end your turn. Until the
      user approves it, dispatch no agent or workflow that changes files and
      edit nothing yourself. Read-only scouting before the plan is fine.

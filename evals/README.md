@@ -115,6 +115,12 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   The lead never called `next`; it marked the tasks in dependency order, which
   `mark` enforces.
 
+- 2026-11-11, plugin 0.8.3, one run each on `opus`, `--ablation none`:
+  `plan-first` passed and its plan ended with a `Done when:` line
+  ($0.23); `loop-no-silent-bootstrap` passed with `disallowed-tools:
+  AskUserQuestion` in the loop skill's frontmatter ($0.32). The
+  `done-when` grader was added after that run.
+
 Eval runs are non-interactive. A lead may behave differently when a user is
 there to answer, so these numbers describe `claude -p`, not a live session.
 
