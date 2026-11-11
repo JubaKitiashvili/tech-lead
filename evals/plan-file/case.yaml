@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: plan-file
+description: An approved plan with six tasks and ordering makes the lead call plan-graph.mjs create (the sandbox has no working git, so the call itself fails there).
+tags: [behaviour, plan-graph, costly]
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 60
+  timeout_seconds: 1200
+  allowed_tools: [Skill, Read, Glob, Grep, Agent, Bash]
