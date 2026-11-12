@@ -617,6 +617,12 @@ const goneSoon = async pid => {
   for (let i = 0; i < 100 && !gone(pid); i++) await sleep(30)
   return gone(pid)
 }
+// The group of a leader that just died. On Linux the dead leader is a zombie, and so a member of
+// its group, until this process's event loop reaps it; the waits here yield to that reap.
+const groupGoneSoon = async pgid => {
+  for (let i = 0; i < 100 && groupAlive(pgid) !== false; i++) await sleep(30)
+  return groupAlive(pgid)
+}
 // A stand-in for a process the companion started, its pid written to a file as the fixtures
 // write a member's.
 const pidInFile = (t, pid) => {
@@ -660,7 +666,7 @@ test('contracts-tests#7: the launched cleanup kills its own group, and leaves al
   let own
   await t.test('the leader is still the one recorded when the test ends', async st => { own = await launched(st, [...IDLE, 'own']) })
   assert.ok(await goneSoon(own), `the cleanup left its own leader ${own} running`)
-  assert.equal(groupAlive(own), false)
+  assert.equal(await groupGoneSoon(own), false)
 })
 
 test('contracts-tests#7: the stateFiles cleanup kills a launched worker it can prove its own, and leaves alone a logged pid that runs something else by then', async t => {
@@ -679,7 +685,7 @@ test('contracts-tests#7: the stateFiles cleanup kills a launched worker it can p
   assert.equal(startToken(other).token, otherStart, `the cleanup killed group ${other}, whose leader runs another program`)
   assert.equal(groupAlive(other), true)
   assert.ok(await goneSoon(w), `the cleanup left the launched worker ${w} running`)
-  assert.equal(groupAlive(w), false)
+  assert.equal(await groupGoneSoon(w), false)
 })
 
 test('contracts-tests#7: the stateFiles cleanup still kills what a background run left in its group after it exited', async t => {
