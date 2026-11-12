@@ -494,6 +494,10 @@ model is fixed by its agent file or by the row.
 - **`references/briefing-template.md`**: the brief template.
 - **`references/plan-graph.md`**: the plan file. It covers the draft format,
   the commands, and how to resume a run.
+- **`references/model-facts.md`**: the outside facts the rules rest on, each
+  with its source page and the day it was last read. `node
+  scripts/facts-check.mjs stale` lists the rows that are due;
+  `references/facts-check-prompt.md` is the brief for re-reading them.
 - **`references/models-and-effort.md`**: the sources, measurements and
   history behind Models and effort. Read it when a rule needs its reason.
 - **`references/panel-protocol.md`**: the panel protocol. It covers the
