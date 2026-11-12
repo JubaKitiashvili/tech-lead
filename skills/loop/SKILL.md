@@ -896,7 +896,9 @@ Record outcome `failed`, `verify: "fail"`.
 
 - Agent and Workflow results arrive as completion notifications. Wait for
   them before §6, then close their dispatch records (§1 step 3). Headless
-  `claude -p` waits too. Never release with a dispatch record open.
+  `claude -p` waits too, but only 10 minutes after your last turn unless it
+  was started with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. Never
+  release with a dispatch record open.
 - A Codex job is waited on with foreground `loop-codex.mjs wait` calls
   until its state is no longer `running`, then quiesced (§5).
 - Never end the turn, call ScheduleWakeup, or exit while a dispatch is
@@ -923,7 +925,7 @@ Record outcome `failed`, `verify: "fail"`.
       Jobs are session-only (CronCreate has no durable mode), and recurring
       jobs expire after 7 days, so re-arm them.
     - (b) OS cron or launchd running
-      `cd <P> && claude -p 'Run /tech-lead:loop <P>'`.
+      `cd <P> && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p 'Run /tech-lead:loop <P>'`.
   - Cloud routines are not supported: they cannot see the local tree.
   - Treat every scheduled firing as unattended. Never ask questions; anything
     that needs input goes to `STATE.md`. The bootstrap confirmation is the
