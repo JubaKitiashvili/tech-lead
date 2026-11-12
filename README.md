@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.8.3.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.8.4.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -306,6 +306,15 @@ short:
   names `fable` or `best` in an agent or workflow: Fable 5.2 may lead a
   session, and it is never a delegate (see "Fable leads at most" in
   SKILL.md).
+
+**Keeping the facts current.** The rules above rest on outside facts: prices,
+aliases, effort defaults, what each model does at high effort.
+`references/model-facts.md` lists each one with its source page and the day
+it was last read. `node scripts/facts-check.mjs stale` names the rows older
+than 45 days, and `references/facts-check-prompt.md` is a read-only brief
+for one agent that re-reads the pages and reports what changed. Run it after
+a model or Claude Code release, or on a schedule. It only reports; changes
+go through a pull request.
 
 **Model-switch notice.** `/tech-lead` registers one hook for the rest of the
 session (`PostModelSwitch`, declared in the skill's frontmatter, so it costs
