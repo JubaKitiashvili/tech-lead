@@ -419,7 +419,9 @@ test('trace2 targets set in the global config reach no helper stderr; env can st
   const r = repo(t)
   const W = repo(t, 'work')
   const cfg = path.join(tmp(t, 'tl-gitsafe-trace2-'), 'gitconfig')
-  fs.writeFileSync(cfg, '[trace2]\n\tnormalTarget = /dev/stderr\n\tperfTarget = /dev/stderr\n\teventTarget = /dev/stderr\n')
+  // `true` is git's own spelling for stderr. The path /dev/stderr is not used: on Linux git
+  // cannot reopen it when stderr is a pipe from Node, and then writes no trace at all.
+  fs.writeFileSync(cfg, '[trace2]\n\tnormalTarget = true\n\tperfTarget = true\n\teventTarget = true\n')
   withEnv({ GIT_CONFIG_GLOBAL: cfg }, () => {
     // Control: plain git writes all three trace2 streams to stderr under this config.
     const ctl = spawnSync('git', ['-C', r, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: process.env })
