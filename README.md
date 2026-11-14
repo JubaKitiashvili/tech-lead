@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.8.5.** Tested with Claude Code 2.1.284 on the Anthropic API.
+**Version 0.8.6.** Tested with Claude Code 2.1.284 on the Anthropic API.
 
 ## Contents
 
@@ -533,14 +533,16 @@ branches are never touched.
   with its working directory and settings. Jobs are session-only, and
   recurring jobs expire after 7 days, so re-arm them.
 - **Scheduled by the OS.** Run
-  `cd <abs-path> && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude -p 'Run /tech-lead:loop <abs-path>'`
+  `cd <abs-path> && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000 claude -p 'Run /tech-lead:loop <abs-path>'`
   from cron or launchd.
-  - **Keep the wait ceiling off.** `claude -p` stops background agents and
-    exits 10 minutes after the lead's last turn, even when an agent is still
+  - **Raise the wait ceiling.** `claude -p` stops background agents and
+    exits after 10 minutes of waiting on them, even when an agent is still
     working. A review of a large diff takes longer than that, and the run
-    then ends with the work uncommitted. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`
-    makes it wait until every agent has reported. The same applies to any
-    headless `/tech-lead` run.
+    then ends with the work uncommitted. `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000`
+    gives them an hour. Do not set it to `0` on a schedule: `0` waits
+    without a limit, so one hung agent keeps an unattended session open
+    for good. `0` is fine for a run you are watching. The same applies to
+    any headless `/tech-lead` run.
   - **Use absolute paths.** cron and launchd run with a minimal PATH, so give
     the absolute path to `claude` (find it with `command -v claude` in a
     login shell), or set `PATH` in the crontab or the plist. launchd has no
@@ -947,7 +949,7 @@ The first run on a project bootstraps the spine interactively:
 | `/tech-lead` is unknown after a marketplace install | Another command already uses the bare name | Use `/tech-lead:tech-lead` |
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
 | A headless loop stalls, exits, or pauses itself | A denied permission, an untrusted folder, `claude` not on cron's PATH, or no spine yet | See [Running it](#running-it): absolute paths, a trusted first run, and the full allow list |
-| A headless run ends with "waiting for the reviewer" and nothing committed | `claude -p` stopped a background agent 10 minutes after the last turn (stderr: `Background tasks still running 10m after the last turn`) | Start it with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` |
+| A headless run ends with "waiting for the reviewer" and nothing committed | `claude -p` stopped a background agent 10 minutes after the last turn (stderr: `Background tasks still running 10m after the last turn`) | Start it with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=3600000` (an hour), not `0` on a schedule |
 | The loop says "backlog dry" while items remain | The items wait on a decision, a level, or infrastructure, or their `blocked-by:` names an item that is not finished (still open, or a follow-up the loop made from it is open), or they are skipped for a problem in their lines. `## Last run` names each skipped item with its reason | Fill in `**Decision:**`, raise `level:`, clear `waiting-infra`, or fix what the reason names (see [Why the loop skips an item](#why-the-loop-skips-an-item)) |
 | The loop paused with "item edits": `STATE.md` does not match the planned item edits (`mismatch`) | An edit the firing applied to `STATE.md` did not land as planned, or something else wrote the file at the same time (you, an editor, another tool). `## Last run` names what differs. The firing changed nothing else, and left `## Now` as it was | Check that no firing holds the lock (`node <plugin>/scripts/loop-lock.mjs status <project>`). Each item should appear once: when one sits in two sections, keep the copy in the section it was moving to and delete the other (when one copy is in `## Now` and the two copies are identical, apart from the header form and the line a move writes, such as a `status:` or `recovery:` line, the next firing does that itself; when they differ, it pauses with `now-conflict`). Run `node <plugin>/scripts/loop-items.mjs check <project>` (read-only), fix what its `problems` name, then set `paused: false` |
 | The loop paused with "item edits" and `crlf` | `STATE.md` holds a carriage return (Windows line endings, often from an editor or git's `core.autocrlf`), which every item command refuses | Convert the file to LF line endings (for example `perl -pi -e 's/\r//g' <project>/.tech-lead/STATE.md`), then set `paused: false` |
