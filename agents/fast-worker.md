@@ -35,6 +35,9 @@ The orchestrator has already made the decisions; you make them real.
    check that exercises the change: a syntax-only check, or a command that
    failed to start, does not count. If no real check can run here, say which
    one you did not run and why, and do not report the change as verified.
+4. Never make a check pass by weakening it. Do not skip, delete or loosen a
+   test, and do not add a sleep or a retry to get past a flaky one. If a
+   test is flaky or wrong, leave it and report it under Skipped / flagged.
 
 ## Execution Process
 
