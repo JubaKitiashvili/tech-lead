@@ -27,6 +27,9 @@ DONE MEANS
 - <acceptance criteria>
 - <verification command(s) to run: only for delegates that have Bash
   (fast-worker, Codex); deep-reasoner is read-only>
+- <for a delegate that edits code: a check is never made to pass by
+  weakening it. No skipped, deleted or loosened test, no added sleep or
+  retry; a flaky or wrong test is reported, not worked around>
 
 OUTPUT FORMAT
 Concise report for an orchestrator, not a human, at most 40 lines:

@@ -274,8 +274,39 @@ reads the whole conversation, so it never replaces an independent panel seat.
      on the result or reporting success.
    - A long check, such as a full suite or a build, goes to `fast-worker`.
      Read the verdict line and the names of the failing tests.
+   - **Run the change.** Passing tests do not show that the feature works.
+     When a user or a caller can reach the new behaviour, exercise it for
+     real: start the service and call it, open the screen, run the command.
+     If the repo has a `verify` skill (`.claude/skills/verify`), use it. If
+     the change cannot be run here, say so in the report.
+   - **A check the change edited does not vouch for it.** See in
+     `git diff --stat` whether the change touched what judges it: the tests
+     it must pass, CI config, lint or type settings, `REVIEW.md`. Read those
+     hunks yourself. A weakened assertion, a skipped or deleted test, an
+     added sleep or retry is a finding, not a fix.
+   - A check that still fails after three fix rounds goes to the user, with
+     its output.
 5. **Synthesize and decide.** Integration, conflict resolution, and the final
    call stay in the main session.
+
+**Review.** When a diff gets a reviewer:
+
+- **One reviewer, more rounds.** Do not fan one diff out over several
+  reviewers or lenses, and do not stack a costlier reviewer on the first:
+  that costs more and finds less than a second round. The exceptions are a
+  Codex peer on a `high` task (another model family, not a second copy) and
+  a review shape the user asked for.
+- **Cheap checks first.** Run the tests, the build and the linter before
+  the reviewer starts.
+- **Brief it with the commit.** Commit first, and give the reviewer the
+  base and head SHA and the plan's "Done when". If the repo has a
+  `REVIEW.md`, point the reviewer at the base branch's copy
+  (`git show <base>:REVIEW.md`), never at one the change edited.
+- **A review covers the commit it read.** Code changed after the review has
+  not been reviewed. Send the same reviewer (`SendMessage`, by `name`) the
+  diff since the reviewed SHA together with its earlier findings; do not
+  start a fresh review of everything. Do not report code as reviewed that
+  no reviewer saw.
 
 **Finish the run.** Once the plan is approved, carry it through. An error, a
 timeout, a locked file, an empty result or a failing tool is an ordinary
