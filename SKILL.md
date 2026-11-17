@@ -302,6 +302,10 @@ reads the whole conversation, so it never replaces an independent panel seat.
   base and head SHA and the plan's "Done when". If the repo has a
   `REVIEW.md`, point the reviewer at the base branch's copy
   (`git show <base>:REVIEW.md`), never at one the change edited.
+- **Start the reviewer with `Agent` and a `name`, not a Workflow.** A
+  workflow agent cannot be sent a message, so its second round would be a
+  new reviewer that reads everything again. Do not hand-write a review
+  Workflow for one diff.
 - **A review covers the commit it read.** Code changed after the review has
   not been reviewed. Send the same reviewer (`SendMessage`, by `name`) the
   diff since the reviewed SHA together with its earlier findings; do not
