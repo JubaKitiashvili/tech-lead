@@ -22,7 +22,8 @@ the test suite.
 | `skip-debug` | routing, guard | A stack trace and "why does this fail" invokes no skill |
 | `skip-opinion` | routing, guard | A quick opinion on a library invokes no skill |
 | `plan-first` | behaviour | The plan names a model per task and nothing is dispatched before approval |
-| `delegates-pin-model` | behaviour, costly | After approval, every `Agent` call carries a model |
+| `delegates-pin-model` | behaviour, costly | After approval, every `Agent` call carries a model, none runs on Fable or above `high`, and the final report stands on its own |
+| `review-named-agent` | behaviour, review, costly | A review of one commit goes to one reviewer, started with `Agent` and a `name`, on a pinned model that is not Fable, with no Workflow |
 
 In the routing cases the "skill fired" grader is marked `arm: both`, so it is
 part of the score: a run without the plugin scores 0.5 by design, and a run
@@ -38,7 +39,7 @@ absent, so the routing rule in `~/.claude/rules/tech-lead.md` plays no part.
 ## Running
 
 Each case runs `runs` times with the plugin and the same number without it
-(default 3 + 3). Thirteen cases at the default are about 78 agent runs plus judge
+(default 3 + 3). Fifteen cases at the default are about 90 agent runs plus judge
 calls. Start small:
 
 ```bash
@@ -120,6 +121,28 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
   ($0.23); `loop-no-silent-bootstrap` passed with `disallowed-tools:
   AskUserQuestion` in the loop skill's frontmatter ($0.32). The
   `done-when` grader was added after that run.
+
+- 2026-11-18, plugin 0.9.1 (this branch), Claude Code 2.1.327, `--ablation none
+  --scaffold`, the new case `review-named-agent` and the three new graders on
+  `delegates-pin-model`. 21 runs in all, about $14.
+  - With the skill loaded, the review went to one reviewer started with
+    `Agent` and a `name`, on `opus`, with no Workflow: 6 of 6 runs on `opus`
+    and 5 of 5 on `fable`. In 2 early `opus` runs the prompt did not load the
+    skill, and the reviewer then had no name; the prompt now names the skill.
+  - No agent ran on Fable in any run.
+  - **An `Agent` call without `model`.** Before the rule "Every Agent call
+    carries `model` and `effort`" (Process, step 3): 3 of 5 runs on `opus` and
+    1 of 5 on `fable` had every call pinned. The unpinned call was a
+    `general-purpose` helper the lead started to run a few commands. After the
+    rule: 2 of 2 on `opus` and 3 of 4 on `fable`. The samples are small, so
+    this is a direction, not a rate.
+  - `fast-worker` is called without `model`, which is right: its file pins it.
+  - `report-stands-alone` (an `llm` grader): 2 of 4 before the rule and 4 of 4
+    after it. Nothing in the rule is about reports, so read this as noise.
+  - The first version of `one-reviewer` counted every non-worker agent and
+    failed on the helper; it now counts agents whose description says review.
+    `no-delegate-above-high` failed once on `deep-reasoner`, whose own file
+    pins `xhigh`; it now leaves that agent out.
 
 Eval runs are non-interactive. A lead may behave differently when a user is
 there to answer, so these numbers describe `claude -p`, not a live session.
