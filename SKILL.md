@@ -71,8 +71,7 @@ reviews and synthesizes, and no delegate runs on Fable.
   (see Stakes in Process). The brief tells it to stop and return any
   decision the brief did not settle, not to make it. Fable writes code itself only when deciding and writing cannot
   be separated: iterative debugging, or an edit that cannot be briefed
-  without the conversation. This replaces "stay in the main session" in
-  "Who writes the code" below.
+  without the conversation.
 - **Delegates cannot spawn.** No bench agent has the Agent tool.
 - **Counts live in code.** Fable 5.2 delegates readily. When Workflow is
   opted in and the shape matches, use the Workflow form: the script fixes
@@ -173,7 +172,8 @@ the next Fable model ships.
 
 **Who writes the code.** Spec-complete edits that have a verify step go to
 `fast-worker` on Sonnet 5.5. Edits tangled with judgment calls stay in the
-main session (on a Fable session, see Core principle).
+main session on Opus 5.5; on a Fable session "Fable decides, Opus writes"
+in Core principle applies.
 
 **Effort before tier.** Levels are calibrated per model, so do not carry a
 setting over from an older model. Before you raise anything, check that the
@@ -423,9 +423,8 @@ contracts:
 - detection of an empty panel seat;
 - per-task checks on scope and judgment calls.
 
-"Workflow would add nothing here" is exactly the rationalization this rule
-exists to stop. When Workflow is opted in and the shape matches, run the
-script.
+When Workflow is opted in and the shape matches, run the script, also for
+a small run: the contracts above are what it is for.
 
 **What stays outside the scripts.** Scripts cannot touch files, git, clocks,
 or the user. Git operations, spine writes, human gates, and the final verify
