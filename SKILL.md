@@ -12,6 +12,11 @@ hooks:
       hooks:
         - type: command
           command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/resume.mjs\""
+  SubagentStop:
+    - matcher: "tech-lead:fast-worker|tech-lead:deep-reasoner|general-purpose|Explore"
+      hooks:
+        - type: command
+          command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/report-check.mjs\""
 ---
 
 # Tech Lead — Model-Tiered Orchestration
@@ -539,4 +544,9 @@ model is fixed by its agent file or by the row.
   follow-ups.
 - **`references/decision-contracts.md`**: the reflex rules and the JSON
   contracts used by the workflows and the triage agent.
+- **`scripts/hooks/report-check.mjs`**: a hook that checks each delegate's
+  final report against the report contract and only records what it finds
+  (sizes and problem names, never the text). It blocks nothing. `node
+  ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/report-check.mjs summary` prints the
+  counts per agent type.
 - **`workflows/`**: `panel.js`, `fanout.js`, `research.js`, `triage.js` (registered as `tech-lead:panel-seats`, `tech-lead:fanout`, `tech-lead:research-lanes` and `tech-lead:triage`; the panel and research workflows carry their own names so they never shadow the `/tech-lead:panel` and `/tech-lead:research` skills).
