@@ -32,7 +32,8 @@ DONE MEANS
   retry; a flaky or wrong test is reported, not worked around>
 
 OUTPUT FORMAT
-Concise report for an orchestrator, not a human, at most 40 lines:
+Concise report for an orchestrator, not a human, short enough to read in
+one pass:
 - verdict or recommendation first;
 - evidence as 3-5 decisive points: file:line, or a command and its result;
 - files changed, as absolute paths;
