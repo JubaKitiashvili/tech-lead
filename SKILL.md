@@ -268,6 +268,10 @@ reads the whole conversation, so it never replaces an independent panel seat.
      per agent.
    - Give an agent a `name` when you may need to follow up with it:
      `SendMessage` continues it with its context intact.
+   - Every Agent call carries `model` and `effort`, also a one-off helper
+     that only runs a few commands or reads a file for you. Without `model`
+     it runs on the session's model, which on a Fable session is the most
+     expensive one. For running commands, use `fast-worker`.
    - With a plan file, dispatch the `wave` that `next` prints, with each
      task's `model` and `effort` from the plan, and mark each task `running`.
 4. **Verify against ground truth.** Treat a subagent's "done" as a claim,
@@ -300,7 +304,9 @@ reads the whole conversation, so it never replaces an independent panel seat.
   reviewers or lenses, and do not stack a costlier reviewer on the first:
   that costs more and finds less than a second round. The exceptions are a
   Codex peer on a `high` task (another model family, not a second copy) and
-  a review shape the user asked for.
+  a review shape the user asked for. Checking one finding on its own, by
+  reproducing it or refuting it, is not a second reviewer: do it yourself,
+  or send it back to the same reviewer.
 - **Cheap checks first.** Run the tests, the build and the linter before
   the reviewer starts.
 - **Brief it with the commit.** Commit first, and give the reviewer the
