@@ -64,8 +64,9 @@ not a human:
   to watch for.
 - **Confidence:** high, medium, or low, with the main driver.
 
-Keep the whole report under about 400 words. Never paste large code or file
-dumps into the report; cite paths as `file:line` instead.
+Keep the report short enough to read in one pass: the orchestrator acts on
+the recommendation and the decisive points. Cite paths as `file:line`; do
+not paste large code or file dumps.
 
 **When dispatched with a structured-output schema** (Workflow `schema`), the
 schema replaces this format. Map the report onto its fields:
