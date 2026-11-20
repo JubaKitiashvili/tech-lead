@@ -3,9 +3,14 @@ name: panel
 description: This skill should be used when the user invokes "/tech-lead:panel", or asks to "run a panel on", "get independent second opinions on", or "have Opus and Codex both weigh in on" one specific decision, or faces one choice that is expensive or hard to reverse ("hard to change later", "we must choose between X and Y", "which one should we commit to"). Applies to a single expensive-to-reverse decision (architecture, data model, datastore or database choice, public API shape, migration strategy, security design, major dependency). Not for easily reversed choices or for executing a decision already made.
 argument-hint: [decision question]
 effort: high
+metadata:
+  author: Juba Kitiashvili
+  tags: [decision, second-opinion, architecture]
 ---
 
 # tech-lead Panel — one high-stakes decision
+
+## Purpose
 
 This skill runs one decision through `../../references/panel-protocol.md`.
 Follow that protocol exactly. The steps below only frame the decision and
@@ -55,3 +60,21 @@ this shape:
 ```
 
 The decision belongs to the user. Do not implement until they choose.
+
+## Prerequisites
+
+- One decision with at least two options.
+- Optional: the Codex plugin, for seat B.
+
+## Limitations
+
+- The panel gives two opinions and a recommendation. It does not decide and
+  does not implement.
+- With one seat empty the result is `single-seat`: one opinion, not an
+  agreement.
+
+## Troubleshooting
+
+- **Seat B is empty** (Codex is not installed, or its output is empty): run with seat A alone and tell the user why
+  (`../../references/panel-protocol.md` §4).
+- **Both seats fail (`no-seats`):** no panel ran. Say so.

@@ -3,9 +3,14 @@ name: quick
 description: This skill should be used when the user invokes "/tech-lead:quick", or wants a small, bounded, low-risk change made and shipped as a pull request in a git repository, such as a rename, a fix whose cause is already known, or a config or copy change followed by "open a PR", "open a draft PR", "ship it as a PR", "implement it and open a PR", "fast lane this into a PR", or "make this small change and open a draft PR". Applies even when the change touches a single file. Not for shipping changes that already exist in the working tree, multi-part goals, high-stakes decisions, or open-ended debugging.
 argument-hint: [task to implement]
 effort: high
+metadata:
+  author: Juba Kitiashvili
+  tags: [pull-request, small-change, git, verification]
 ---
 
 # tech-lead Quick — the Direct lane
+
+## Purpose
 
 You implement a small task yourself, verify it, and ship it as a draft PR.
 The speed comes from skipping delegation and the plan-approval round trip. It
@@ -141,7 +146,7 @@ Report the following:
 - the verification results;
 - anything that was not verified.
 
-## Common mistakes
+## Common Issues
 
 | Mistake | Fix |
 |---------|-----|
@@ -152,3 +157,15 @@ Report the following:
 | Pushing with a failing check "to show progress" | Nothing red is committed or pushed. Stop after two fix attempts. |
 | Booting a simulator to verify UI | Only use a device that is already running. Otherwise, say so in the PR. |
 | `git add -A` | Stage only the intended paths, after reading `git diff`. |
+
+## Prerequisites
+
+- A git repository with a GitHub remote, and `gh` logged in.
+- A clean working tree (§0).
+
+## Limitations
+
+- One small change per run: about 5 files at most (§1).
+- It opens a draft PR. It never merges, force-pushes or pushes to the base
+  branch.
+- The UI check uses only a simulator or emulator that is already running.

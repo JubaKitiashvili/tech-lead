@@ -3,9 +3,14 @@ name: research
 description: This skill should be used when the user invokes "/tech-lead:research", or asks to research, vet, check, or deeply evaluate an external library, tool, model, dataset, or repository before adopting it, depending on it, or borrowing from it ("research X before we adopt it", "check whether X is any good before we adopt it", "vet this repo", "evaluate X against alternatives"). Not for quick factual or opinion questions with no adoption decision attached ("is X worth using?", "is X still maintained?"), for questions answerable from the local codebase alone, or for a hard-to-reverse choice between well-known options (tech-lead:panel).
 argument-hint: [what to research]
 effort: medium
+metadata:
+  author: Juba Kitiashvili
+  tags: [research, fact-check, dependency-vetting]
 ---
 
 # tech-lead Research — verified evaluation
+
+## Purpose
 
 Web research routinely invents names, numbers, features, and integrations.
 This skill runs every research lane past an independent fact-checker, and
@@ -95,3 +100,22 @@ The report has six parts:
 4. **Fit and recommendation.**
 5. **Refuted or unverified claims:** so nobody repeats them.
 6. **Sources.**
+
+## Prerequisites
+
+- Web access, and `gh` logged in for GitHub lookups.
+- A scratch directory for the lanes.
+
+## Limitations
+
+- The fact-checker validates claims against sources it can reach. A claim it
+  cannot reach stays unverified.
+- A lane whose agent fails is listed in `unverified_lanes`.
+- The no-Workflow answer from a single agent is unverified.
+
+## Troubleshooting
+
+- **The Workflow tool is not available or says "not found":** dispatch the
+  lanes and verifiers as Agent calls (§2).
+- **A lane is in `unverified_lanes`:** treat everything from it as
+  unverified, or run that lane again.
