@@ -21,6 +21,12 @@ export const docFiles = root => ['README.md', 'SKILL.md', 'templates/rules-tech-
   ...['agents', 'references', 'skills'].flatMap(d =>
     fs.readdirSync(path.join(root, d), { recursive: true }).filter(f => f.endsWith('.md')).map(f => `${d}/${f}`))]
 
+// SKILL.md size ceilings, in characters. The default is about 5,000 tokens at 4 characters
+// per token, the size agentskills.io recommends. The two listed files were already past it
+// when the ceiling was added (2026-11-20); their numbers only go down.
+const SKILL_SIZE_DEFAULT = 20000
+const SKILL_SIZE_CEILING = { 'SKILL.md': 31200, 'skills/loop/SKILL.md': 59200 }
+
 export async function checkRepo(ctx, r) {
   const { root, rd } = ctx
   const manifest = JSON.parse(rd('.claude-plugin/plugin.json'))
@@ -37,6 +43,29 @@ export async function checkRepo(ctx, r) {
       assert.equal(f.name, s === './' ? manifest.name : path.basename(s), s)
       assert.ok(f.description && f.description.length > 40, `${s}: description`)
     }
+  })
+
+  await r.check('skills: no description holds an XML-like tag', () => {
+    // A tag in a description reads as markup where the skill listing is rendered, and
+    // SkillEvaluator fails the skill for it. Write a placeholder as [name], not <name>.
+    const bad = []
+    for (const s of manifest.skills) {
+      const m = (frontmatter(rd(path.join(s, 'SKILL.md'))).description || '').match(/<[A-Za-z/!][^<>]*>/)
+      if (m) bad.push(`${path.join(s, 'SKILL.md')}: ${m[0]}`)
+    }
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('skills: no SKILL.md is larger than its ceiling', () => {
+    // The whole file loads on every invocation. A new skill gets the default; a file that
+    // shrinks should have its ceiling lowered with it, and raising one is a reviewed edit.
+    const bad = []
+    for (const s of manifest.skills) {
+      const f = path.join(s, 'SKILL.md'), size = rd(f).length
+      const max = SKILL_SIZE_CEILING[f] ?? SKILL_SIZE_DEFAULT
+      if (size > max) bad.push(`${f}: ${size} characters, ceiling ${max}`)
+    }
+    assert.deepEqual(bad, [])
   })
 
   await r.check('manifest: every skills/*/SKILL.md is listed', () => {
