@@ -17,9 +17,14 @@ hooks:
       hooks:
         - type: command
           command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/report-check.mjs\""
+metadata:
+  author: Juba Kitiashvili
+  tags: [orchestration, delegation, multi-agent, model-selection]
 ---
 
 # Tech Lead — Model-Tiered Orchestration
+
+## Purpose
 
 Run the main session as the tech lead: plan, decompose, delegate, synthesize,
 decide. Delegate work that eats context or is mechanical, and keep the
@@ -556,3 +561,25 @@ model is fixed by its agent file or by the row.
   ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/report-check.mjs summary` prints the
   counts per agent type.
 - **`workflows/`**: `panel.js`, `fanout.js`, `research.js`, `triage.js` (registered as `tech-lead:panel-seats`, `tech-lead:fanout`, `tech-lead:research-lanes` and `tech-lead:triage`; the panel and research workflows carry their own names so they never shadow the `/tech-lead:panel` and `/tech-lead:research` skills).
+
+## Prerequisites
+
+- Claude Code 2.1.293 or later, `git`, and `gh` logged in.
+- Optional: the Workflow tool, and the Codex plugin for panel seat B.
+
+## Limitations
+
+- Only the top-level session runs this skill. A subagent, workflow agent or
+  teammate does not.
+- A delegate starts with a fresh context and knows only its brief.
+- The model names assume the Anthropic API. On Bedrock, Vertex and Foundry
+  the aliases resolve to older models.
+
+## Troubleshooting
+
+- **The Workflow tool answers "not found":** the workflows are not
+  registered. See Workflow mode.
+- **A delegate's check failed (`verify-failed`):** inspect the diff, then fix
+  or re-dispatch. A check that still fails after three fix rounds goes to the
+  user.
+- **A panel seat is empty:** follow `references/panel-protocol.md` §4.
