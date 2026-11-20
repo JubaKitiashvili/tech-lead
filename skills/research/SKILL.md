@@ -100,22 +100,3 @@ The report has six parts:
 4. **Fit and recommendation.**
 5. **Refuted or unverified claims:** so nobody repeats them.
 6. **Sources.**
-
-## Prerequisites
-
-- Web access, and `gh` logged in for GitHub lookups.
-- A scratch directory for the lanes.
-
-## Limitations
-
-- The fact-checker validates claims against sources it can reach. A claim it
-  cannot reach stays unverified.
-- A lane whose agent fails is listed in `unverified_lanes`.
-- The no-Workflow answer from a single agent is unverified.
-
-## Troubleshooting
-
-- **The Workflow tool is not available or says "not found":** dispatch the
-  lanes and verifiers as Agent calls (§2).
-- **A lane is in `unverified_lanes`:** treat everything from it as
-  unverified, or run that lane again.

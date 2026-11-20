@@ -157,15 +157,3 @@ Report the following:
 | Pushing with a failing check "to show progress" | Nothing red is committed or pushed. Stop after two fix attempts. |
 | Booting a simulator to verify UI | Only use a device that is already running. Otherwise, say so in the PR. |
 | `git add -A` | Stage only the intended paths, after reading `git diff`. |
-
-## Prerequisites
-
-- A git repository with a GitHub remote, and `gh` logged in.
-- A clean working tree (§0).
-
-## Limitations
-
-- One small change per run: about 5 files at most (§1).
-- It opens a draft PR. It never merges, force-pushes or pushes to the base
-  branch.
-- The UI check uses only a simulator or emulator that is already running.

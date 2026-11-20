@@ -60,21 +60,3 @@ this shape:
 ```
 
 The decision belongs to the user. Do not implement until they choose.
-
-## Prerequisites
-
-- One decision with at least two options.
-- Optional: the Codex plugin, for seat B.
-
-## Limitations
-
-- The panel gives two opinions and a recommendation. It does not decide and
-  does not implement.
-- With one seat empty the result is `single-seat`: one opinion, not an
-  agreement.
-
-## Troubleshooting
-
-- **Seat B is empty** (Codex is not installed, or its output is empty): run with seat A alone and tell the user why
-  (`../../references/panel-protocol.md` §4).
-- **Both seats fail (`no-seats`):** no panel ran. Say so.
