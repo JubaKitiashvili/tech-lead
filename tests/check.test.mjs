@@ -1031,3 +1031,23 @@ test('fails when a workflow agent() call passes model: inherit', t => {
   assert.equal(r.status, 1)
   assert.match(r.stdout.split('FAIL models: every probed agent() call pins a model')[1] || '', /verify:primary/)
 })
+
+test('fails and names the file when a skill description holds an XML-like tag', t => {
+  const dir = copyRepo(t)
+  mutate(dir, 'skills/loop/SKILL.md', '[project-path]', '<project-path>')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL skills: no description holds an XML-like tag/)
+  assert.match(r.stdout, /skills\/loop\/SKILL\.md: <project-path>/)
+})
+
+test('fails and names the file when a SKILL.md grows past its ceiling, listed or default', t => {
+  const dir = copyRepo(t)
+  append(dir, 'skills/loop/SKILL.md', `\n${'x'.repeat(200)}\n`)
+  append(dir, 'skills/panel/SKILL.md', `\n${'x'.repeat(20000)}\n`)
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /FAIL skills: no SKILL\.md is larger than its ceiling/)
+  assert.match(r.stdout, /skills\/loop\/SKILL\.md: \d+ characters, ceiling 59200/)
+  assert.match(r.stdout, /skills\/panel\/SKILL\.md: \d+ characters, ceiling 20000/)
+})
