@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.9.1.** Checked against Claude Code 2.1.321 on the Anthropic API.
+**Version 0.9.2.** Checked against Claude Code 2.1.321 on the Anthropic API.
 
 ## Contents
 

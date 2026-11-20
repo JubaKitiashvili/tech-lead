@@ -24,6 +24,23 @@ jobs:
           node-version: 24
       - run: node scripts/check.mjs
 
+  skill-quality:
+    name: Skill quality (SkillEvaluator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Keyless static checks only: no model and no API key.
+      - run: pip install skillevaluator==1.0.1
+      # Grade A is 90 or more. Every skill has to reach it.
+      - run: |
+          for skill in . skills/quick skills/loop skills/panel skills/research; do
+            skillevaluator quality-check "$skill" --min-score 90 -r cli -o "$RUNNER_TEMP/skill-reports"
+          done
+
   test:
     name: Test suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

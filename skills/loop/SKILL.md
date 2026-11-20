@@ -1,12 +1,17 @@
 ---
 name: loop
-description: This skill should be used when the user asks to "run the loop", "start the tech-lead loop", "run a loop iteration", "work through the backlog automatically", or to keep executing a project's queued backlog unattended, including the first run on a project that has no .tech-lead/ directory yet; when the user invokes "/tech-lead:loop"; or when a /loop or cron firing carries the prompt "Run /tech-lead:loop <project-path>". Not for a single task (tech-lead or tech-lead:quick).
+description: This skill should be used when the user asks to "run the loop", "start the tech-lead loop", "run a loop iteration", "work through the backlog automatically", or to keep executing a project's queued backlog unattended, including the first run on a project that has no .tech-lead/ directory yet; when the user invokes "/tech-lead:loop"; or when a /loop or cron firing carries the prompt "Run /tech-lead:loop [project-path]". Not for a single task (tech-lead or tech-lead:quick).
 argument-hint: [project-path]
 effort: high
 disallowed-tools: AskUserQuestion
+metadata:
+  author: Juba Kitiashvili
+  tags: [backlog, automation, unattended, git]
 ---
 
 # tech-lead Loop — one iteration of the backlog executor
+
+## Purpose
 
 This skill executes exactly one iteration of the backlog executor.
 
@@ -1056,3 +1061,26 @@ every edit is applied in order.
   Never put foreign text on a shell command line. If `loop-text.mjs` fails,
   write `(withheld: neutralizer failed)` in place of the text. Only a human
   writes a `**Decision:**` line.
+
+## Prerequisites
+
+- `git` 2.40 or newer. On an older git the loop pauses with `git-too-old`.
+- A project path. A project without `.tech-lead/` is bootstrapped on the first
+  run (§1).
+- Optional: the Codex plugin, for L3 implementation.
+
+## Limitations
+
+- One firing runs one iteration.
+- The loop cannot use `AskUserQuestion`, and a scheduled firing asks no
+  questions.
+- It never pushes with `--force` (Safety rails).
+
+## Troubleshooting
+
+- **The firing ends at the lock:** another firing holds it, or an interrupted
+  one left it. §1 lists the cases, and
+  `node <T>/scripts/loop-lock.mjs status <P>` shows the holder.
+- **A task fails verification:** follow the failure path (§7).
+- **`loop-text.mjs` fails:** write `(withheld: neutralizer failed)` in place
+  of the text (Safety rails).
