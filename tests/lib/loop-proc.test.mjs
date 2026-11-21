@@ -451,12 +451,28 @@ const failPath = (t, method, target, code) => {
   })
 }
 
+const takesSignal = pid => {
+  try { process.kill(pid, 0); return true } catch (e) { return e.code !== 'ESRCH' }
+}
+
+test('commandLine: a live pid whose /proc entry cannot be read is unknown, never gone', { skip: process.platform !== 'linux' && 'commandLine reads /proc on linux only' }, t => {
+  const live = sleeper(t)
+  for (const code of ['ENOENT', 'ESRCH']) {
+    failPath(t, 'readFileSync', `/proc/${live}/stat`, code)
+    const r = commandLine(live)
+    assert.equal(r.state, 'unknown', JSON.stringify(r))
+    t.mock.restoreAll()
+  }
+  assert.equal(commandLine(live).state, 'live')
+})
+
 test('linuxToken: a /proc entry that vanished is gone only when the kernel agrees; for a live pid it is unknown', async t => {
   // A process can end between the signal probe and the read of /proc/<pid>/stat. The read
   // then fails with ENOENT, or with ESRCH when the entry was already open.
   const dead = sleeper(t)
   process.kill(dead, 'SIGKILL')
-  assert.ok(await waitFor(() => startToken(dead).state === 'gone'))
+  // Wait until it is reaped: a zombie reads as gone in startToken, but it still takes a signal.
+  assert.ok(await waitFor(() => !takesSignal(dead)))
   const live = sleeper(t)
   for (const code of ['ENOENT', 'ESRCH']) {
     await t.test(code, t2 => {
