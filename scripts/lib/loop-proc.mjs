@@ -56,6 +56,18 @@ function psFailed(pid, status) {
   return unknown(`ps exited ${status} for live pid ${pid}`)
 }
 
+// A /proc/<pid> entry that is missing (ENOENT), or whose read answers ESRCH, belongs to a
+// process that ended after the signal probe, or to one this user may not see (hidepid). It
+// means gone only when the kernel agrees; a pid that still takes a signal is unknown.
+function procEntryMissing(pid, code) {
+  try {
+    process.kill(pid, 0)
+  } catch (e) {
+    if (e.code === 'ESRCH') return { state: 'gone' }
+  }
+  return unknown(`/proc/${pid}: ${code} for live pid ${pid}`)
+}
+
 // lstart has one-second resolution; LC_ALL=C fixes its spelling and TZ=UTC its zone, so
 // every caller on the host reads the same token for one process.
 function darwinToken(pid) {
@@ -74,8 +86,16 @@ function darwinToken(pid) {
 
 // starttime is in clock ticks since boot, so the boot id makes the token unique across
 // reboots.
-function linuxToken(pid) {
-  const stat = parseProcStat(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))
+// Exported to test it on any host.
+export function linuxToken(pid) {
+  let text
+  try {
+    text = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+  } catch (e) {
+    if (e.code === 'ENOENT' || e.code === 'ESRCH') return procEntryMissing(pid, e.code)
+    throw e
+  }
+  const stat = parseProcStat(text)
   if (!stat) return unknown(`/proc/${pid}/stat: unexpected format`)
   if (stat.state === 'Z') return { state: 'gone' }
   const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
@@ -128,7 +148,7 @@ export function commandLine(pid) {
     }
     return unknown(`unsupported platform: ${process.platform}`)
   } catch (e) {
-    if (e.code === 'ENOENT') return { state: 'gone' }
+    if (process.platform === 'linux' && (e.code === 'ENOENT' || e.code === 'ESRCH')) return procEntryMissing(pid, e.code)
     return unknown(`${pid}: ${e.code || e.message}`)
   }
 }
@@ -359,7 +379,8 @@ function lsofSpelling(s) {
 
 // procCwds(root = '/proc') -> {state:'ok', procs:[{pid, cwd, command}]} | {state:'unknown', detail}.
 // Linux: readlink <root>/<pid>/cwd for every numeric entry; command is <root>/<pid>/comm
-// (null when unreadable). An entry that is another user's (EACCES) or has exited (ENOENT)
+// (null when unreadable). An entry that is another user's (EACCES) or has exited (ENOENT, or
+// ESRCH when it ends during the read)
 // is skipped; any other error, or no readable root, is unknown. A cwd the kernel marks
 // " (deleted)" is reported without the mark, so a process left in a removed directory
 // still matches that directory's path. Exported to test it on any host.
@@ -377,7 +398,7 @@ export function procCwds(root = '/proc') {
     try {
       cwd = fs.readlinkSync(path.join(root, name, 'cwd'))
     } catch (e) {
-      if (e.code === 'EACCES' || e.code === 'ENOENT') continue
+      if (e.code === 'EACCES' || e.code === 'ENOENT' || e.code === 'ESRCH') continue
       return unknown(`${path.join(root, name, 'cwd')}: ${e.code || e.message}`)
     }
     let command = null
