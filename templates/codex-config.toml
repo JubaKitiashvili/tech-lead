@@ -1,0 +1,5 @@
+# Recommended Codex settings for the tech-lead panel seat and the loop's Codex lane.
+# Copy these two lines to the top of ~/.codex/config.toml (keep the rest of your file).
+# Checked on 2026-11-21 with Codex CLI 0.167.0; README "Recommended Codex model" has the reasons.
+model = "gpt-6.2-sol"
+model_reasoning_effort = "xhigh"
