@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.9.2.** Checked against Claude Code 2.1.321 on the Anthropic API.
+**Version 0.9.3.** Checked against Claude Code 2.1.321 on the Anthropic API.
 
 ## Contents
 
@@ -206,9 +206,51 @@ Without Codex:
   empty;
 - the loop parks L3 implementation items as `waiting-infra`.
 
-Tested with Codex plugin 1.0.6 and Codex CLI 0.156.1. The Codex rescue wrapper
+Tested with Codex plugin 1.0.6 and Codex CLI 0.167.0. The Codex rescue wrapper
 can write files by default, so tech-lead always sends panel briefs read-only,
 with `--wait`.
+
+#### Recommended Codex model
+
+tech-lead names no GPT model: Codex takes its model and effort from
+`~/.codex/config.toml`, so the reviewer is whatever that file says. Nothing
+moves it to a newer model for you. The recommended setting, as of 2026-11-21:
+
+```toml
+model = "gpt-6.2-sol"
+model_reasoning_effort = "xhigh"
+```
+
+`templates/codex-config.toml` holds the same two lines, ready to copy to the
+top of your file.
+
+Why this model: we ran the same review brief on `gpt-6.1-sol` and
+`gpt-6.2-sol`, two runs each.
+
+| Case | `gpt-6.1-sol` | `gpt-6.2-sol` |
+|------|---------------|---------------|
+| A real 1,191-line commit with five defects that a later commit fixed | 0 of 5, twice | 5 of 5, twice |
+| A 105-line module with three seeded defects | 3 of 3, twice | 3 of 3, twice |
+
+Time and tokens per run were about the same. This is a small sample: two
+cases, eight runs.
+
+What to expect and check:
+
+- `gpt-6.2-sol` reports more findings (12 to 14 on the real commit, against
+  3 or 4), and some are minor. Its reports need more sorting.
+- An old Codex CLI rejects the model on a ChatGPT account: 0.159.1 answered
+  `model_not_found`, and 0.167.0 works. If you have more than one `codex`
+  on your machine (`which -a codex`), check each one:
+
+  ```sh
+  codex exec --skip-git-repo-check -s read-only "Reply with exactly: OK" < /dev/null
+  ```
+
+  The header it prints names the model in use.
+- When OpenAI ships a newer model, repeat the comparison before you switch.
+  `node scripts/facts-check.mjs stale` lists this recommendation once it is
+  45 days old.
 
 ### Optional: always-on routing rule
 
@@ -1090,6 +1132,7 @@ references/
   models-and-effort.md   sources, measurements and history behind the model rules
 templates/
   rules-tech-lead.md     the optional always-on routing rule
+  codex-config.toml      the recommended Codex model and effort
 scripts/
   check.mjs              repository checks (node scripts/check.mjs)
   lib/, checks/          loader, stub Workflow runtime, the loop's shared helpers, and the check modules
