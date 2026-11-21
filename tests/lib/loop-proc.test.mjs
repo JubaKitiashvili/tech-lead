@@ -7,7 +7,7 @@ import path from 'node:path'
 import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
 import { ROOT } from '../helpers.mjs'
 import {
-  ancestry, commandLine, cwdSweep, groupAlive, isAlive, killGroup, parseProcStat, procCwds, resolveHolder, startToken, sweepOthers,
+  ancestry, commandLine, cwdSweep, groupAlive, isAlive, killGroup, linuxToken, parseProcStat, procCwds, resolveHolder, startToken, sweepOthers,
 } from '../../scripts/lib/loop-proc.mjs'
 import { killGroupIfOurs } from '../loop/interrupt-fixture.mjs'
 import { dweller, sleeper as cloneSleeper } from '../loop/loop-clone-fixture.mjs'
@@ -440,6 +440,50 @@ test('cwdSweep judges lsof by what it printed: a failed, killed or garbled run, 
   }
   setEnv(t, 'TECH_LEAD_LSOF', path.join(dir, 'no-such-lsof'))
   assert.match(cwdSweep([dir]).detail, /ENOENT/)
+})
+
+// A fs method that throws `code` for one path and answers every other path as before.
+const failPath = (t, method, target, code) => {
+  const real = fs[method]
+  t.mock.method(fs, method, (p, ...rest) => {
+    if (p === target) throw Object.assign(new Error(`${code}: ${p}`), { code })
+    return real(p, ...rest)
+  })
+}
+
+test('linuxToken: a /proc entry that vanished is gone only when the kernel agrees; for a live pid it is unknown', async t => {
+  // A process can end between the signal probe and the read of /proc/<pid>/stat. The read
+  // then fails with ENOENT, or with ESRCH when the entry was already open.
+  const dead = sleeper(t)
+  process.kill(dead, 'SIGKILL')
+  assert.ok(await waitFor(() => startToken(dead).state === 'gone'))
+  const live = sleeper(t)
+  for (const code of ['ENOENT', 'ESRCH']) {
+    await t.test(code, t2 => {
+      failPath(t2, 'readFileSync', `/proc/${dead}/stat`, code)
+      assert.deepEqual(linuxToken(dead), { state: 'gone' })
+      t2.mock.restoreAll()
+      failPath(t2, 'readFileSync', `/proc/${live}/stat`, code)
+      const r = linuxToken(live)
+      assert.equal(r.state, 'unknown', JSON.stringify(r))
+      assert.match(r.detail, new RegExp(`${code} for live pid ${live}`))
+    })
+  }
+  // Any other read error is not an exit: it is thrown for the caller to report as unknown.
+  failPath(t, 'readFileSync', `/proc/${live}/stat`, 'EIO')
+  assert.throws(() => linuxToken(live), { code: 'EIO' })
+})
+
+test('procCwds skips an entry whose cwd read answers ESRCH: the process ended during the read', t => {
+  const root = tmp(t)
+  for (const [pid, cwd] of [['12', '/work/a'], ['56', '/work/b']]) {
+    fs.mkdirSync(path.join(root, pid))
+    fs.symlinkSync(cwd, path.join(root, pid, 'cwd'))
+  }
+  failPath(t, 'readlinkSync', path.join(root, '56', 'cwd'), 'ESRCH')
+  const r = procCwds(root)
+  assert.equal(r.state, 'ok', r.detail)
+  assert.deepEqual(r.procs.map(p => p.pid), [12])
 })
 
 test('procCwds reads every numeric entry of a proc tree, skips unreadable and gone ones, and is unknown without the tree', t => {
