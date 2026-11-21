@@ -1019,17 +1019,44 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
    ```
 
    Quote the glob: `node --test tests/` does not run the suite on Node 22.
-3. Validate the marketplace file and the manifest:
+
+   Among the repository checks, two guard the skill files themselves:
+   - a skill `description` may not hold an XML-like tag such as
+     `<project-path>`; write a placeholder as `[project-path]`;
+   - a `SKILL.md` may not grow past its ceiling: 20,000 characters by
+     default, and a fixed number for `SKILL.md` and `skills/loop/SKILL.md`,
+     which are already larger. The ceilings are in
+     `scripts/checks/repo.mjs`. Lower one when its file shrinks; raising one
+     is a reviewed edit.
+3. Grade every skill with
+   [SkillEvaluator](https://github.com/NVIDIA/SkillEvaluator) 1.0.1. Each
+   one must reach grade A (90 or more):
+
+   ```sh
+   pip install skillevaluator==1.0.1
+   for skill in . skills/quick skills/loop skills/panel skills/research; do
+     skillevaluator quality-check "$skill" --min-score 90 -r cli -o /tmp/skill-reports
+   done
+   ```
+
+   This is a static check: it needs no model and no API key. It grades how
+   a skill file is written (frontmatter, sections, size), not how Claude
+   behaves with it. Behaviour is measured by the cases in `evals/`. The
+   score takes the skill's name from its folder, so the root skill scores
+   lower in a checkout whose folder has a very short name.
+4. Validate the marketplace file and the manifest:
 
    ```sh
    claude plugin validate --strict .
    claude plugin validate --strict .claude-plugin/plugin.json
    ```
 
-4. Commit and push. Optionally, tag the release with
-   `claude plugin tag --push`, which creates `tech-lead--v<version>` and
-   refuses to run on a dirty tree.
-5. Users update:
+5. Commit and push. CI (`.github/workflows/ci.yml`) runs the repository
+   checks, the skill grades and the unit tests on Ubuntu and macOS for
+   every pull request and every push to `main`. Optionally, tag the release
+   with `claude plugin tag --push`, which creates `tech-lead--v<version>`
+   and refuses to run on a dirty tree.
+6. Users update:
    - marketplace install: `claude plugin update tech-lead@tech-lead`;
    - clone: `git pull`.
 
@@ -1070,6 +1097,9 @@ scripts/
   reflex-bundle.mjs      recovery bundles: save the clone's work, then reset it
   loop-review.mjs        your review of loop work: fetch and retire (your terminal only; no skill runs it)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
+evals/                   behaviour cases for `claude plugin eval` (real model calls; see evals/README.md)
+.github/workflows/
+  ci.yml                 repository checks, skill grades, unit tests
 docs/superpowers/        design specs and implementation plans
 ```
 
