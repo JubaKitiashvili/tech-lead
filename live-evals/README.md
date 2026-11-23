@@ -73,3 +73,6 @@ under test. If another copy of tech-lead is installed, the check
   `stale-now` 18 of 18 ($1.20, 120 s), `mechanical-l2` 20 of 20 ($1.42,
   144 s). $5.15 in all. In `mechanical-l2` the `fast-worker` ran on Sonnet,
   and the loop committed its work in the clone with both trailers.
+- 2026-11-23, same versions, `--model fable`, one run each of the two longest
+  scenarios: `stale-now` 18 of 18 ($2.12, 84 s) and `mechanical-l2` 20 of 20
+  ($2.59, 129 s).
