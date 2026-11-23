@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.9.4.** Checked against Claude Code 2.1.321 on the Anthropic API.
+**Version 0.9.5.** Checked against Claude Code 2.1.321 on the Anthropic API.
 
 ## Contents
 
@@ -365,7 +365,16 @@ fallback included, the lead gets a short notice with its next request: which
 model it is on now, which rules apply, and to tell you when nobody chose the
 switch. The script is `scripts/hooks/model-switch.mjs`.
 
-**Resume notice.** A second hook from the same frontmatter (`SessionStart`,
+**Model pin on agents.** A third hook from the same frontmatter (`PreToolUse`
+on `Agent`) refuses an `Agent` call from the lead that has no `model`, when
+its type is `general-purpose`, `Explore`, `Plan` or `claude` (or none):
+those take the session's model, so on a Fable session a helper that only runs
+a few commands would cost what the lead costs. The lead gets the reason and
+sends the call again with a model. Agent types that may pin their own model
+(the plugin's, another plugin's, your own) and calls made inside a subagent
+pass. The script is `scripts/hooks/agent-pin.mjs`.
+
+**Resume notice.** Another hook from the same frontmatter (`SessionStart`,
 matcher `compact`) runs after a compaction. If the project has an unfinished
 plan file, the lead is told where it is, how far the run got, and the command
 that restores it. The script is `scripts/hooks/resume.mjs`.
@@ -807,6 +816,23 @@ on a project at a time, whichever runner started it.
   refuses and writes nothing. The next firing then stops every child the
   released generation left running (its process groups and Codex jobs)
   before it starts, and waits while any of them cannot be stopped.
+- **Limits.** The lock names a process by its pid and start time, as this
+  machine sees them.
+  - Run every firing of one project from the same machine and the same
+    process namespace. A container and its host (or two containers, or two
+    machines on a shared home folder) number their processes separately, so
+    one cannot tell whether the other's holder is alive and may take the
+    lock from a firing that still runs. In practice the two also see the
+    project under different paths, and then they use different locks and
+    do not exclude each other at all.
+  - Between the moment a process is found gone and the next check of its
+    process group, the system could give that number to a new process.
+    If that process then led a group of its own, a stop meant for the old
+    group would signal it. This needs the process numbers to wrap around
+    within milliseconds; it is not guarded against.
+  - On Linux a process whose main thread has exited while other threads
+    still run reads as gone. The processes the lock tracks (Claude Code,
+    its own `exec` wrapper, the Codex starter) do not do that.
 
 ### The work area
 
@@ -1141,6 +1167,7 @@ scripts/
   loop-review.mjs        your review of loop work: fetch and retire (your terminal only; no skill runs it)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 evals/                   behaviour cases for `claude plugin eval` (real model calls; see evals/README.md)
+live-evals/              one real loop firing in a scratch repository, graded from disk (paid; see live-evals/README.md)
 .github/workflows/
   ci.yml                 repository checks, skill grades, unit tests
 docs/superpowers/        design specs and implementation plans
