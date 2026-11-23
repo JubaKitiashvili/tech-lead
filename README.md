@@ -807,6 +807,23 @@ on a project at a time, whichever runner started it.
   refuses and writes nothing. The next firing then stops every child the
   released generation left running (its process groups and Codex jobs)
   before it starts, and waits while any of them cannot be stopped.
+- **Limits.** The lock names a process by its pid and start time, as this
+  machine sees them.
+  - Run every firing of one project from the same machine and the same
+    process namespace. A container and its host (or two containers, or two
+    machines on a shared home folder) number their processes separately, so
+    one cannot tell whether the other's holder is alive and may take the
+    lock from a firing that still runs. In practice the two also see the
+    project under different paths, and then they use different locks and
+    do not exclude each other at all.
+  - Between the moment a process is found gone and the next check of its
+    process group, the system could give that number to a new process.
+    If that process then led a group of its own, a stop meant for the old
+    group would signal it. This needs the process numbers to wrap around
+    within milliseconds; it is not guarded against.
+  - On Linux a process whose main thread has exited while other threads
+    still run reads as gone. The processes the lock tracks (Claude Code,
+    its own `exec` wrapper, the Codex starter) do not do that.
 
 ### The work area
 
