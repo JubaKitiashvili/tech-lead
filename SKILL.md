@@ -12,6 +12,11 @@ hooks:
       hooks:
         - type: command
           command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/resume.mjs\""
+  PreToolUse:
+    - matcher: "Agent"
+      hooks:
+        - type: command
+          command: "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/agent-pin.mjs\""
   SubagentStop:
     - matcher: "tech-lead:fast-worker|tech-lead:deep-reasoner|general-purpose|Explore"
       hooks:
@@ -274,9 +279,8 @@ reads the whole conversation, so it never replaces an independent panel seat.
    - Give an agent a `name` when you may need to follow up with it:
      `SendMessage` continues it with its context intact.
    - Every Agent call carries `model` and `effort`, also a one-off helper
-     that only runs a few commands or reads a file for you. Without `model`
-     it runs on the session's model, which on a Fable session is the most
-     expensive one. For running commands, use `fast-worker`.
+     that only runs a few commands or reads a file for you: without `model`
+     it runs on the session's model, and a hook refuses it.
    - With a plan file, dispatch the `wave` that `next` prints, with each
      task's `model` and `effort` from the plan, and mark each task `running`.
 4. **Verify against ground truth.** Treat a subagent's "done" as a claim,
