@@ -163,15 +163,30 @@ export function isAlive(holder) {
   return t.token === start
 }
 
+// groupListed(pgid) -> true | false | null: whether the process table lists any process,
+// a zombie included, in process group pgid. null when the listing cannot be had.
+function groupListed(pgid) {
+  const r = spawnSync(PS(), ['-A', '-o', 'pgid='], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: PS_TIMEOUT_MS, env: { ...process.env, LC_ALL: 'C' },
+  })
+  if (r.error || r.status !== 0) return null
+  const ids = r.stdout.split('\n').map(l => l.trim()).filter(Boolean)
+  if (ids.length === 0 || !ids.every(l => /^\d+$/.test(l))) return null
+  return ids.includes(String(pgid))
+}
+
 // groupAlive(pgid) -> true | false | null. EPERM means a member exists that we may not
-// signal, which still counts as alive.
+// signal, which still counts as alive. darwin also answers EPERM for a group whose last
+// member has just been reaped, for as long as another process's listing (ps, lsof) holds
+// the kernel's record of the group: measured at up to 100 ms. So on darwin an EPERM is
+// settled by the process table: alive only if some process is still listed in the group.
 export function groupAlive(pgid) {
   if (!validPgid(pgid)) return null
   try {
     process.kill(-pgid, 0)
     return true
   } catch (e) {
-    if (e.code === 'EPERM') return true
+    if (e.code === 'EPERM') return process.platform === 'darwin' ? groupListed(pgid) : true
     if (e.code === 'ESRCH') return false
     return null
   }

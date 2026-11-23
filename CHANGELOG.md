@@ -28,6 +28,13 @@ scripts and their output, the loop's work area under `~/.cache/tech-lead/`,
 the checks, the tests and the evals. A higher minimum Claude Code version is
 a minor release, named in its entry.
 
+## 0.9.6 — 2026-11-24
+
+- macOS: a process group whose last member was just reaped no longer reads as
+  alive while another process's `ps` or `lsof` listing holds the kernel's
+  record of it. An `exec` run could report `lingering: true` for a command
+  that left nothing behind (#42).
+
 ## 0.9.5 — 2026-11-23
 
 - A hook refuses an `Agent` call from the lead that has no `model` and would
