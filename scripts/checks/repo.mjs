@@ -163,6 +163,12 @@ export async function checkRepo(ctx, r) {
     assert.equal(m[1], manifest.version)
   })
 
+  await r.check('version: CHANGELOG.md has an entry for the plugin.json version', () => {
+    const heads = [...rd('CHANGELOG.md').matchAll(/^## (\d+\.\d+\.\d+) — \d{4}-\d{2}-\d{2}$/gm)].map(m => m[1])
+    assert.ok(heads.length, 'CHANGELOG.md has no "## X.Y.Z — YYYY-MM-DD" heading')
+    assert.equal(heads[0], manifest.version, 'the newest CHANGELOG.md entry is not the plugin.json version')
+  })
+
   await r.check('links: relative .md and .js paths in backticks resolve', () => {
     const bad = []
     for (const f of mdFiles) {

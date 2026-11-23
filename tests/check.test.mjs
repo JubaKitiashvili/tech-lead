@@ -1051,3 +1051,12 @@ test('fails and names the file when a SKILL.md grows past its ceiling, listed or
   assert.match(r.stdout, /skills\/loop\/SKILL\.md: \d+ characters, ceiling 59200/)
   assert.match(r.stdout, /skills\/panel\/SKILL\.md: \d+ characters, ceiling 20000/)
 })
+
+test('check fails when CHANGELOG.md has no entry for the plugin.json version', t => {
+  const dir = copyRepo(t)
+  const version = JSON.parse(fs.readFileSync(path.join(dir, '.claude-plugin/plugin.json'), 'utf8')).version
+  mutate(dir, 'CHANGELOG.md', `## ${version} — `, '## 0.0.1 — ')
+  const r = runCheck(dir)
+  assert.equal(r.status, 1)
+  assert.match(r.stdout + r.stderr, /CHANGELOG\.md has an entry for the plugin\.json version/)
+})

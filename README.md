@@ -128,18 +128,17 @@ A shell install loads in the next session, or after `/reload-plugins`. With a
 marketplace install the root skill is `/tech-lead:tech-lead`. Bare
 `/tech-lead` also works unless another command already uses that name.
 
-**Access to the private repository.** Claude Code clones with plain `git`, and
-prompts are disabled. It has no token of its own, so your machine's git
-credentials must work without a prompt:
+**If the clone fails.** The repository is public, so no login is needed.
+Claude Code clones with plain `git`, with prompts disabled, so a git setup
+that asks for a credential or a passphrase fails here. This must succeed
+with no prompt:
 
 ```sh
-gh auth login
-gh auth setup-git
-git ls-remote https://github.com/JubaKitiashvili/tech-lead.git   # must succeed with no prompt
+git ls-remote https://github.com/JubaKitiashvili/tech-lead.git
 ```
 
-- **SSH:** the key must load without a passphrase prompt (for example, from
-  ssh-agent).
+- **SSH:** if your git rewrites GitHub URLs to SSH, the key must load
+  without a passphrase prompt (for example, from ssh-agent).
 - **Force HTTPS:** `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` skips the SSH probe.
 
 **Updates.**
@@ -176,8 +175,7 @@ skills that no longer exist.
 
 2. Commit and push `.claude/settings.json`, so teammates get the
    declaration. Only teammates who trust the folder pick it up.
-3. Each teammate needs read access to this private repository.
-4. Each teammate pulls, then installs the plugin:
+3. Each teammate pulls, then installs the plugin:
 
    ```sh
    claude plugin install tech-lead@tech-lead --scope project
@@ -1012,7 +1010,7 @@ The first run on a project bootstraps the spine interactively:
 |---|---|---|
 | `Workflow ... not found` | Workflows register at session start | Restart the session. Until then, the skills fall back to Agent calls, and loop triage records `no-verdict` |
 | `Failed to add marketplace: Marketplace file not found` | The ref you added has no `.claude-plugin/marketplace.json` (commits before the file existed) | Add the latest `main` with `JubaKitiashvili/tech-lead`, without pinning an older ref |
-| The marketplace add or clone fails with an auth error | The repository is private, and git cannot prompt | Run `gh auth login && gh auth setup-git`, then check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works |
+| The marketplace add or clone fails with an auth error | git asks for a credential or a passphrase, and prompts are disabled | Check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works with no prompt. The repository is public; `gh auth setup-git` fixes a broken credential helper |
 | `tech-lead is already at the latest version` | `version` in `plugin.json` was not bumped | See [Releasing a new version](#releasing-a-new-version) |
 | `/tech-lead` is unknown after a marketplace install | Another command already uses the bare name | Use `/tech-lead:tech-lead` |
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
@@ -1079,6 +1077,8 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
 
 1. Bump `version` in `.claude-plugin/plugin.json`. Leave it out of
    `marketplace.json`, because `plugin.json` wins.
+   Add the version's entry at the top of `CHANGELOG.md`; the checks fail
+   without it. That file also says what counts as a breaking change.
 2. Run the repository checks and the unit tests; both must pass:
 
    ```sh
@@ -1136,6 +1136,7 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
 .claude-plugin/
   plugin.json          manifest: name, version, skill paths
   marketplace.json     makes the repo installable as tech-lead@tech-lead
+CHANGELOG.md           one entry per version, and what counts as a breaking change
 SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
 agents/
   fast-worker.md       Sonnet, effort high; mechanical execution
