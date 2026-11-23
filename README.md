@@ -1010,7 +1010,7 @@ The first run on a project bootstraps the spine interactively:
 |---|---|---|
 | `Workflow ... not found` | Workflows register at session start | Restart the session. Until then, the skills fall back to Agent calls, and loop triage records `no-verdict` |
 | `Failed to add marketplace: Marketplace file not found` | The ref you added has no `.claude-plugin/marketplace.json` (commits before the file existed) | Add the latest `main` with `JubaKitiashvili/tech-lead`, without pinning an older ref |
-| The marketplace add or clone fails with an auth error | git asks for a credential or a passphrase, and prompts are disabled | Check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works with no prompt (the repository is public; `gh auth setup-git` fixes a broken credential helper), then check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works |
+| The marketplace add or clone fails with an auth error | git asks for a credential or a passphrase, and prompts are disabled | Check that `git ls-remote https://github.com/JubaKitiashvili/tech-lead.git` works with no prompt. The repository is public; `gh auth setup-git` fixes a broken credential helper |
 | `tech-lead is already at the latest version` | `version` in `plugin.json` was not bumped | See [Releasing a new version](#releasing-a-new-version) |
 | `/tech-lead` is unknown after a marketplace install | Another command already uses the bare name | Use `/tech-lead:tech-lead` |
 | The panel reports "seat B empty" | Codex is missing, failed, or returned a background job id | Install Codex and run `/codex:setup`. Meanwhile the panel runs with seat A alone |
