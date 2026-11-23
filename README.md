@@ -1079,6 +1079,8 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
 
 1. Bump `version` in `.claude-plugin/plugin.json`. Leave it out of
    `marketplace.json`, because `plugin.json` wins.
+   Add the version's entry at the top of `CHANGELOG.md`; the checks fail
+   without it. That file also says what counts as a breaking change.
 2. Run the repository checks and the unit tests; both must pass:
 
    ```sh
@@ -1136,6 +1138,7 @@ See [Items in `STATE.md`](#items-in-statemd) for the format.
 .claude-plugin/
   plugin.json          manifest: name, version, skill paths
   marketplace.json     makes the repo installable as tech-lead@tech-lead
+CHANGELOG.md           one entry per version, and what counts as a breaking change
 SKILL.md               /tech-lead: orchestration, bench, models and effort, Workflow mode
 agents/
   fast-worker.md       Sonnet, effort high; mechanical execution
