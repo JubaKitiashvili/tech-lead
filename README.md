@@ -1141,6 +1141,7 @@ scripts/
   loop-review.mjs        your review of loop work: fetch and retire (your terminal only; no skill runs it)
 tests/                   unit tests (node --test "tests/**/*.test.mjs")
 evals/                   behaviour cases for `claude plugin eval` (real model calls; see evals/README.md)
+live-evals/              one real loop firing in a scratch repository, graded from disk (paid; see live-evals/README.md)
 .github/workflows/
   ci.yml                 repository checks, skill grades, unit tests
 docs/superpowers/        design specs and implementation plans
