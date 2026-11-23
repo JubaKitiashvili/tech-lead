@@ -6,9 +6,8 @@ as #39 are pull requests in this repository.
 
 ## What counts as a breaking change
 
-Before 1.0.0 anything may change in any release; read the entry before you
-update. From 1.0.0 on, a release that breaks one of these raises the major
-version:
+Before 1.0.0 anything could change in any release. From 1.0.0 on, a release
+that breaks one of these raises the major version:
 
 - the command and skill names: `/tech-lead`, `/tech-lead:quick`,
   `/tech-lead:panel`, `/tech-lead:research`, `/tech-lead:loop`;
@@ -27,6 +26,15 @@ Not part of that promise: the wording of the skill files, the other helper
 scripts and their output, the loop's work area under `~/.cache/tech-lead/`,
 the checks, the tests and the evals. A higher minimum Claude Code version is
 a minor release, named in its entry.
+
+## 1.0.0 — 2026-11-24
+
+The first stable release. Nothing in the protected surface changed since
+0.9.6; from this version on, the rule above holds.
+
+- `/tech-lead:quick` ends its report with a pointer to `/steward`, for Claude
+  Code v2.1.330 or later (#43).
+- README: where the model-pin hook does not run (#43).
 
 ## 0.9.6 — 2026-11-24
 
