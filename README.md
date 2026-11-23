@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 0.9.4.** Checked against Claude Code 2.1.321 on the Anthropic API.
+**Version 0.9.5.** Checked against Claude Code 2.1.321 on the Anthropic API.
 
 ## Contents
 
@@ -365,7 +365,16 @@ fallback included, the lead gets a short notice with its next request: which
 model it is on now, which rules apply, and to tell you when nobody chose the
 switch. The script is `scripts/hooks/model-switch.mjs`.
 
-**Resume notice.** A second hook from the same frontmatter (`SessionStart`,
+**Model pin on agents.** A third hook from the same frontmatter (`PreToolUse`
+on `Agent`) refuses an `Agent` call from the lead that has no `model`, when
+its type is `general-purpose`, `Explore`, `Plan` or `claude` (or none):
+those take the session's model, so on a Fable session a helper that only runs
+a few commands would cost what the lead costs. The lead gets the reason and
+sends the call again with a model. Agent types that may pin their own model
+(the plugin's, another plugin's, your own) and calls made inside a subagent
+pass. The script is `scripts/hooks/agent-pin.mjs`.
+
+**Resume notice.** Another hook from the same frontmatter (`SessionStart`,
 matcher `compact`) runs after a compaction. If the project has an unfinished
 plan file, the lead is told where it is, how far the run got, and the command
 that restores it. The script is `scripts/hooks/resume.mjs`.

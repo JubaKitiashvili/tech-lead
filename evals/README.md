@@ -144,6 +144,25 @@ claude plugin eval . --tag behaviour --runs 1 --model opus --scaffold \
     `no-delegate-above-high` failed once on `deep-reasoner`, whose own file
     pins `xhigh`; it now leaves that agent out.
 
+- 2026-11-23, plugin 0.9.4 and this branch (0.9.5), Claude Code 2.1.329,
+  `--case review-named-agent --ablation none --model fable --scaffold`,
+  8 runs in three batches ($6.88).
+  - One reviewer, started with `Agent` and a `name`, on `opus`, with no
+    Workflow: 8 of 8.
+  - `reviewer-pins-a-model` failed in 5 of 8. The reviewer was pinned every
+    time. In 4 runs the lead, which has no shell in this case, then started
+    a `general-purpose` helper without `model` to run `git show` and a few
+    probes; in 1 run it made a `fork` call. The written rule did not stop
+    the helper, so 0.9.5 adds a hook that refuses such a call
+    (`scripts/hooks/agent-pin.mjs`).
+  - **The hook cannot be measured here.** Hooks from a skill's frontmatter do
+    not run in an eval run: in the 3 runs on this branch the hook was
+    registered and never fired, and one unpinned helper went through. In a
+    plain headless session (`claude -p`, a probe plugin with the same
+    frontmatter hook and the same script) the unpinned call was refused with
+    the hook's reason. So this case keeps failing on that grader until eval
+    runs load skill hooks.
+
 Eval runs are non-interactive. A lead may behave differently when a user is
 there to answer, so these numbers describe `claude -p`, not a live session.
 
