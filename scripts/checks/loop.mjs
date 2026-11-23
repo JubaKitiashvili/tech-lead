@@ -43,7 +43,11 @@
 // insertion, and a failed deletion is the item-edit incident (F6); section 8 copies the ledger
 // entry's task, item_id and item_origin from pick's answer, which section 3 keeps (F1); and
 // README's invalid-id fix never deletes a valid id, reminting only an id no other line names
-// (F7).
+// (F7). The split of SKILL.md (after 1.0.0) moved the branches only some firings need into
+// skills/loop/references/ (recovery, picking, level3, high-stakes, failure): each check that
+// read that text reads the file that now holds it, the lists of files a check scans take the
+// new files in, and one more check keeps every reference named in SKILL.md, each branch file
+// named where its section hands off, and every name the loop gives a reference resolvable.
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -54,6 +58,15 @@ const SKILL = 'skills/loop/SKILL.md'
 const CLONE = 'skills/loop/references/clone.md'
 const TEMPLATES = 'skills/loop/references/loop-templates.md'
 const BOOTSTRAP = 'skills/loop/references/bootstrap.md'
+// The branches of SKILL.md that only some firings need, each in a reference file of its own:
+// the recovery actions (section 1 step 5), the pick rules (sections 3.1 and 3.2), the L3 hard
+// branches and the high-stakes panel steps (section 5), and the failure path (section 7).
+const RECOVERY = 'skills/loop/references/recovery.md'
+const PICKING = 'skills/loop/references/picking.md'
+const LEVEL3 = 'skills/loop/references/level3.md'
+const HIGH_STAKES = 'skills/loop/references/high-stakes.md'
+const FAILURE = 'skills/loop/references/failure.md'
+const LOOP_REFS = 'skills/loop/references'
 const LOCK_SRC = 'scripts/loop-lock.mjs'
 const STATE_SRC = 'scripts/lib/loop-state.mjs'
 const PATHS_SRC = 'scripts/lib/loop-paths.mjs'
@@ -444,11 +457,12 @@ export async function checkLoop(ctx, r) {
     const missing = [...heldReasons(rd(LOCK_SRC)), 'not-toplevel'].filter(x => !names.includes(x))
     assert.deepEqual(missing.map(x => `README.md Troubleshooting never names \`${x}\``), [])
   })
-  await r.check('loop: SKILL.md and clone.md never run git -C <W>, add a worktree, or put <W> at <S>/worktree', () => {
+  await r.check('loop: SKILL.md, clone.md and the branch references never run git -C <W>, add a worktree, or put <W> at <S>/worktree', () => {
     // <W> is the clone loop-clone.mjs owns (stage 0c-2): the main session runs git there only
-    // through the helpers, and the 0c-1 worktree layout is gone from the loop's prose.
+    // through the helpers, and the 0c-1 worktree layout is gone from the loop's prose. The
+    // branch references hold text that was SKILL.md's, so they are read with it.
     const bad = []
-    for (const f of [SKILL, CLONE]) {
+    for (const f of [SKILL, CLONE, RECOVERY, PICKING, LEVEL3, HIGH_STAKES, FAILURE]) {
       const text = rd(f)
       for (const [label, re] of [
         ['git -C <W>', /\bgit\s+-C\s+<W>/g],
@@ -527,10 +541,11 @@ export async function checkLoop(ctx, r) {
   await r.check('loop: the Save and reset procedure saves, writes the sha into STATE.md, then resets', () => {
     // Ruling R5: the bundle sha reaches STATE.md before anything in <W> is reset, so a flag
     // outcome is never left pointing at work that is gone.
-    const s7 = section(rd(SKILL), 7, SKILL).text
-    const m = /^\*\*Save and reset\b[^*\n]*\*\*/m.exec(s7)
-    assert.ok(m, `${SKILL} section 7 has no "**Save and reset**" procedure`)
-    const rest = s7.slice(m.index + m[0].length)
+    // Section 7's procedures live in failure.md.
+    const fail = rd(FAILURE)
+    const m = /^\*\*Save and reset\b[^*\n]*\*\*/m.exec(fail)
+    assert.ok(m, `${FAILURE} has no "**Save and reset**" procedure`)
+    const rest = fail.slice(m.index + m[0].length)
     const end = rest.search(/^\*\*/m)
     const steps = (end < 0 ? rest : rest.slice(0, end)).split(/^(?=\d+\. )/m).slice(1)
     const SAVE = /^node <T>\/scripts\/reflex-bundle\.mjs save <P> --generation <N> --why /
@@ -559,19 +574,27 @@ export async function checkLoop(ctx, r) {
   await r.check('loop: the panel snapshot never refreshes <P>/.git/index (diff.autoRefreshIndex=false)', () => {
     // A plain `git diff` refreshes the index's stat data and rewrites <P>/.git/index; the loop
     // never writes <P>'s tree or .git outside <S>.
+    // Section 5's panel steps live in high-stakes.md; every git diff of section 5, in SKILL.md
+    // or in its two branch files, keeps the flag, and the snapshot is in high-stakes.md.
     const skill = rd(SKILL)
-    const { text, at } = section(skill, 5, SKILL)
+    const s5 = section(skill, 5, SKILL)
     const bad = []
     let seen = 0
-    for (const c of commands(text)) {
-      for (const g of c.cmd.matchAll(/\bgit((?:\s+-c\s+\S+)*)\s+diff\b/g)) {
-        seen++
-        if (!/(?:^|\s)-c\s+diff\.autoRefreshIndex=false(?:\s|$)/.test(g[1])) {
-          bad.push(`${SKILL}:${lineOf(skill, at + c.at)}: the panel snapshot runs git diff without -c diff.autoRefreshIndex=false`)
+    for (const [file, whole, text, at] of [
+      [SKILL, skill, s5.text, s5.at],
+      [LEVEL3, rd(LEVEL3), rd(LEVEL3), 0],
+      [HIGH_STAKES, rd(HIGH_STAKES), rd(HIGH_STAKES), 0],
+    ]) {
+      for (const c of commands(text)) {
+        for (const g of c.cmd.matchAll(/\bgit((?:\s+-c\s+\S+)*)\s+diff\b/g)) {
+          if (file === HIGH_STAKES) seen++
+          if (!/(?:^|\s)-c\s+diff\.autoRefreshIndex=false(?:\s|$)/.test(g[1])) {
+            bad.push(`${file}:${lineOf(whole, at + c.at)}: the panel snapshot runs git diff without -c diff.autoRefreshIndex=false`)
+          }
         }
       }
     }
-    if (!seen) bad.push(`${SKILL} section 5 has no panel snapshot (git -c diff.autoRefreshIndex=false diff HEAD ...)`)
+    if (!seen) bad.push(`${HIGH_STAKES} has no panel snapshot (git -c diff.autoRefreshIndex=false diff HEAD ...)`)
     assert.deepEqual(bad, [])
   })
 
@@ -720,27 +743,26 @@ export async function checkLoop(ctx, r) {
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: SKILL.md section 1 step 5 applies the planner\'s clear.edits and checks them, and treats now-conflict as the item-edit incident', () => {
+  await r.check('loop: recovery.md (SKILL.md section 1 step 5) applies the planner\'s clear.edits and checks them, and treats now-conflict as the item-edit incident', () => {
     // R29 (Codex g2#3, g2#4): clear-now deletes the one ## Now block the planner planned, never
     // the whole section, and confirms it; copies that are not one item moved halfway pause the
-    // loop with both kept.
-    const plan = step(section(rd(SKILL), 1, SKILL).text, 5, 'Plan the recovery', SKILL)
-    const bs = bullets(plan).map(flat)
+    // loop with both kept. Section 1 step 5's actions live in recovery.md.
+    const bs = bullets(rd(RECOVERY)).map(flat)
     const clear = bs.find(b => b.startsWith('- `clear-now`'))
     const conflict = bs.find(b => b.startsWith('- `now-conflict`'))
     const bad = []
-    if (!clear) bad.push(`${SKILL} section 1 step 5 has no \`clear-now\` bullet`)
+    if (!clear) bad.push(`${RECOVERY} has no \`clear-now\` bullet`)
     else {
-      if (!/\bApply `clear\.edits`/.test(clear)) bad.push(`${SKILL} section 1 step 5: the \`clear-now\` bullet never applies \`clear.edits\``)
-      if (!clear.includes(`${ITEMS} check <P> --expect <clear.expect_sha256>`)) bad.push(`${SKILL} section 1 step 5: the \`clear-now\` bullet never runs \`${ITEMS} check <P> --expect <clear.expect_sha256>\``)
-      if (/\breplace\b[^.]*`## Now`[^.]*`\(empty\)`/i.test(clear)) bad.push(`${SKILL} section 1 step 5: the \`clear-now\` bullet replaces the whole \`## Now\` section`)
+      if (!/\bApply `clear\.edits`/.test(clear)) bad.push(`${RECOVERY}: the \`clear-now\` bullet never applies \`clear.edits\``)
+      if (!clear.includes(`${ITEMS} check <P> --expect <clear.expect_sha256>`)) bad.push(`${RECOVERY}: the \`clear-now\` bullet never runs \`${ITEMS} check <P> --expect <clear.expect_sha256>\``)
+      if (/\breplace\b[^.]*`## Now`[^.]*`\(empty\)`/i.test(clear)) bad.push(`${RECOVERY}: the \`clear-now\` bullet replaces the whole \`## Now\` section`)
     }
-    if (!conflict) bad.push(`${SKILL} section 1 step 5 has no \`now-conflict\` bullet`)
-    else if (!/\bitem-edit incident\b/.test(conflict)) bad.push(`${SKILL} section 1 step 5: the \`now-conflict\` bullet never calls it an item-edit incident`)
+    if (!conflict) bad.push(`${RECOVERY} has no \`now-conflict\` bullet`)
+    else if (!/\bitem-edit incident\b/.test(conflict)) bad.push(`${RECOVERY}: the \`now-conflict\` bullet never calls it an item-edit incident`)
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: SKILL.md section 1 step 5 names every now-conflict reason loop-recover.mjs prints and every field clear-now compares (R29a)', () => {
+  await r.check('loop: recovery.md (SKILL.md section 1 step 5) names every now-conflict reason loop-recover.mjs prints and every field clear-now compares (R29a)', () => {
     // R29a (Codex fix1-g2#1): clear-now deletes the ## Now copy only when the other copy agrees
     // on the digest and on blocked-by:, decided:, no-change-ok: and the origin lines, so the
     // prose must say so (a prerequisite added to one copy is never dropped), and the
@@ -749,18 +771,17 @@ export async function checkLoop(ctx, r) {
     const table = /const CONFLICT_WHY = \{([\s\S]*?)\n\}/.exec(src)
     if (!table) throw new Error(`${RECOVER_SRC}: no CONFLICT_WHY table`)
     const reasons = [...table[1].matchAll(/^\s*'([a-z-]+)':/gm)].map(m => m[1])
-    const plan = step(section(rd(SKILL), 1, SKILL).text, 5, 'Plan the recovery', SKILL)
-    const bs = bullets(plan).map(flat)
+    const bs = bullets(rd(RECOVERY)).map(flat)
     const clear = bs.find(b => b.startsWith('- `clear-now`')) ?? ''
     const conflict = bs.find(b => b.startsWith('- `now-conflict`')) ?? ''
     const bad = reasons.length ? [] : [`${RECOVER_SRC}: CONFLICT_WHY lists no reason`]
-    for (const x of reasons) if (!ticked(conflict).includes(x)) bad.push(`${SKILL} section 1 step 5: the \`now-conflict\` bullet never names the reason \`${x}\``)
-    for (const f of ['blocked-by:', 'decided:', 'no-change-ok:']) if (!ticked(clear).includes(f)) bad.push(`${SKILL} section 1 step 5: the \`clear-now\` bullet never names \`${f}\` among what the copies share`)
-    if (!/\borigin lines\b/.test(clear)) bad.push(`${SKILL} section 1 step 5: the \`clear-now\` bullet never names the origin lines among what the copies share`)
+    for (const x of reasons) if (!ticked(conflict).includes(x)) bad.push(`${RECOVERY}: the \`now-conflict\` bullet never names the reason \`${x}\``)
+    for (const f of ['blocked-by:', 'decided:', 'no-change-ok:']) if (!ticked(clear).includes(f)) bad.push(`${RECOVERY}: the \`clear-now\` bullet never names \`${f}\` among what the copies share`)
+    if (!/\borigin lines\b/.test(clear)) bad.push(`${RECOVERY}: the \`clear-now\` bullet never names the origin lines among what the copies share`)
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: README\'s skip table and SKILL.md section 3.1 name every release refusal pick can report', () => {
+  await r.check('loop: README\'s skip table and section 3.1 (picking.md) name every release refusal pick can report', () => {
     // R16, R30, R30a (Codex fix1-g1#2): each refusal releaseFor returns reaches ## Last run as
     // a skipped row, so the owner's table and section 3.1 name it. entry-item-now never does:
     // pick refuses `now-occupied` before any release.
@@ -771,11 +792,11 @@ export async function checkLoop(ctx, r) {
     const reasons = [...new Set([...body.matchAll(/\bskip: '([a-z-]+)'/g)].map(m => m[1]))].filter(x => x !== 'entry-item-now')
     const bad = reasons.includes('ambiguous-carrier') ? [] : [`${STATE_SRC}: releaseFor never refuses \`ambiguous-carrier\``]
     const rows = part(rd('README.md'), '### Why the loop skips an item', 'README.md').split('\n').map(l => /^\| `([a-z-]+)` \|/.exec(l)?.[1]).filter(Boolean)
-    const s31 = flat(rd(SKILL)).split('**3.1 ·')[1]?.split('**3.2 ·')[0] ?? ''
-    if (!s31) bad.push(`${SKILL} has no section 3.1`)
+    const s31 = flat(rd(PICKING)).split('**3.1 ·')[1]?.split('**3.2 ·')[0] ?? ''
+    if (!s31) bad.push(`${PICKING} has no section 3.1`)
     for (const x of reasons) {
       if (!rows.includes(x)) bad.push(`README.md: Why the loop skips an item has no row for \`${x}\``)
-      if (s31 && !ticked(s31).includes(x)) bad.push(`${SKILL} section 3.1 never names \`${x}\``)
+      if (s31 && !ticked(s31).includes(x)) bad.push(`${PICKING} section 3.1 never names \`${x}\``)
     }
     assert.deepEqual(bad, [])
   })
@@ -820,7 +841,7 @@ export async function checkLoop(ctx, r) {
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: every reflex-bundle.mjs save in skills/ passes --item <id> (SKILL.md section 7 runs one)', () => {
+  await r.check('loop: every reflex-bundle.mjs save in skills/ passes --item <id> (failure.md, section 7\'s Save and reset, runs one)', () => {
     // R18: the save reads the item's digest from STATE.md itself and binds the bundle to it.
     // An invocation is a helper path or the name followed by <P> or a flag.
     const bad = []
@@ -833,7 +854,7 @@ export async function checkLoop(ctx, r) {
       })
     }
     const SAVE = /^node <T>\/scripts\/reflex-bundle\.mjs save <P> .*(?:^|\s)--item <id>(?:\s|$)/
-    if (!commands(section(rd(SKILL), 7, SKILL).text).some(c => SAVE.test(c.cmd))) bad.push(`${SKILL} section 7 runs no reflex-bundle.mjs save with --item <id>`)
+    if (!commands(rd(FAILURE)).some(c => SAVE.test(c.cmd))) bad.push(`${FAILURE} runs no reflex-bundle.mjs save with --item <id>`)
     assert.deepEqual(bad, [])
   })
 
@@ -876,26 +897,27 @@ export async function checkLoop(ctx, r) {
         }
       })
     }
-    const { text } = section(rd(SKILL), 5, SKILL)
+    // Section 5's analysis branch lives in level3.md.
+    const text = rd(LEVEL3)
     const call = commands(text).find(c => c.cmd === FOLLOWUP)
-    if (!call) bad.push(`${SKILL} section 5 runs no \`${FOLLOWUP}\``)
+    if (!call) bad.push(`${LEVEL3} runs no \`${FOLLOWUP}\``)
     else if (!/`<S>\/briefs\/<id>-followup\.json` with the Write tool\b/.test(flat(text.slice(0, call.at)))) {
-      bad.push(`${SKILL} section 5 never says to write the follow-up file with the Write tool (\`<S>/briefs/<id>-followup.json\` with the Write tool) before the call`)
+      bad.push(`${LEVEL3} never says to write the follow-up file with the Write tool (\`<S>/briefs/<id>-followup.json\` with the Write tool) before the call`)
     }
     assert.deepEqual(bad, [])
   })
 
-  await r.check('loop: SKILL.md section 5 counts both follow-up answers (reused true and false) as a success, and only a refusal or an error as the incident', () => {
+  await r.check('loop: level3.md (SKILL.md section 5) counts both follow-up answers (reused true and false) as a success, and only a refusal or an error as the incident', () => {
     // Codex g3#3, fix1-g2#5: followup answers `"state": "ok"` with `"reused": false` (a new
     // follow-up, its insertion in edits) or `"reused": true` (an interrupted firing created it,
     // no edits). The prose once called only reused true a success, so every new follow-up was an
     // incident. The driver accepts both on its own, so the wording is checked here: the rule
     // after the call (to the next bullet at its parent's level) names both answers, a sentence
     // with no restriction counts both as a success, and the incident sentence names a refusal
-    // (exit 3) and an error (exit 2) and no ok answer.
-    const { text } = section(rd(SKILL), 5, SKILL)
+    // (exit 3) and an error (exit 2) and no ok answer. Section 5's analysis branch lives in level3.md.
+    const text = rd(LEVEL3)
     const call = commands(text).find(c => c.cmd === FOLLOWUP)
-    assert.ok(call, `${SKILL} section 5 runs no \`${FOLLOWUP}\``)
+    assert.ok(call, `${LEVEL3} runs no \`${FOLLOWUP}\``)
     const own = text.slice(text.lastIndexOf('\n', call.at) + 1).search(/\S/)
     const parent = text.slice(0, call.at).split('\n').findLast(l => /^\s*- /.test(l) && l.search(/\S/) < own)
     const indent = parent ? parent.search(/\S/) : 0
@@ -904,14 +926,14 @@ export async function checkLoop(ctx, r) {
     const rule = sentences(rest.slice(0, stop < 0 ? rest.length : stop)).map(x => flat(x.s))
     const T = '`"reused": true`', F = '`"reused": false`', OK = /`"(?:reused|state)": (?:true|false|"ok")`/
     const bad = []
-    for (const v of [T, F]) if (!rule.some(s => s.includes(v))) bad.push(`${SKILL} section 5: the follow-up rule never names ${v}`)
+    for (const v of [T, F]) if (!rule.some(s => s.includes(v))) bad.push(`${LEVEL3}: the follow-up rule never names ${v}`)
     const success = rule.filter(s => PASS_WORD.test(s))
     if (!success.some(s => (/\bboth\b/i.test(s) || (s.includes(T) && s.includes(F))) && !/\b(?:only|never|not)\b/i.test(s))) {
-      bad.push(`${SKILL} section 5: no sentence counts both answers as a success (\`"state": "ok"\` with ${F} and with ${T})`)
+      bad.push(`${LEVEL3}: no sentence counts both answers as a success (\`"state": "ok"\` with ${F} and with ${T})`)
     }
     const incident = rule.filter(s => /\bincident\b/.test(s))
-    if (!incident.some(s => /\brefusal \(exit 3\)/.test(s) && /\berror \(exit 2\)/.test(s))) bad.push(`${SKILL} section 5: no incident sentence names a refusal (exit 3) and an error (exit 2)`)
-    for (const s of incident) if (OK.test(s) || /\b(?:any|every) other answer\b/i.test(s)) bad.push(`${SKILL} section 5: an incident sentence names an ok answer, or every other answer: ${s.trim()}`)
+    if (!incident.some(s => /\brefusal \(exit 3\)/.test(s) && /\berror \(exit 2\)/.test(s))) bad.push(`${LEVEL3}: no incident sentence names a refusal (exit 3) and an error (exit 2)`)
+    for (const s of incident) if (OK.test(s) || /\b(?:any|every) other answer\b/i.test(s)) bad.push(`${LEVEL3}: an incident sentence names an ok answer, or every other answer: ${s.trim()}`)
     assert.deepEqual(bad, [])
   })
 
@@ -971,6 +993,41 @@ export async function checkLoop(ctx, r) {
     if (/\bDelete the `id:` lines\b/.test(fix) || !/\bNever delete a valid id\b/.test(fix)) bad.push('README.md: the `invalid-id` fix tells the owner to delete both `id:` lines, or never says to keep a valid id')
     if (!/\bthe same id, delete only one of them\b/.test(fix)) bad.push('README.md: the `invalid-id` fix never deletes only one of two identical `id:` lines')
     if (!/\bfresh id, only when no other line names its id\b/.test(fix)) bad.push('README.md: the `invalid-id` fix never limits a fresh id to an id no other line names')
+    assert.deepEqual(bad, [])
+  })
+
+  await r.check('loop: every file in skills/loop/references/ is named in SKILL.md (a branch file where its section hands off), and every references/<name>.md the loop names exists', () => {
+    // SKILL.md loads on every firing; the branches only some firings need live in reference
+    // files, which the model reads only where SKILL.md sends it. A file SKILL.md never names is
+    // never read, a branch file its own section does not name is read too late, and a name that
+    // resolves to nothing sends the model nowhere. SKILL.md names a reference as
+    // `references/<name>.md`; a reference file names a sibling as `<name>.md`.
+    const have = fs.readdirSync(path.join(root, LOOP_REFS)).filter(f => fs.statSync(path.join(root, LOOP_REFS, f)).isFile()).sort()
+    const skill = rd(SKILL), bad = []
+    for (const f of have) if (!skill.includes(`\`references/${f}\``)) bad.push(`${SKILL} never names \`references/${f}\``)
+    const handoff = [
+      [RECOVERY, 'section 1 step 5', step(section(skill, 1, SKILL).text, 5, 'Plan the recovery', SKILL)],
+      [PICKING, 'section 3', section(skill, 3, SKILL).text],
+      [LEVEL3, 'section 5', section(skill, 5, SKILL).text],
+      [HIGH_STAKES, 'section 5', section(skill, 5, SKILL).text],
+      [FAILURE, 'section 7', section(skill, 7, SKILL).text],
+    ]
+    for (const [f, where, text] of handoff) {
+      const ref = `references/${path.basename(f)}`
+      // Read as a literal span: a fenced block in the text shifts how ticked() pairs backticks.
+      if (!text.includes(`\`${ref}\``)) bad.push(`${SKILL} ${where} never names \`${ref}\`, which holds its branch`)
+    }
+    for (const f of [SKILL, ...have.filter(x => x.endsWith('.md')).map(x => `${LOOP_REFS}/${x}`)]) {
+      const text = rd(f)
+      // `references/<name>.md` that is not a path into the plugin's own references/ (`../../references/`).
+      for (const m of text.matchAll(/(?<![\w./-])references\/([\w.-]+\.md)\b/g)) {
+        if (!have.includes(m[1])) bad.push(`${f}:${lineOf(text, m.index)}: names references/${m[1]}, which is not in ${LOOP_REFS}/`)
+      }
+      if (f === SKILL) continue
+      for (const m of text.matchAll(/`([a-z0-9][a-z0-9-]*\.md)`/g)) {
+        if (!have.includes(m[1])) bad.push(`${f}:${lineOf(text, m.index)}: names \`${m[1]}\`, which is not in ${LOOP_REFS}/`)
+      }
+    }
     assert.deepEqual(bad, [])
   })
 }

@@ -156,9 +156,9 @@ never read.
 - `origin:` ∈ `bootstrap | human | unknown | loop from <id>`: where the item
   came from. Bootstrap writes `bootstrap`, and a person may write `human`.
   `normalize` writes `unknown` on an item that has no `origin:` line, and a
-  follow-up the loop creates (loop §5) gets `loop from <parent id>`. Any
-  other value is `invalid-origin`: the item is parked, and every id in the
-  value still counts as a parent for blockers.
+  follow-up the loop creates (loop §5, `level3.md`) gets
+  `loop from <parent id>`. Any other value is `invalid-origin`: the item is
+  parked, and every id in the value still counts as a parent for blockers.
 - `class:` ∈ `mechanical | hard | high-stakes | unclassified`, written in
   the `## Now` and `## Backlog` header (` · class: <class>`), not as a
   sub-bullet. §4 appends a one-line reason after the class.
@@ -166,21 +166,21 @@ never read.
   - `waiting-infra` parks an item after an infra incident, such as Codex being
     unavailable. A human clears it.
 - `blocked-by:` `—`, or one item's id: the item waits until that item is
-  finished (loop §3). Any other value parks the item: a title
+  finished (loop §3, `picking.md`). Any other value parks the item: a title
   (`title-blocker`; `## Last run` names the candidate id), an id that no
   item and no ledger row carries (`unknown-blocker`), or the item's own id
   (`self-blocker`). For `blocked-by:` and `status:`, an empty value, `—`,
   `-`, `--`, `none` and `n/a` (any case) mean none.
 - `notes:` the context the work needs.
 - `decision:` the owner's decisions, copied from `## Needs decision` by the
-  release (loop §3). A later decision is appended as `<old>; then: <new>`,
-  so no decision is ever erased.
+  release (loop §3, `picking.md`). A later decision is appended as
+  `<old>; then: <new>`, so no decision is ever erased.
 - `attempts:` the number of attempts, written in the `## Blocked` header
   (` · attempts: <n>`).
 - `recovery:` (optional) the full sha of the recovery bundle that holds the
-  item's last saved attempt, after a `codex` or `pause` save (loop §7, Save
-  and reset), or its second failed attempt in `## Blocked`. A later save
-  replaces it.
+  item's last saved attempt, after a `codex` or `pause` save (loop §7,
+  `failure.md`, Save and reset), or its second failed attempt in
+  `## Blocked`. A later save replaces it.
 - `decided:` reserved for the owner's signed decision stamp (a later
   stage). The loop never writes it, and moves it with the item.
 - `no-change-ok:` reserved (a later stage). The loop never writes it, and
@@ -200,11 +200,11 @@ header and every field line under it. It keeps the 20 most recent items,
 and below them only drops an item whose id the ledger already records
 done. The ledger keeps each completed item's id and origin (its own entry,
 or a later entry's `done_items`), so a blocker still reads a trimmed item
-(loop §3); an item the ledger does not record yet stays in `## Done`, its
-only record. So does an item whose origin lines are not exactly one
-well-formed `origin:` field (a capitalized `Origin:`, a second origin line,
-an `invalid-origin` value): the ledger keeps one parsed origin, so the
-block stays the only full record of its parents.
+(loop §3, `picking.md`); an item the ledger does not record yet stays in
+`## Done`, its only record. So does an item whose origin lines are not
+exactly one well-formed `origin:` field (a capitalized `Origin:`, a second
+origin line, an `invalid-origin` value): the ledger keeps one parsed
+origin, so the block stays the only full record of its parents.
 
 **`## Blocked` item format:**
 
@@ -219,8 +219,8 @@ block stays the only full record of its parents.
 `## Blocked` is an open section: its items keep every field, count for
 title uniqueness, and keep their dependents waiting. The `recovery:`
 sub-bullet names the recovery bundle that holds the second attempt's work
-(loop §7, Save and reset); it is `none` when that save found nothing to
-keep.
+(loop §7, `failure.md`, Save and reset); it is `none` when that save
+found nothing to keep.
 
 **`## Needs decision` entry format:**
 
@@ -246,21 +246,21 @@ line, with these fields:
 
 The heading's first token is the item's id; the title after ` · ` is for
 display. Entries are keyed by id: the loop replaces an entry with the same
-id and never appends a second one, and the release (loop §3) finds the item
-by it. A heading whose first token is not an id is a legacy entry: the
-release skips it, `## Last run` names the candidate id, and a person
-rewrites the heading as `### <id> · <title>`. Until then the open item
-whose title the heading names is parked as `legacy-entry` too, so it never
-runs without that decision. The decision is the text
-after `**Decision:**` on its line, plus the entry's following lines up to
-the next line that starts with `**`.
+id and never appends a second one, and the release (loop §3,
+`picking.md`) finds the item by it. A heading whose first token is not an id
+is a legacy entry: the release skips it, `## Last run` names the candidate
+id, and a person rewrites the heading as `### <id> · <title>`. Until then
+the open item whose title the heading names is parked as `legacy-entry` too,
+so it never runs without that decision. The decision is the text after
+`**Decision:**` on its line, plus the entry's following lines up to the next
+line that starts with `**`.
 
 The `**Recovery:**` line binds the entry to the recovery bundle that holds
-the delegate's work (loop §7, Save and reset): the save's `sha`, its `base`
-commit, its `item_digest` (the item's digest, from `--item <id>`) and its
-`scope.digest`. When the save found nothing (`empty`), the sha's place holds
-`none`, and the `base`, `item_digest` and `scope.digest` are the ones the
-empty answer carries.
+the delegate's work (loop §7, `failure.md`, Save and reset): the save's
+`sha`, its `base` commit, its `item_digest` (the item's digest, from
+`--item <id>`) and its `scope.digest`. When the save found nothing
+(`empty`), the sha's place holds `none`, and the `base`, `item_digest` and
+`scope.digest` are the ones the empty answer carries.
 
 Every field a seat or a delegate wrote (the seat lines, the questions and the
 suggested defaults) is passed through `loop-text.mjs line` before it is
@@ -268,17 +268,17 @@ written (loop Safety rails). No field can break the entry into new lines or
 forge a `**Decision:**` line or an item field.
 
 A warning line is added to the entry when the project tree changed during a
-panel (loop §5):
+panel (loop §5, `high-stakes.md`):
 `**WARNING:** project content changed during the panel — check before unpausing.`
 
 Briefs and subjects are named by the item's id: panel briefs live in
 `.tech-lead/briefs/<id>-panel.md`, Codex briefs in
 `.tech-lead/briefs/<id>-codex.md`, commit subjects in
 `.tech-lead/briefs/<id>.subject`, and an analysis's follow-up in
-`.tech-lead/briefs/<id>-followup.json` (loop §5). The briefs folder is
-gitignored at bootstrap, and the loop never commits it. The dependency
-marker is `.git/tech-lead-deps.ok` inside the loop's clone, and only
-`loop-clone.mjs` writes it (`clone.md` step 5).
+`.tech-lead/briefs/<id>-followup.json` (loop §5, `level3.md`). The briefs
+folder is gitignored at bootstrap, and the loop never commits it. The
+dependency marker is `.git/tech-lead-deps.ok` inside the loop's clone, and
+only `loop-clone.mjs` writes it (`clone.md` step 5).
 
 ## LEDGER.jsonl entry schema
 
@@ -319,7 +319,7 @@ generation over while it ran). Those are the only exceptions:
   `title`, `id` and `origin` that `pick` printed (loop §3 step 2, §8);
   all three are null when nothing was picked. Older
   entries without `item_id` remain valid, but only an entry with one can
-  finish a blocker (loop §3).
+  finish a blocker (loop §3, `picking.md`).
 - `commits` holds only this firing's own commits. A commit an interrupted
   firing made goes into `recovered.commits`.
 - `bundles` lists the delivery bundles this firing wrote: its commit's

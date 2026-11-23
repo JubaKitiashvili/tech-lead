@@ -1159,7 +1159,8 @@ skills/
   quick/               /tech-lead:quick, the draft-PR lane
   panel/               /tech-lead:panel
   research/            /tech-lead:research
-  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, clone contract)
+  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, clone contract,
+                       recovery actions, pick rules, level 3, high-stakes, failure path)
 workflows/
   panel.js     tech-lead:panel-seats     (named apart from the /tech-lead:panel skill)
   fanout.js    tech-lead:fanout
