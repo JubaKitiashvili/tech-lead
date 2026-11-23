@@ -166,6 +166,30 @@ test('groupAlive sees a live group, finds none for a pid that leads no group, an
   assert.ok(await waitFor(() => groupAlive(pgid) === false))
 })
 
+// perl's child leads a group of its own and exits, and perl never waits for it: the group
+// holds one zombie. darwin answers EPERM for it, as it does for the group it still records
+// for some milliseconds after the last member is reaped.
+test('on darwin a group that answers EPERM is alive only while the process table lists a member', { skip: process.platform !== 'darwin' }, async t => {
+  const perl = spawn('/usr/bin/perl', ['-e', '$p = fork; if (!$p) { setpgrp(0, 0); exit 0 } $| = 1; print "$p\\n"; sleep 60'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  t.after(() => { perl.kill('SIGKILL') })
+  const pgid = await new Promise(resolve => perl.stdout.once('data', d => resolve(Number(String(d).trim()))))
+  assert.ok(pgid > 1, `perl printed ${pgid}`)
+  assert.ok(await waitFor(() => startToken(pgid).state === 'gone'), 'the child never became a zombie')
+  assert.throws(() => process.kill(-pgid, 0), { code: 'EPERM' })
+  assert.equal(groupAlive(pgid), true)
+  // The same EPERM with no process listed in the group: nothing is left of it.
+  const runs = fakePs(t, 'echo "    1"; echo 77')
+  assert.equal(groupAlive(pgid), false)
+  assert.equal(runs(), 1)
+  // A listing that cannot be had or read is unknown, never gone.
+  fakePs(t, 'exit 1')
+  assert.equal(groupAlive(pgid), null)
+  fakePs(t, 'echo PGID; echo 77')
+  assert.equal(groupAlive(pgid), null)
+  fakePs(t, ':')
+  assert.equal(groupAlive(pgid), null)
+})
+
 test('killGroup stops a group whose grandchild ignores SIGTERM', async t => {
   const file = path.join(tmp(t), 'grandchild.pid')
   // The grandchild writes its own pid only once its trap is set, so the precondition below
