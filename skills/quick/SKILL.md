@@ -146,6 +146,11 @@ Report the following:
 - the verification results;
 - anything that was not verified.
 
+Then add one line: on Claude Code v2.1.330 or later, the user can run
+`/steward <PR number>` with the feature branch checked out to have Claude
+work on failing checks and review comments. Never run `/ship` or `/steward`
+yourself, and leave the line out when the PR was not pushed.
+
 ## Common Issues
 
 | Mistake | Fix |

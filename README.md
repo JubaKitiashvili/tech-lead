@@ -372,6 +372,12 @@ sends the call again with a model. Agent types that may pin their own model
 (the plugin's, another plugin's, your own) and calls made inside a subagent
 pass. The script is `scripts/hooks/agent-pin.mjs`.
 
+The hook saves cost; it is not a safety control. Like any hook it lets the
+call through if its script fails or times out, and it does not run where
+plugin hooks are turned off (the managed setting `allowManagedHooksOnly`) or
+in a `claude plugin eval` run. There the written rule in the skill is all
+that asks for a model.
+
 **Resume notice.** Another hook from the same frontmatter (`SessionStart`,
 matcher `compact`) runs after a compaction. If the project has an unfinished
 plan file, the lead is told where it is, how far the run got, and the command
@@ -521,6 +527,13 @@ The fast lane for a small change that ships as a draft PR.
   - It pushes only when you typed the command or asked for a PR. Otherwise it
     stops after the local commit and asks.
   - It never force-pushes, pushes to the base branch, or merges.
+- **After the PR.** quick stops once the draft PR is open. On Claude Code
+  v2.1.330 or later, `/steward <PR number>` (with the feature branch checked
+  out) has Claude work on failing checks and review comments from there; the
+  report says so. `/ship` is not a replacement for quick: it opens no draft
+  PR and, in a public repository, does not commit uncommitted changes. A
+  `/steward` watch ends when a `/loop` starts in the same session, so do not
+  run it in the session that runs `/tech-lead:loop`.
 
 ### `/tech-lead:panel`
 
