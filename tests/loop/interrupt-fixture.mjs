@@ -183,15 +183,29 @@ export function start(fx, o = {}) {
   let buf = ''
   let stderr = ''
   let exit = null
+  // Arrival time of each event, by index: kept beside events, which tests compare whole.
+  const arrived = []
+  const t0 = Date.now()
+  // The exit can be seen before the driver's last lines are read. The firing is over for a
+  // waiting test only once its stdout has ended too (or 2 s after the exit, should a process
+  // the firing left behind still hold the pipe).
+  let outEnded = false
+  let exitAt = null
+  const drained = () => exit !== null && (outEnded || Date.now() - exitAt > 2000)
   // Set once the driver's group is known to be empty: no later kill can then be aimed at it.
   let disarmed = false
   c.stdout.on('data', d => {
     buf += d
-    for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) events.push(JSON.parse(buf.slice(0, i)))
+    for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+      events.push(JSON.parse(buf.slice(0, i)))
+      arrived.push(Date.now() - t0)
+    }
   })
+  c.stdout.on('end', () => { outEnded = true })
   c.stderr.on('data', d => { stderr += d })
   const exited = new Promise(resolve => c.on('exit', (code, signal) => {
     exit = { code, signal }
+    exitAt = Date.now()
     if (groupAlive(c.pid) === false) disarmed = true
     resolve(exit)
   }))
@@ -206,10 +220,27 @@ export function start(fx, o = {}) {
     c.stdout.destroy()
     c.stderr.destroy()
   })
-  const describe = () => `events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
+  // When each event arrived, in ms since the firing started, and how long ago that start was:
+  // a firing that stalls shows its last event and how long nothing has followed it.
+  const timeline = () => `timeline ${events.map((e, i) => `${e.event}@${arrived[i]}`).join(' ')} now@${Date.now() - t0}`
+  // The firing's processes right now (the driver and everything under it): a firing that
+  // stalls is waiting on one of them, and this names it. Diagnostic only, so a failed ps is text.
+  const running = () => {
+    const r = spawnSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat=,etime=,command='], { encoding: 'utf8', timeout: 10000 })
+    if (r.error || r.status !== 0) return `running: ps failed (${r.error ? r.error.message : r.status})`
+    const rows = r.stdout.split('\n').map(l => l.trim().split(/\s+/)).filter(p => p.length >= 6)
+    const keep = new Set([String(c.pid)])
+    for (let grew = true; grew;) {
+      grew = false
+      for (const p of rows) if (!keep.has(p[0]) && (keep.has(p[1]) || p[2] === String(c.pid))) { keep.add(p[0]); grew = true }
+    }
+    return `running ${rows.filter(p => keep.has(p[0])).map(p => `[pid ${p[0]} ppid ${p[1]} pgid ${p[2]} ${p[3]} ${p[4]} ${p.slice(5).join(' ').slice(0, 160)}]`).join(' ')}`
+  }
+  const describe = () => `${timeline()}, events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
   const event = async (name, ms = 60000) => {
-    const e = await waitFor(() => events.find(x => x.event === name) || (exit && 'exit'), ms)
-    assert.ok(e && e !== 'exit', `no ${name} event from the firing (${describe()})`)
+    const e = await waitFor(() => events.find(x => x.event === name) || (drained() && 'exit'), ms)
+    // The text is built only on a failure: running() starts ps, which blocks this process.
+    if (!e || e === 'exit') assert.fail(`no ${name} event from the firing (${exit ? '' : `${running()}, `}${describe()})`)
     return e
   }
   const kill = async () => {
