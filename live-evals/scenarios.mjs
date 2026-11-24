@@ -128,10 +128,15 @@ const attemptFailedSaves = f => {
 
 // SKILL.md section 7: read failure.md before acting on an attempt failure. The first act is
 // the retry, so the read comes before the second dispatch.
+// A Bash read may hold the directory in a shell variable: T=<root>/skills/loop/references; cat $T/failure.md
+function bashNamesFailureMd(cmd) {
+  return cmd.includes(FAILURE_MD) || (cmd.includes(path.posix.dirname(FAILURE_MD)) && /\/failure\.md\b/.test(cmd))
+}
+
 function readFailureFirst(f) {
   const lead = f.calls.filter(c => c.lead)
   const read = lead.findIndex(c => (c.name === 'Read' && String(c.input.file_path || '').endsWith(FAILURE_MD))
-    || (c.name === 'Bash' && String(c.input.command || '').includes(FAILURE_MD)))
+    || (c.name === 'Bash' && bashNamesFailureMd(String(c.input.command || ''))))
   if (read < 0) return `${FAILURE_MD} was never read`
   const agentsAt = lead.map((c, k) => (c.name === 'Agent' ? k : -1)).filter(k => k >= 0)
   return agentsAt.length < 2 || read < agentsAt[1] ? null : `${FAILURE_MD} was first read after the retry was dispatched`

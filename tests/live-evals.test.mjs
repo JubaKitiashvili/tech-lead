@@ -116,13 +116,15 @@ function failedFiring(t, { read = 'first', agents = 2 } = {}) {
   lock('release', r.P, '--generation', '1')
   const call = (name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } })
   const bash = command => call('Bash', { command })
-  const readIt = call('Read', { file_path: path.join(ROOT, 'skills/loop/references/failure.md') })
+  const readIt = read === 'shell-variable'
+    ? bash(`T=${path.join(ROOT, 'skills/loop/references')}; cat $T/clone.md $T/failure.md`)
+    : call('Read', { file_path: path.join(ROOT, 'skills/loop/references/failure.md') })
   const attempt = () => [bash(`node ${LOCK} dispatch open ${r.P} --generation 1 --label fast-worker`),
     call('Agent', { subagent_type: 'tech-lead:fast-worker' }), bash(`node ${LOCK} dispatch close ${r.P} --generation 1 --id d1`)]
   r.events = [
     bash(`node ${LOCK} acquire ${r.P}`),
     ...attempt(),
-    ...(read === 'first' ? [readIt] : []),
+    ...(read === 'first' || read === 'shell-variable' ? [readIt] : []),
     ...(agents === 2 ? attempt() : []),
     ...(read === 'late' ? [readIt] : []),
     bash(`node ${path.join(ROOT, 'scripts/reflex-bundle.mjs')} save ${r.P} --generation 1 --why attempt-failed --item tl-7k2m9q4r`),
@@ -135,6 +137,11 @@ function failedFiring(t, { read = 'first', agents = 2 } = {}) {
 
 test('live-evals: a failing-l2 firing that retried, saved, reset and blocked the item passes every check', t => {
   const r = failedFiring(t)
+  assert.deepEqual(failed(grade(r.run, 'failing-l2')), [])
+})
+
+test('live-evals: failing-l2 accepts failure.md read through a shell variable that holds the references directory', t => {
+  const r = failedFiring(t, { read: 'shell-variable' })
   assert.deepEqual(failed(grade(r.run, 'failing-l2')), [])
 })
 
