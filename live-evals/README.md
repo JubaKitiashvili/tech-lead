@@ -20,6 +20,7 @@ runs in `scripts/check.mjs`, in the test suite or in CI.
 | `report-only-l1` | level 1, one mechanical item | dispatches nothing, writes the would-do plan, returns the item to the backlog |
 | `stale-now` | level 1, the item left in `## Now` by an interrupted firing | puts the item back once, then handles it as `report-only-l1` |
 | `mechanical-l2` | level 2, one mechanical item | sends it to `fast-worker` in the clone, verifies, commits there, moves the item to `## Done` |
+| `failing-l2` | `mechanical-l2` with a second `verify:` command, `/usr/bin/false`, that always fails | retries once, saves the work as `attempt-failed`, resets the clone, moves the item to `## Blocked` and records `failed` |
 
 Every scenario also checks what holds for any firing: exactly one ledger
 entry, the lock released with no child record left, one dispatch record per
@@ -33,6 +34,14 @@ the clone, carries the `Tech-Lead-Item` and `Tech-Lead-Generation` trailers
 and no Co-Authored-By line, touches only `src/` and `test/`, has a delivery
 bundle, and its tree passes the project's tests and a probe of the new
 function.
+
+`failing-l2` checks the failure path (`skills/loop/references/failure.md`):
+`failure.md` read before the retry is dispatched, exactly two `fast-worker`
+calls, the ledger's `failed` with `verify: "fail"` and no commits, one
+`attempt-failed` save whose 64-hex sha is the item's `recovery:` sub-bullet
+and whose first 12 digits `## Last run` names, the item once in `## Blocked`
+with `attempts: 2`, a reason and its field lines, no commit in the clone and
+a clean clone at the base, and `LOOP.md` still unpaused.
 
 ## Running
 
@@ -59,7 +68,7 @@ under test. If another copy of tech-lead is installed, the check
 ## Limits
 
 - One run per scenario shows that the path works once. It gives no rate.
-- Not covered: a failed attempt and the retry, a delegate-flagged item, the
+- Not covered: a retry that passes, a delegate-flagged item, the
   panel, the triage check (the fixtures set `triage: off`), Codex at level 3,
   two firings racing for the lock, and a firing interrupted mid-run.
 - The runs are headless. A `/loop` or cron runner in a live session may behave

@@ -17,7 +17,8 @@ const item = ({ cls = 'mechanical · fully specified, no design decision' } = {}
 const state = ({ now = '(empty)\n', backlog = '(empty)\n' } = {}) =>
   `# Math demo — Loop State\n\n## Now\n${now}\n## Backlog\n${backlog}\n## Needs decision\n(empty)\n\n## Blocked\n(empty)\n\n## Done\n(empty)\n\n## Last run\n(never run)\n`
 
-const loopMd = ({ level = 2, paused = false } = {}) => `---
+// `verify` is LOOP.md's verify: list. failing-l2 adds a command that can never pass.
+const loopMd = ({ level = 2, paused = false, verify = ['node --test'] } = {}) => `---
 pattern: backlog-executor
 level: ${level}
 paused: ${paused}
@@ -28,7 +29,7 @@ base: main
 triage: off
 codex_timeout_min: 45
 verify:
-  - node --test
+${verify.map(c => `  - ${c}`).join('\n')}
 scope:
   - ./
 push: never
@@ -116,6 +117,74 @@ function workIsRight(f) {
   }
 }
 
+// ---- failure path (skills/loop/references/failure.md) -----------------------------------
+
+const HEX64 = /^[0-9a-f]{64}$/
+const FAILURE_MD = 'skills/loop/references/failure.md'
+const attemptFailedSaves = f => {
+  const e = f.ledger[0]
+  return (e && Array.isArray(e.saves) ? e.saves : []).filter(s => s && s.why === 'attempt-failed')
+}
+
+// SKILL.md section 7: read failure.md before acting on an attempt failure. The first act is
+// the retry, so the read comes before the second dispatch.
+// A Bash read may hold the directory in a shell variable: T=<root>/skills/loop/references; cat $T/failure.md
+function bashNamesFailureMd(cmd) {
+  return cmd.includes(FAILURE_MD) || (cmd.includes(path.posix.dirname(FAILURE_MD)) && /\/failure\.md\b/.test(cmd))
+}
+
+function readFailureFirst(f) {
+  const lead = f.calls.filter(c => c.lead)
+  const read = lead.findIndex(c => (c.name === 'Read' && String(c.input.file_path || '').endsWith(FAILURE_MD))
+    || (c.name === 'Bash' && bashNamesFailureMd(String(c.input.command || ''))))
+  if (read < 0) return `${FAILURE_MD} was never read`
+  const agentsAt = lead.map((c, k) => (c.name === 'Agent' ? k : -1)).filter(k => k >= 0)
+  return agentsAt.length < 2 || read < agentsAt[1] ? null : `${FAILURE_MD} was first read after the retry was dispatched`
+}
+
+// Save and reset, step 1 and 2: one attempt-failed save, its sha on the item's recovery:
+// sub-bullet and its first 12 digits in ## Last run.
+function oneAttemptFailedSave(f) {
+  const saves = attemptFailedSaves(f)
+  if (saves.length !== 1) return `${saves.length} attempt-failed saves in the ledger entry, wanted 1 (${JSON.stringify(f.ledger[0] && f.ledger[0].saves)})`
+  const s = saves[0]
+  if (!HEX64.test(String(s.sha))) return `the attempt-failed save's sha is ${JSON.stringify(s.sha)}, wanted 64 hex digits`
+  if (!Number.isInteger(s.files) || s.files < 1 || !Number.isInteger(s.out_of_scope)) return `the save's counts are files ${s.files}, out_of_scope ${s.out_of_scope}`
+  const it = f.state.items.find(i => i.title === TITLE)
+  if (!it || it.recovery !== s.sha) return `the item's recovery: (${it && it.recovery}) is not the save's sha (${s.sha})`
+  if (!(sectionText(f.stateText, 'Last run') || '').includes(s.sha.slice(0, 12))) return '## Last run does not name the saved bundle'
+  return null
+}
+
+// Nothing was committed, and the reset left the clone clean at the base: a fresh fixture's
+// loop branch starts at the project's HEAD (clone.md step 1).
+function noCommitInClone(f) {
+  const e = f.ledger[0]
+  if (e && Array.isArray(e.commits) && e.commits.length) return `the ledger entry lists commits ${JSON.stringify(e.commits)}`
+  if (!f.W || !fs.existsSync(f.W)) return 'there is no clone'
+  const base = f.before.snapshot.head
+  try {
+    const ahead = git(f.W, 'for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/heads/')
+      .split('\n').filter(Boolean).filter(l => !l.endsWith(` ${base}`))
+    if (ahead.length) return `branches in the clone moved past the base: ${ahead.join(', ')}`
+    if (git(f.W, 'rev-parse', 'HEAD') !== base) return 'the clone\'s HEAD is not the base'
+    if (git(f.W, 'log', '--all', '--format=%H', '--grep=Tech-Lead-Item:')) return 'a commit in the clone carries a Tech-Lead-Item trailer'
+  } catch (err) {
+    return `the clone cannot be read: ${String(err.message).split('\n')[0]}`
+  }
+  return null
+}
+
+function cloneClean(f) {
+  if (!f.W || !fs.existsSync(f.W)) return 'there is no clone'
+  try {
+    const dirty = execFileSync('git', ['-C', f.W, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+    return dirty.length ? `the clone is not clean: ${dirty.slice(0, 5).join(' | ')}` : null
+  } catch (err) {
+    return `the clone cannot be read: ${String(err.message).split('\n')[0]}`
+  }
+}
+
 export const SCENARIOS = {
   'mechanical-l2': {
     about: 'Level 2, one mechanical item: the fast-worker does it in the clone, verify passes, the loop commits there and moves the item to Done.',
@@ -128,6 +197,27 @@ export const SCENARIOS = {
       'item-in-done': itemIn('Done', i => (i.id ? null : 'the item has no id')),
       'commit-in-clone': commitInClone,
       'work-is-right': workIsRight,
+    },
+  },
+  'failing-l2': {
+    about: 'mechanical-l2 with a verify command that always fails: the loop retries once, saves the work as attempt-failed, resets the clone and blocks the item.',
+    loop: loopMd({ level: 2, verify: ['node --test', '/usr/bin/false'] }),
+    state: state({ backlog: item() }),
+    checks: {
+      'ledger-failed': f => outcome('failed')(f) || (f.ledger[0].verify === 'fail' ? null : `verify is ${f.ledger[0].verify}`),
+      'read-failure-md-first': readFailureFirst,
+      'two-fast-workers': agents(2, 2, 'tech-lead:fast-worker'),
+      'no-workflow': noWorkflow,
+      'item-blocked': itemIn('Blocked', i => (!i.id ? 'the item has no id'
+        : i.attempts !== '2' ? `attempts is ${i.attempts}`
+          : !i.reason ? 'the ## Blocked header has no reason'
+            : !HEX64.test(i.recovery || '') ? `recovery: is ${JSON.stringify(i.recovery)}, wanted 64 hex digits`
+              : i.origin !== 'human' || !(i.notes || '').includes('export function clamp') ? 'the item lost a field line'
+                : null)),
+      'one-attempt-failed-save': oneAttemptFailedSave,
+      'no-commit-in-clone': noCommitInClone,
+      'clone-clean': cloneClean,
+      'not-paused': f => (/^paused:\s*false\b/m.test(f.loopText) ? null : 'LOOP.md is paused'),
     },
   },
   'report-only-l1': {

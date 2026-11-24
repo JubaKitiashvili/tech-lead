@@ -27,6 +27,19 @@ scripts and their output, the loop's work area under `~/.cache/tech-lead/`,
 the checks, the tests and the evals. A higher minimum Claude Code version is
 a minor release, named in its entry.
 
+## 1.0.1 — 2026-11-24
+
+- The loop skill loads less on every firing. `skills/loop/SKILL.md` went
+  from 59,205 to 41,671 bytes: the recovery actions, the picking rules, the
+  level 3 branches, the high-stakes panel steps and the failure path moved
+  word for word into `skills/loop/references/`, and the skill reads each
+  file only when a firing reaches that branch. No behaviour changed.
+- A new check keeps every reference file named in the skill, and every
+  named reference present.
+- A new live scenario, `failing-l2`, runs a firing whose verification can
+  never pass and checks the retry, the saved bundle, the reset and the
+  Blocked item. All six live scenarios pass on Opus with the split skill.
+
 ## 1.0.0 — 2026-11-24
 
 The first stable release. Nothing in the protected surface changed since

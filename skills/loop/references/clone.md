@@ -1,8 +1,9 @@
 # Prepare the Loop Clone
 
 Run this once per firing, before the first write-capable dispatch (the
-fast-worker path and the L3 Codex path). A §7 retry keeps its attempt: it
-never prepares the clone again (`prepare` refuses with `attempt-open`).
+fast-worker path and the L3 Codex path). A §7 retry (`failure.md`) keeps
+its attempt: it never prepares the clone again (`prepare` refuses with
+`attempt-open`).
 
 `<P>` is the absolute project path, `<S>` = `<P>/.tech-lead`, `<T>` is the
 plugin root, `<N>` is the firing's lock generation, and `<W>` is the clone
@@ -67,7 +68,7 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
    the pick put the item there, loop §3): `commit` writes that id in the
    `Tech-Lead-Item:` trailer, and the next firing's recovery planner
    finishes an interrupted commit only for that same item (loop §1 step 5,
-   `finish-commit`).
+   `finish-commit` in `recovery.md`).
 2. **Record what `prepare` did** (exit 0, `"state": "ready"`). In
    `## Last run`, note:
    - `created: true`: "created the clone", and each `adopted` branch;
@@ -169,7 +170,7 @@ JSON line. Exit 3 with `"state": "not-holder"` is a lost lock (loop §1 step
 
 Delegates, Codex and verify commands run untrusted code in `<W>`. Check the
 clone after each of them: after every dispatch (the fast-worker, each §7
-retry) and after every quiet Codex quiesce (loop §5),
+retry) and after every quiet Codex quiesce (loop §5, `level3.md`),
 
 ```
 node <T>/scripts/loop-clone.mjs check <P> --generation <N> --after dispatch
@@ -212,7 +213,7 @@ owner's fix for each note.
 | Command | `state` (exit 3) | What the loop does |
 |---|---|---|
 | any | `not-holder` | Lost lock (loop §1 step 3). `commit`, `bundle` and `close` also answer it when the lock is lost while they write a delivery bundle, never as a `bundleError`. The bundle may then already be published without its sidecar (the `.json` beside it is missing or names an older tip); the next clone preparation regenerates both |
-| `prepare` | `not-quiet` | A Codex process may still write into `<W>`. Pause, note "codex not quiet", with the unpause check from loop §5 step 5 |
+| `prepare` | `not-quiet` | A Codex process may still write into `<W>`. Pause, note "codex not quiet", with the unpause check from loop §5 step 5 (`level3.md`, the Codex branch) |
 | `prepare` | `busy` | A process runs in `<W>` (`procs`, never signalled). Pause, note "clone busy", with the unpause check "set `paused: false` once none of these processes runs" |
 | `prepare`, `deps`, `check`, `commit` | `clone-invalid` | `<W>` is not a clone the loop can trust (`problems`: for example a key in its config, or a git storage path such as `.git/objects` replaced by a symbolic link; also `<W>` itself or a folder of the work area such as `patches/`, `run/` or `out/` being a symbolic link), or it changed that way while the helper ran. Pause, note "clone invalid" |
 | `prepare`, `check --after deps` | `tampered` | A ref or HEAD in `<W>` changed since the run record (no dispatch has run yet, so there is nothing of this attempt to save). Pause, note "clone tampered" |
@@ -228,9 +229,9 @@ owner's fix for each note.
 | `check` | `no-rules` | Step 5 did not run. Pause, note "clone no-rules" |
 | `check --after deps` | `deps-dirty` | Step 5 |
 | `check` | `unsavable` | A path no bundle can hold (`paths`: a nested repository, a gitlink moved to another commit, a special or unreadable file). Pause, note "clone unsavable" |
-| `check --after dispatch` or `verify`, `commit` | `tampered` | Something changed the clone outside its work tree (config, refs, HEAD). Save and reset with `--why pause` (loop §7), then pause, note "clone tampered" |
+| `check --after dispatch` or `verify`, `commit` | `tampered` | Something changed the clone outside its work tree (config, refs, HEAD). Save and reset with `--why pause` (loop §7, `failure.md`), then pause, note "clone tampered" |
 | `commit` | `work-changed` | The work changed after the last `check`. Save and reset with `--why pause`, then pause, note "work changed" |
-| `commit` | `out-of-scope`, `commit-failed` | An attempt failure (loop §7), with the `detail` as the failure excerpt |
+| `commit` | `out-of-scope`, `commit-failed` | An attempt failure (loop §7, `failure.md`), with the `detail` as the failure excerpt |
 | `bundle` | any other (`unvetted`, `clone-invalid`, `infra`) | Note it in `## Last run`; nothing else |
 | `close` | any other (`corrupt`, `clone-invalid`, `infra`) | Only the summary names it (loop §8) |
 
@@ -238,8 +239,8 @@ Any other exit 3 from `prepare`, `deps`, `check` or `commit` is a pause too,
 note "clone <state>". Exit 2 (`"state": "error"`) from them is a pause too,
 note "clone error". From `bundle` or `close` it only goes into
 `## Last run` or the summary. `reflex-bundle.mjs save` and `reset` answers
-follow loop §7's Save and reset (a save refused `head-moved`, HEAD no longer
-at the attempt's base, is a failed save there).
+follow loop §7's Save and reset (`failure.md`; a save refused `head-moved`,
+HEAD no longer at the attempt's base, is a failed save there).
 
 ## Execution contract for every write-capable delegate
 

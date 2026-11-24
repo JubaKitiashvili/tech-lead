@@ -10,7 +10,7 @@ its context or usage:
 - Workflow scripts turn panels, fan-outs, research, and loop triage into
   typed contracts that code enforces.
 
-**Version 1.0.0.** Checked against Claude Code 2.1.321 on the Anthropic API.
+**Version 1.0.1.** Checked against Claude Code 2.1.321 on the Anthropic API.
 
 ## Contents
 
@@ -1159,7 +1159,8 @@ skills/
   quick/               /tech-lead:quick, the draft-PR lane
   panel/               /tech-lead:panel
   research/            /tech-lead:research
-  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, clone contract)
+  loop/                /tech-lead:loop, plus references/ (bootstrap, spine templates, clone contract,
+                       recovery actions, pick rules, level 3, high-stakes, failure path)
 workflows/
   panel.js     tech-lead:panel-seats     (named apart from the /tech-lead:panel skill)
   fanout.js    tech-lead:fanout

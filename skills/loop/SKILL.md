@@ -30,6 +30,13 @@ This skill executes exactly one iteration of the backlog executor.
   - clone preparation, the checks after untrusted execution, the helpers'
     refusals and the delegate contract: `references/clone.md`;
   - first run: `references/bootstrap.md`;
+  - what each recovery action means (§1 step 5): `references/recovery.md`;
+  - the pick rules (§3.1 and §3.2): `references/picking.md`;
+  - L3 `hard` items, analysis and Codex (§5): `references/level3.md`;
+  - the loop's panel steps for `high-stakes` items (§5):
+    `references/high-stakes.md`;
+  - the failure path: retry, Save and reset, pauses, Block (§7):
+    `references/failure.md`;
   - briefs: `../../references/briefing-template.md`;
   - panel: `../../references/panel-protocol.md`;
   - reflex rules: `../../references/decision-contracts.md`.
@@ -101,8 +108,8 @@ This skill executes exactly one iteration of the backlog executor.
      each `file` in `## Last run`.
    - **Dispatch records.** Bracket every Agent and Workflow dispatch of
      this firing (the triage workflow, the panel workflow or each of its
-     Agent-form seats, each delegate, a §7 retry) with a record of `<N>`.
-     Right before the call:
+     Agent-form seats, each delegate, a §7 retry in `references/failure.md`)
+     with a record of `<N>`. Right before the call:
 
      ```
      node <T>/scripts/loop-lock.mjs dispatch open <P> --generation <N> --label <agent or workflow name>
@@ -137,7 +144,8 @@ This skill executes exactly one iteration of the backlog executor.
      `## Last run`, set `paused: true`, return the item to `## Backlog`
      with its `status:` unchanged, record outcome `skipped`, note "lock
      error", and go on to §8. An `exec` error and a `loop-codex.mjs start`
-     exit 2 follow their own steps (§6, §5, `references/clone.md`).
+     exit 2 follow their own steps (§6; §5, `references/level3.md`;
+     `references/clone.md`).
 4. **Read state.**
    - `LOOP.md` (config). A missing `triage:` key means `shadow`, and a
      missing `codex_timeout_min:` means 45.
@@ -165,77 +173,11 @@ This skill executes exactly one iteration of the backlog executor.
    "recovery planner", and stop the runner. Otherwise, copy its `notes`
    into `## Last run` and take its `actions` in order. At most one of
    `clear-now`, `now-conflict`, `finish-commit` and `requeue-now` is
-   listed, and it comes first:
-   - `clear-now`: `## Now` holds one item, and an identical copy of it
-     (same id, title, notes and decision, the same `blocked-by:`,
-     `decided:` and `no-change-ok:` lines, the same origin lines as
-     written, and every other line under the header the same; only the
-     header form and the line a move writes, such as a `status:` or
-     `recovery:` line, may differ) is in
-     `clear.section`, so an interrupted firing stopped inside a move,
-     after the insertion and before the deletion (Item edits). The other copy is the item. Apply
-     `clear.edits` in order, one Edit each (Item edits, Applying edits):
-     they delete that one block from `## Now`, never anything else there.
-     Then run
-     `node <T>/scripts/loop-items.mjs check <P> --expect <clear.expect_sha256>`,
-     and note "cleared interrupted move of <clear.id>" in `## Last run`.
-     Then confirm the other copy as a move is confirmed (Item edits, steps
-     1 and 5): `node <T>/scripts/loop-items.mjs digest <P> --item <clear.id>`,
-     then
-     `node <T>/scripts/loop-items.mjs check <P> --item <clear.id>@<clear.section>:<item_digest>`.
-   - `now-conflict`: the `## Now` item's id is carried elsewhere too, but
-     the copies are not one item moved halfway: they differ (a person
-     amended one: its title, notes or decision, `digest-differs`; its
-     `blocked-by:`, `blocked-by-differs`; an origin line,
-     `origin-differs`; its `decided:` or `no-change-ok:` line,
-     `decided-differs`, `no-change-ok-differs`; or, with none of those,
-     any other line under the header, such as a field added or changed,
-     `block-differs`), `## Now` holds another
-     block as well (`several-now-items`), the id has more than one other
-     carrier (`several-carriers`), or a line that does not read as that
-     item carries it (an `id:` line of an unparsed block, `raw-carrier`).
-     `conflict.reasons` says which, and `conflict.carriers` lists where
-     each copy is. It is an
-     item-edit incident (Item edits), named by `conflict.id` and
-     `conflict.reasons`: edit no item and keep every copy (a prerequisite
-     added to one copy included). The incident
-     ends the firing here, so the actions listed after it are not taken
-     (the next firing's planner lists them again). A person decides which
-     copy is the item (README, Troubleshooting).
-   - `finish-commit`: an interrupted firing committed the `## Now` item but
-     stopped before its bookkeeping (the planner matched the run record's
-     item id and digest, and its `## Now` line; for a record an older
-     release wrote, the line alone), and the item has no item problem (a
-     `## Now` item with one, such as a second `notes:` line the digest does
-     not read, gets `requeue-now` instead, so a person can correct it).
-     Move that item to the top
-     of `## Done` (Item edits), in its format, with `finish.sha` in the sha
-     slot (no title search); the check takes `finish.item_id` and
-     `finish.item_digest`.
-   - `requeue-now`: `## Now` holds an item, so a prior firing was
-     interrupted. Move that item back to the top of `## Backlog` (Item
-     edits), keeping its whole block, its recorded `status:` and `class:`
-     included. Fold a "recovered stale Now" note into this firing's
-     `## Last run` and into its single ledger entry. One firing, one entry.
-   - `ledger-recovered`: a commit or bundle of an interrupted firing is in
-     no ledger entry. This firing's single entry carries the planner's
-     `recovered` as its `recovered` field (its `item_id` and `item_origin`
-     included), with `action` set to the `## Now` action taken
-     (`finish-commit`, `requeue-now`, or null; null after `clear-now`).
-   - `write-bundle`: for each branch in `write_bundles`, rewrite its
-     delivery bundle:
-
-     ```
-     node <T>/scripts/loop-clone.mjs bundle <P> --generation <N> --branch <branch>
-     ```
-
-     `bundled`: add its `bundle` to the ledger entry's `bundles`. `current`:
-     nothing to do. Anything else (`unvetted`, exit 2): note it in
-     `## Last run`.
-   - `note-leftovers`: `<W>` holds work that an interrupted firing left.
-     Note it in `## Last run`. Do not touch `<W>` here: the next clone
-     preparation (`references/clone.md` step 1) saves it to a recovery
-     bundle and resets `<W>`.
+   listed, and it comes first. Before taking any action, read
+   `references/recovery.md` for what each action means (`clear-now`,
+   `now-conflict`, `finish-commit`, `requeue-now`, `ledger-recovered`,
+   `write-bundle`, `note-leftovers`); when `actions` is empty, there is
+   nothing to read.
 
 ## 2 · Gates (in order; the first hit wins; each hit appends a ledger entry)
 
@@ -283,8 +225,8 @@ them, and what to do when the helper refuses or a check does not match.
 
    Note the `minted` ids, and each of `problems` (its `kind`, `line`,
    `detail` and any `candidate` id), in `## Last run`.
-2. **Pick.** The helper applies §3.1 and §3.2 below, reading `level` from
-   `LOOP.md` itself:
+2. **Pick.** The helper applies §3.1 and §3.2 (`references/picking.md`),
+   reading `level` from `LOOP.md` itself:
 
    ```
    node <T>/scripts/loop-items.mjs pick <P>
@@ -303,7 +245,8 @@ them, and what to do when the helper refuses or a check does not match.
      Keep its `digest`: every move of this item checks it (Item edits).
      Keep its `origin` too (the item's `origin:` value as written, or null
      without one): §8's ledger entry copies it from this answer.
-     `from: "decision"` means a decision released it (§3.1).
+     `from: "decision"` means a decision released it (§3.1,
+     `references/picking.md`).
    - `"state": "dry"`: no item is eligible. Write "backlog dry" to
      `## Last run`, record outcome `skipped`, and stop the runner.
    - Either way, note each `released` id in `## Last run`, and each row of
@@ -317,66 +260,15 @@ them, and what to do when the helper refuses or a check does not match.
      ledger entry records them, and the `## Done` trim keeps them until
      then (Item edits, Trimming `## Done`).
 
-**3.1 · A decided item comes first.** A `## Needs decision` entry is decided
-when its own line that begins with `**Decision:**` holds something other
-than the template placeholder; text anywhere else in the entry never counts.
-For each decided panel or delegate-flagged entry, by the id in its heading:
+The helper applies the rules itself. A decided `## Needs decision` entry
+releases its item first (§3.1); otherwise the first eligible `## Backlog`
+item is picked (§3.2). The full rules, for explaining a `skipped` row or a
+surprising pick, are in `references/picking.md`.
 
-- The item with that id, in `## Backlog` or `## Blocked`, gets the decision
-  in its `decision:` field (after any earlier decision, as
-  `<old>; then: <new>`), its `status:` cleared, and class `hard`. A
-  `## Blocked` item moves to the top of `## Backlog`. Then every entry for
-  that id is deleted.
-- Nothing is guessed. When no open item has the id, the entry stays and
-  `skipped` names it: `orphan-entry` (no item has the id) or
-  `entry-item-done` (the item is in `## Done`). So does an entry whose id
-  more than one block carries, or a line that does not read as that item
-  (an `id:` line of an unparsed block, a capitalized `ID:`), since the
-  decision could be meant for either (`ambiguous-carrier`; the decision is
-  written into no copy). The one exception is the pair an interrupted
-  release left, the `## Blocked` item and its released copy in
-  `## Backlog`, when nothing else carries the id: the release finishes
-  that move. So does an entry with two `**Decision:**` lines (`ambiguous-decision`), or an item the release
-  cannot read (its own problem, such as `malformed-field`) or whose title
-  its `## Backlog` header would change (`ambiguous-title`). A heading
-  without an id is skipped as `legacy-entry`, with the candidate id, and
-  the open item its title names waits until a person adds the id (§3.2).
-- A released item is the pick, if it is eligible (§3.2). Otherwise it waits
-  in `## Backlog` with its status cleared, and the pick goes on with §3.2.
 - **Lower the class only by hand.** `hard` may become `mechanical` only if
   the decision fully specifies the work, with zero design decisions left:
   one Edit of the `## Now` header, before §4. Never make it `high-stakes`,
   or §5 re-panels the same item forever.
-
-**3.2 · Otherwise, the first eligible `## Backlog` item,** from the top. An
-item is eligible when all of these hold:
-
-- it has a valid id that no other item carries, and a title that no other
-  open item has (open: `## Now`, `## Backlog`, `## Blocked`);
-- it has no item problem: a malformed or doubled field, an invalid origin,
-  an ambiguous title, an origin cycle, or a `blocked-by:` that is not one
-  known id (`references/loop-templates.md`, Items);
-- no panel or delegate-flagged `## Needs decision` heading without an id
-  names its title (`legacy-entry`): that entry's decision is never
-  released, so the item waits until a person rewrites the heading as
-  `### <id> · <title>`;
-- its `status:` is `—`, or `waiting-level` and the current `level` now
-  permits its class (`mechanical` needs `level: 2`, `hard` needs
-  `level: 3`); the pick clears that status;
-- its `blocked-by:` is `—`, or the blocker is finished.
-
-A blocker is finished when all of these hold: no open item has its id; its
-id is in `## Done`, or a ledger entry records it done (`outcome` `done` with
-that `item_id`, or a `recovered` `finish-commit` with that `item_id`); and
-no open item descends from it, following `origin: loop from` links up the
-chain through open items, `## Done` items and the origins the ledger
-recorded (`## Done` is trimmed). So a done analysis item holds its
-dependents while its follow-up is open. The waiting item itself, and the
-items that descend from it, are left out of that walk: a follow-up
-blocked by its own parent runs once the parent is done. Open, for this
-test, also means an `id:` or `origin:` line under a `##` section that is
-not one of the six, and a `- [ ]` line inside `## Done` (an item unticked
-in place). A ledger entry without `item_id` never finishes a blocker.
 
 `waiting-decision` and `waiting-infra` items are never picked. A human
 clears `waiting-infra`.
@@ -416,8 +308,9 @@ includes a class set in §3.
 
 ## 5 · Execute (level × class)
 
-Every brief in this section (the fast-worker's, the deep-reasoner's,
-Codex's and the panel's) carries the item's title, its notes and, when it is
+Every brief of §5, here and in `references/level3.md` and
+`references/high-stakes.md` (the fast-worker's, the deep-reasoner's, Codex's
+and the panel's), carries the item's title, its notes and, when it is
 not empty, its decision under a label of its own (`Decision:`). The §4
 triage check gets only the title and notes. Briefs and subjects are named
 by the item's `<id>`.
@@ -451,143 +344,18 @@ by the item's `<id>`.
   - write the plan into `## Last run`;
   - mark the item `status: waiting-level`;
   - record outcome `report-only`, note "waiting-level".
-- **L3, `hard`, analysis-shaped.** Dispatch `tech-lead:deep-reasoner`,
-  bracketed by a dispatch record (§1 step 3). It is read-only, so its
-  analysis must land somewhere:
-  - Write its Recommendation and Risks into `## Last run`, through
-    `loop-text.mjs block`.
-  - If the analysis implies code changes, create one follow-up item. Write
-    its title (one line) and notes, from the analysis, as the JSON object
-    `{"title": "<title>", "notes": "<notes>"}` to
-    `<S>/briefs/<id>-followup.json` with the Write tool, where `<id>` is the
-    analysed item's id. The text never goes on a command line. Then:
-
-    ```
-    node <T>/scripts/loop-items.mjs followup <P> --parent <id> --input <S>/briefs/<id>-followup.json
-    ```
-
-    It plans a new item at the top of `## Backlog`: a fresh id,
-    `origin: loop from <id>`, `class: unclassified` (the firing that picks
-    it classifies it, §4), and the title and notes neutralized; a title
-    another open item already has gets the new id appended. Apply its
-    `edits` in order with Edit, then run
-    `node <T>/scripts/loop-items.mjs check <P> --expect <expect_sha256>`.
-    Both of its `"state": "ok"` answers are a success, and `id` names the
-    follow-up: `"reused": false` is a new follow-up, with its insertion in
-    `edits`; `"reused": true` means an interrupted firing already created
-    it, and `edits` is empty (run the check all the same). Only a refusal
-    (exit 3) or an error (exit 2) is an item-edit incident (Item edits).
-  - Move the analysed item to `## Done` with `—` in the sha slot (Item
-    edits), then trim `## Done` (Item edits, Trimming `## Done`). Record
-    outcome `done`, `commits: []`, note "analysis →
-    <follow-up id or 'no follow-up'>". While the follow-up is open, the
-    analysed item still holds every item it blocks (§3).
-- **L3, `hard`, implementation-shaped (Codex).**
-  1. Prepare the clone (`references/clone.md`).
-  2. Write the brief, including the execution contract and its
-     `JUDGMENT CALLS:` / `SKIPPED:` trailer, to `<S>/briefs/<id>-codex.md`.
-  3. **Start.** The `codex:codex-rescue` wrapper cannot pin a working
-     directory, so the loop runs Codex as a companion job through its
-     helper. Every helper call is a foreground Bash call with
-     `timeout: 600000`, and prints one JSON line:
-
-     ```
-     node <T>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <S>/briefs/<id>-codex.md --cap-min <codex_timeout_min> --project <P> --generation <N>
-     ```
-
-     - Exit 2: nothing was launched. Either `codex_timeout_min` is not a
-       number of minutes from 1 to 1440, or the lock could not register
-       the job (`"state": "error"` with a `detail`). Write an incident
-       naming the value or the `detail`, set `paused: true`, return the
-       item with its `status:` unchanged, and record outcome `skipped`,
-       note "codex_timeout_min invalid" or "codex start error".
-     - Exit 3 (`"state": "unavailable"`): Codex could not be launched (not
-       installed, a version error, or a launch whose outcome is unknown).
-       Run step 5's quiesce without `--job`. When it is quiet, check the
-       clone (`check --after dispatch`, as in step 6), return the item
-       with `status: waiting-infra`, and record outcome `skipped`, note
-       "codex unavailable".
-     - Exit 4 (`"state": "not-holder"`): the firing lost its lock (§1
-       step 3). The helper launched nothing, or quiesced the job it had
-       just launched (its `quiet` tells whether that worked).
-  4. **Wait.** Repeat while `state` is `running`. Write the printed `jobId`
-     literally into each call; shell variables do not survive between Bash
-     calls:
-
-     ```
-     node <T>/scripts/loop-codex.mjs wait <jobId> --cwd <W> --cap-min <codex_timeout_min>
-     ```
-
-     A wait call that exits non-zero, prints no JSON, or hits the Bash
-     timeout counts as `error`.
-  5. **Quiesce,** whatever the state (`completed`, `failed`, `cancelled`,
-     `cap` or `error`). No status proves Codex stopped writing: the companion
-     reports a job `cancelled` even when the interrupt failed.
-
-     ```
-     node <T>/scripts/loop-codex.mjs quiesce --cwd <W> --job <jobId>
-     ```
-
-     It cancels every Codex job active in `<W>`, shuts down `<W>`'s Codex
-     broker, and reports `"quiet": true` only when those processes are gone.
-     On `"quiet": false`, do not touch `<W>`. Write an incident to
-     `## Last run` with its `detail` and this unpause check: "run
-     `node <T>/scripts/loop-codex.mjs quiesce --cwd <W>`; set
-     `paused: false` once it prints `"quiet": true`". Set `paused: true`,
-     return the item with `status: waiting-infra`, and record outcome
-     `skipped`, note "codex not quiet".
-  6. **Outcomes,** after a quiet quiesce. First check the clone
-     (`references/clone.md`, After every untrusted execution):
-
-     ```
-     node <T>/scripts/loop-clone.mjs check <P> --generation <N> --after dispatch
-     ```
-
-     - **`final` is `completed`:** run
-       `node <T>/scripts/loop-codex.mjs result <jobId> --cwd <W>`. Its
-       `answer` is Codex's report, and `flagged: true` (the trailer is
-       missing or is not `none`) makes the item delegate-flagged. Go to §6.
-       If `result` exits 1, the report is unreadable: run §7's Save and
-       reset with `--why codex`, return the item with
-       `status: waiting-infra`, and record outcome `skipped`, note "codex
-       result unreadable".
-     - **Any other `final`:** run §7's Save and reset with `--why codex`,
-       return the item with `status: waiting-infra`, and record outcome
-       `skipped`, note "codex timeout" when the wait ended at `cap`, or
-       "codex <final>" otherwise.
-
-     Never retry while a Codex turn may still be live.
+- **L3, `hard`.** Read `references/level3.md` and follow its analysis
+  branch for an analysis-shaped item (a `tech-lead:deep-reasoner` dispatch)
+  or its Codex branch for an implementation-shaped one. The analysis branch
+  ends by moving the item to `## Done`: it never reaches §6. The Codex
+  branch goes to §6 only after a quiet quiesce and a clean
+  `check --after dispatch`. Never retry while a Codex turn may still be
+  live.
 - **Any level, `high-stakes`.** Follow `../../references/panel-protocol.md`,
-  with these loop specifics:
-  1. **Brief.** Write it to `<S>/briefs/<id>-panel.md`, with option ids.
-     Pass `briefPath` as an absolute path.
-  2. **Snapshot the project content**, excluding `.tech-lead/`.
-     `diff.autoRefreshIndex=false` keeps the snapshot from rewriting
-     `<P>/.git/index`:
-
-     ```
-     (cd <P> && { git rev-parse HEAD; git -c diff.autoRefreshIndex=false diff HEAD --binary -- . ':(exclude).tech-lead'; git ls-files -o --exclude-standard -z -- . ':(exclude).tech-lead' | xargs -0 shasum; } | shasum)
-     ```
-
-  3. **Run the seats,** each dispatch bracketed by a dispatch record (§1
-     step 3):
-     - Workflow opted in → `Workflow({name: "tech-lead:panel-seats", args:
-       {briefPath, options}})`;
-     - otherwise, or if the workflow is "not found" → the protocol's Agent
-       form.
-  4. **Upsert `## Needs decision`.** Write the synthesis using the template
-     format, headed `### <id> · <title>`, recording each seat's model and
-     the `agreement`. Each seat's line is seat-written text, so it goes
-     through `loop-text.mjs line` first (Safety rails). Replace any existing
-     entry whose heading has this item's id; never append a second one.
-  5. **Set outcomes.** Mark the item `status: waiting-decision`, and record
-     outcome `needs-decision`.
-  6. **Re-take the snapshot,** with the same command. If it differs, the
-     project changed during the panel. The cause may be a seat, or the
-     user's own concurrent edits.
-     - Put a warning in the `## Needs decision` entry and in `## Last run`.
-     - Set `paused: true`, so a human looks before the loop continues.
-     - Never revert the user's tree.
+  with the loop specifics in `references/high-stakes.md` (brief, project
+  snapshot, seats, the `## Needs decision` entry, outcomes, the second
+  snapshot). The item ends marked `status: waiting-decision`, with outcome
+  `needs-decision`.
 
   The loop never executes a high-stakes decision itself. The panel runs at
   every level, including L1.
@@ -617,7 +385,8 @@ built from the checked tree (step 4).
 1. **Delegate-flagged check (first).** It fires when the delegate reported
    any judgment call, or skipped or flagged any spec item. For Codex, that
    means `loop-codex.mjs result` reported `flagged: true`. When it fires,
-   do not verify. Run §7's **Save and reset** with `--why delegate-flagged`.
+   do not verify. Run §7's **Save and reset** (`references/failure.md`) with
+   `--why delegate-flagged`.
    Its step 2 does the rest, the entry first:
    1. Upsert a `## Needs decision` entry for the item, headed
       `### <id> · <title>` (it replaces any entry with this id), holding
@@ -630,8 +399,9 @@ built from the checked tree (step 4).
    2. Return the item to `## Backlog` with `status: waiting-decision`
       (Item edits).
 
-   Record outcome `flagged`. A human fills `Decision:`, and §3.1 releases
-   the item. The loop never answers a delegate's judgment call itself.
+   Record outcome `flagged`. A human fills `Decision:`, and §3.1
+   (`references/picking.md`) releases the item. The loop never answers a
+   delegate's judgment call itself.
 2. **Scope rail.**
    1. The touched paths come from the last `check`: `touched` is every path
       the attempt changed in `<W>` against its base (a delegate's commit is
@@ -739,98 +509,20 @@ built from the checked tree (step 4).
 
 ## 7 · Failure path
 
-**Attempt failure.** An attempt fails on a verify failure, a scope-rail
-violation, a verify run that changed the work twice, or a `commit` refused
-with `out-of-scope` or `commit-failed`.
+An attempt fails on a verify failure, a scope-rail violation, a verify run
+that changed the work twice, or a `commit` refused with `out-of-scope` or
+`commit-failed`. Read `references/failure.md` and follow it before acting
+on an attempt failure, a delegate-flagged item (§6 step 1), a Codex outcome
+that names Save and reset (§5, `references/level3.md`), or any pause. It
+holds Attempt failure, Save and reset, Touch-nothing pause and Block. In
+short:
 
-1. **First failure:** retry once with the same delegate. The retry brief is
-   the original brief plus the verbatim failure excerpt. The retry works on
-   top of the current tree, in the same attempt: never prepare the clone
-   again. Run it as the first dispatch ran (a dispatch record, or Codex's
-   start, wait and quiesce), run `check --after dispatch` once it is done,
-   then return to §6.
-2. **Second failure:** run Save and reset with `--why attempt-failed`, then
-   Block.
-
-**Save and reset** keeps an attempt's work in a recovery bundle, then
-returns `<W>` to the loop branch's tip. It is the only way the loop discards
-changes in `<W>`. The caller names `<why>`: `delegate-flagged` (§6),
-`attempt-failed` (above), `codex` (§5) or `pause` (a `check` or `commit`
-refused with `tampered` or `work-changed`).
-
-1. **Save.** One foreground Bash call with `timeout: 600000`:
-
-   ```
-   node <T>/scripts/reflex-bundle.mjs save <P> --generation <N> --why <why> --item <id>
-   ```
-
-   `<id>` is this firing's item's id (a repeated save finds the item
-   wherever step 2 put it). The save reads that item from `STATE.md` and
-   records its id and digest in the bundle; both answers print them as
-   `item_id` and `item_digest`.
-   - `"state": "saved"`: `sha` names the bundle (64 hex digits). Note
-     "saved <why> bundle <sha12> (<files> files, <out_of_scope> out of
-     scope, <hidden> hidden)" in `## Last run`, from its `counts`, and add
-     `{sha, why, files, out_of_scope}` (the counts) to the ledger entry's
-     `saves`.
-   - `"state": "empty"`: there was nothing to save. Do the caller's section
-     move with `none` in the sha's place (step 2; a `**Recovery:**` line
-     takes the empty answer's `base`, `item_digest` and `scope.digest`) and
-     skip step 3; `check` or the next clone preparation resets a dirty
-     index.
-   - Exit 3 `not-holder`: the lock was lost (§1 step 3).
-   - Any other answer (exit 3 `index-only`, `unsavable`, `too-large`,
-     `tampered`, `head-moved`, `bad-item` (no item carries `<id>`, or
-     several do), `digest-mismatch` and the like, or exit 2): reset nothing.
-     Write the `detail` (and any `paths`, `largest`, `problems` or `procs`)
-     as an incident in `## Last run`, set `paused: true`,
-     return the item to `## Backlog` with its `status:` unchanged, record
-     outcome `halted`, note "save failed", and stop the runner. The next
-     clone preparation saves the work.
-2. **Write the sha.** One Edit of `STATE.md` writes the full `sha` at the
-   caller's place, and is the first Edit of the item's move (Item edits;
-   take the move's deletion, its step 2, before this Edit):
-   the `## Needs decision` entry's `**Recovery:**` line, with the save's
-   `item_digest` (`delegate-flagged`; the entry goes in before the item
-   moves), the `recovery:` sub-bullet of the item's block as it is inserted
-   into `## Blocked` (`attempt-failed`), or as it is inserted at the top of
-   `## Backlog` (`codex`, `pause`), in place of any older one
-   (`references/loop-templates.md`). The move then inserts the item if the
-   entry went first, deletes it from `## Now`, and runs `check --item`.
-3. **Reset.**
-
-   ```
-   node <T>/scripts/reflex-bundle.mjs reset <P> --generation <N> --sha <sha>
-   ```
-
-   - `"state": "reset"`: `<W>` is clean at the loop branch's tip.
-   - `unsaved` (a path changed after the save): repeat from step 1 once;
-     the new sha takes the old one's place.
-   - `busy` (a process runs in `<W>`, listed in `procs`): reset nothing
-     more. Write an incident naming the processes, with the unpause check
-     "set `paused: false` once none of these processes runs", and set
-     `paused: true`. The next clone preparation finishes the reset.
-   - Exit 3 `not-holder`: the lock was lost (§1 step 3).
-   - A second refusal, `tampered`, `index-locked`, `index-only`, any other
-     refusal, or exit 2 (`"partial": true` included): write an incident
-     with the `detail` and set `paused: true`. The item stays where step 2
-     put it, and the next clone preparation finishes the reset from the
-     run record.
-
-**Touch-nothing pause.** These leave `<W>` exactly as it is, with no save
-and no reset: a `check` or `commit` refused with `clone-invalid`,
-`unsavable`, `index-only` or another state that `references/clone.md` pauses
-on (`infra`, `unsafe-config` and the like); a Codex quiesce with
-`"quiet": false`; an exec
-`lingering`; a lock error after a dispatch; a reset refused with `busy`; a
-failed save. Each follows its own step (`references/clone.md`, Refusals): an
-incident, `paused: true`, the item back in `## Backlog`. The next clone
-preparation saves what `<W>` holds.
-
-**Block:** move the item to `## Blocked` (Item edits), in its header form with
-`attempts: 2` and a one-line reason covering both attempts, keeping every
-field line, and with its `recovery:` sub-bullet (Save and reset, step 2).
-Record outcome `failed`, `verify: "fail"`.
+- **First failure:** retry once with the same delegate.
+- **Second failure:** run Save and reset with `--why attempt-failed`, then
+  Block, and record outcome `failed`.
+- **Save and reset** keeps an attempt's work in a recovery bundle, then
+  returns `<W>` to the loop branch's tip. It is the only way the loop
+  discards changes in `<W>`.
 
 ## 8 · Report & runner handling
 
@@ -905,7 +597,8 @@ Record outcome `failed`, `verify: "fail"`.
   was started with a higher `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`. Never
   release with a dispatch record open.
 - A Codex job is waited on with foreground `loop-codex.mjs wait` calls
-  until its state is no longer `running`, then quiesced (§5).
+  until its state is no longer `running`, then quiesced (§5,
+  `references/level3.md`).
 - Never end the turn, call ScheduleWakeup, or exit while a dispatch is
   outstanding.
 - Start Codex only through `loop-codex.mjs start`; never call the
@@ -952,9 +645,10 @@ every edit is applied in order.
   exit 0 lists the `problems` a person made in `STATE.md`; they are
   reported, not failures.
 - **Moving an item.** Every move of an item from one section to another in
-  this skill and in `references/clone.md` (a return to `## Backlog`, a move
-  to `## Done` or `## Blocked`, a recovery move) keeps the item whole and
-  inserts before it deletes:
+  this skill and in `references/clone.md`, `references/recovery.md`,
+  `references/level3.md` and `references/failure.md` (a return to
+  `## Backlog`, a move to `## Done` or `## Blocked`, a recovery move) keeps
+  the item whole and inserts before it deletes:
   1. If the item has an id, take its digest first. For this firing's item,
      it is the `digest` that `pick` printed, so a change made to the item's
      title, notes or decision during the firing fails step 5; for
@@ -986,8 +680,8 @@ every edit is applied in order.
      stay, never the deletion of the changed source. An interruption
      between the two edits leaves two copies, never none, and the next
      firing's recovery planner clears the `## Now` copy (§1 step 5,
-     `clear-now`); when the copies no longer match, it reports
-     `now-conflict` and the loop pauses with both kept.
+     `clear-now` in `references/recovery.md`); when the copies no longer
+     match, it reports `now-conflict` and the loop pauses with both kept.
   5. Confirm it:
      `node <T>/scripts/loop-items.mjs check <P> --item <id>@<section>:<digest>`,
      with the digest from step 1 and `<section>` one of `Now`, `Backlog`,
@@ -996,8 +690,8 @@ every edit is applied in order.
 
   An item with no valid id (one an older release left in `## Now`) moves
   without steps 1 and 5.
-- **Trimming `## Done`,** after a move to `## Done` (§5 analysis, §6 step
-  4), before §8's ledger append. Run
+- **Trimming `## Done`,** after a move to `## Done` (§5 analysis in
+  `references/level3.md`, §6 step 4), before §8's ledger append. Run
   `node <T>/scripts/loop-items.mjs trim <P>`, apply its `edits` in the
   printed order, one Edit each (Applying edits), then run
   `node <T>/scripts/loop-items.mjs check <P> --expect <expect_sha256>`,
@@ -1020,7 +714,8 @@ every edit is applied in order.
   edits or the move should have left), and any other exit 3 or exit 2 from
   `loop-items.mjs` (`crlf`: `STATE.md` holds a carriage return;
   `now-occupied`, `bad-sections`, `bad-parent`, `bad-input`, `no-item`, or
-  `"state": "error"`), the recovery planner's `now-conflict` (§1 step 5),
+  `"state": "error"`), the recovery planner's `now-conflict` (§1 step 5,
+  `references/recovery.md`),
   and a move's deletion that fails (Moving an item, step 4), is an
   incident. Write the printed `detail` (for `now-conflict`, the
   `conflict`; for a failed deletion, the Edit's error and the item's id),
@@ -1040,7 +735,8 @@ every edit is applied in order.
 - **No git in `<W>` except through the helpers:** `loop-clone.mjs`,
   `reflex-bundle.mjs`, and the read-only `loop-clone.mjs git` passthrough.
   Never run `git checkout -- …`, `git restore --worktree` or `git clean`
-  in `<W>`: edits there are discarded only by Save and reset (§7).
+  in `<W>`: edits there are discarded only by Save and reset (§7,
+  `references/failure.md`).
 - Files in the work area (`<W>`, run records, bundles) are created and
   removed only by the helper scripts.
 - The loop never writes `<P>`'s tree or `.git` outside `<S>`, the one-time
@@ -1057,7 +753,8 @@ every edit is applied in order.
   `block` for longer text (every line quoted with `> `). Write the raw text
   to a file under `<S>/briefs/` with the Write tool, pass the file's path,
   and copy the output verbatim. A follow-up's title and notes go in a JSON
-  file to `loop-items.mjs followup`, which neutralizes them itself (§5).
+  file to `loop-items.mjs followup`, which neutralizes them itself (§5,
+  `references/level3.md`).
   Never put foreign text on a shell command line. If `loop-text.mjs` fails,
   write `(withheld: neutralizer failed)` in place of the text. Only a human
   writes a `**Decision:**` line.
@@ -1081,6 +778,7 @@ every edit is applied in order.
 - **The firing ends at the lock:** another firing holds it, or an interrupted
   one left it. §1 lists the cases, and
   `node <T>/scripts/loop-lock.mjs status <P>` shows the holder.
-- **A task fails verification:** follow the failure path (§7).
+- **A task fails verification:** follow the failure path (§7,
+  `references/failure.md`).
 - **`loop-text.mjs` fails:** write `(withheld: neutralizer failed)` in place
   of the text (Safety rails).

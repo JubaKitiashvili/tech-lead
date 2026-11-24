@@ -178,6 +178,13 @@ test('fails when a doc tells the model to pass CronCreate durable', t => {
 const LOOP_SKILL = 'skills/loop/SKILL.md'
 // Stage 0c-2 replaced worktree.md with clone.md; the checks that read step 4 moved with it.
 const LOOP_CLONE = 'skills/loop/references/clone.md'
+// The split after 1.0.0 moved SKILL.md's branches into reference files; a mutation of moved text
+// edits the file that now holds it.
+const LOOP_RECOVERY = 'skills/loop/references/recovery.md'
+const LOOP_PICKING = 'skills/loop/references/picking.md'
+const LOOP_LEVEL3 = 'skills/loop/references/level3.md'
+const LOOP_HIGH_STAKES = 'skills/loop/references/high-stakes.md'
+const LOOP_FAILURE = 'skills/loop/references/failure.md'
 const failBlock = (stdout, name) => stdout.split(`FAIL ${name}`)[1]?.split('\nFAIL ')[0] ?? null
 
 test('fails when loop section 1 reads LOOP.md before it acquires the firing lock', t => {
@@ -249,12 +256,12 @@ test('fails when the verify or the dependency exec has no --timeout-ms, or one a
 
 test('fails and names the line when a doc starts Codex without --project and --generation', t => {
   const dir = copyRepo(t)
-  mutate(dir, LOOP_SKILL, ' --cap-min <codex_timeout_min> --project <P> --generation <N>', ' --cap-min <codex_timeout_min>')
+  mutate(dir, LOOP_LEVEL3, ' --cap-min <codex_timeout_min> --project <P> --generation <N>', ' --cap-min <codex_timeout_min>')
   append(dir, 'README.md', '\nRun `node <plugin>/scripts/loop-codex.mjs start --cwd <W> --prompt-file <f> --cap-min 45 --generation <N>`.\n')
   const r = runCheck(dir)
   assert.equal(r.status, 1)
   const block = failBlock(r.stdout, 'loop: every loop-codex.mjs start in the docs carries --project and --generation') ?? ''
-  assert.match(block, /skills\/loop\/SKILL\.md:\d+: loop-codex\.mjs start without --project, --generation/)
+  assert.match(block, /skills\/loop\/references\/level3\.md:\d+: loop-codex\.mjs start without --project, --generation/)
   assert.match(block, /README\.md:\d+: loop-codex\.mjs start without --project/)
   assert.doesNotMatch(block, /README\.md:\d+: loop-codex\.mjs start without --project, --generation/)
 })
@@ -411,12 +418,14 @@ const SAVE_CMD = 'node <T>/scripts/reflex-bundle.mjs save <P> --generation <N> -
 const RESET_CMD = 'node <T>/scripts/reflex-bundle.mjs reset <P> --generation <N> --sha <sha>'
 const CLOSE_CMD = 'node <T>/scripts/loop-clone.mjs close <P> --generation <N>'
 
-test('fails and names the line when SKILL.md or clone.md runs git -C <W>, adds a worktree, or puts <W> at <S>/worktree', t => {
-  const name = 'loop: SKILL.md and clone.md never run git -C <W>, add a worktree, or put <W> at <S>/worktree'
+test('fails and names the line when SKILL.md, clone.md or a branch reference runs git -C <W>, adds a worktree, or puts <W> at <S>/worktree', t => {
+  const name = 'loop: SKILL.md, clone.md and the branch references never run git -C <W>, add a worktree, or put <W> at <S>/worktree'
   const dir = copyRepo(t)
   append(dir, LOOP_SKILL, '\nCheck it with `git -C <W> status --porcelain=v1 -uall`.\n')
   append(dir, LOOP_CLONE, '\nIf it is missing, run `git -C <P> worktree add -b <branch> <W> <start-point>`.\n')
   append(dir, LOOP_SKILL, '\nHere `<W>` =\n`<S>/worktree`.\n')
+  // The branch references hold text that was SKILL.md's: each is read with it.
+  for (const f of [LOOP_RECOVERY, LOOP_PICKING, LOOP_LEVEL3, LOOP_HIGH_STAKES, LOOP_FAILURE]) append(dir, f, '\nRead it with `git -C <W> diff`.\n')
   // Another reference may still name the old layout (0c-4 owns bootstrap.md).
   append(dir, 'skills/loop/references/bootstrap.md', '\nThe old `git -C <W> status` is gone.\n')
   const r = runCheck(dir)
@@ -425,6 +434,7 @@ test('fails and names the line when SKILL.md or clone.md runs git -C <W>, adds a
   assert.match(block, /skills\/loop\/SKILL\.md:\d+: git -C <W>/)
   assert.match(block, /skills\/loop\/references\/clone\.md:\d+: worktree add/)
   assert.match(block, /skills\/loop\/SKILL\.md:\d+: `<W>` = `<S>\/worktree`/)
+  for (const f of ['recovery', 'picking', 'level3', 'high-stakes', 'failure']) assert.match(block, new RegExp(`skills/loop/references/${f}\\.md:\\d+: git -C <W>`), f)
   assert.doesNotMatch(block, /clone\.md:\d+: git -C <W>/)
   assert.doesNotMatch(block, /bootstrap\.md/)
 })
@@ -432,7 +442,7 @@ test('fails and names the line when SKILL.md or clone.md runs git -C <W>, adds a
 test('fails and names the line when a loop-clone.mjs or reflex-bundle.mjs command drops --generation <N>', t => {
   const name = 'loop: every loop-clone.mjs command in skills/ (but git) and every reflex-bundle.mjs save, reset and apply carries --generation <N>'
   const dir = copyRepo(t)
-  mutate(dir, LOOP_SKILL, RESET_CMD, 'node <T>/scripts/reflex-bundle.mjs reset <P> --sha <sha>')
+  mutate(dir, LOOP_FAILURE, RESET_CMD, 'node <T>/scripts/reflex-bundle.mjs reset <P> --sha <sha>')
   mutate(dir, LOOP_CLONE, 'node <T>/scripts/loop-clone.mjs deps <P> --generation <N>\n', 'node <T>/scripts/loop-clone.mjs deps <P>\n')
   append(dir, 'skills/quick/SKILL.md', '\nThen `node <T>/scripts/reflex-bundle.mjs apply <P> --generation 7 --sha <sha>`.\n')
   // The read-only passthrough and verify take no generation; a bare name in a sentence is no command.
@@ -440,7 +450,7 @@ test('fails and names the line when a loop-clone.mjs or reflex-bundle.mjs comman
   const r = runCheck(dir)
   assert.equal(r.status, 1)
   const block = failBlock(r.stdout, name) ?? ''
-  assert.match(block, /skills\/loop\/SKILL\.md:\d+: reflex-bundle\.mjs reset without --generation <N>/)
+  assert.match(block, /skills\/loop\/references\/failure\.md:\d+: reflex-bundle\.mjs reset without --generation <N>/)
   assert.match(block, /skills\/loop\/references\/clone\.md:\d+: loop-clone\.mjs deps without --generation <N>/)
   assert.match(block, /skills\/quick\/SKILL\.md:\d+: reflex-bundle\.mjs apply without --generation <N>/)
   assert.doesNotMatch(block, /bootstrap\.md/)
@@ -587,20 +597,20 @@ test('fails when clone.md\'s not-holder row promises that nothing was published,
 test('fails when the Save and reset procedure resets before it saves, or writes no sha into STATE.md between them', t => {
   const name = 'loop: the Save and reset procedure saves, writes the sha into STATE.md, then resets'
   const swapped = copyRepo(t)
-  mutate(swapped, LOOP_SKILL, SAVE_CMD, '@@SAVE@@')
-  mutate(swapped, LOOP_SKILL, RESET_CMD, SAVE_CMD)
-  mutate(swapped, LOOP_SKILL, '@@SAVE@@', RESET_CMD)
+  mutate(swapped, LOOP_FAILURE, SAVE_CMD, '@@SAVE@@')
+  mutate(swapped, LOOP_FAILURE, RESET_CMD, SAVE_CMD)
+  mutate(swapped, LOOP_FAILURE, '@@SAVE@@', RESET_CMD)
   let r = runCheck(swapped)
   assert.equal(r.status, 1)
   assert.match(failBlock(r.stdout, name) ?? '', /resets before/)
   const noEdit = copyRepo(t)
-  mutate(noEdit, LOOP_SKILL, 'One Edit of `STATE.md` writes', 'One note writes')
+  mutate(noEdit, LOOP_FAILURE, 'One Edit of `STATE.md` writes', 'One note writes')
   r = runCheck(noEdit)
   assert.equal(r.status, 1)
   assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/)
   // The Edit of STATE.md is still there, but it no longer stores the returned sha (Codex g4 #4).
   const noSha = copyRepo(t)
-  mutate(noSha, LOOP_SKILL, 'One Edit of `STATE.md` writes the full `sha` at the', 'One Edit of `STATE.md` moves the item without storing the bundle hash, at the')
+  mutate(noSha, LOOP_FAILURE, 'One Edit of `STATE.md` writes the full `sha` at the', 'One Edit of `STATE.md` moves the item without storing the bundle hash, at the')
   r = runCheck(noSha)
   assert.equal(r.status, 1, r.stdout)
   assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/)
@@ -613,7 +623,7 @@ test('fails when the Save and reset procedure resets before it saves, or writes 
     ['destination after', 'One Edit of `STATE.md` writes the full `sha` into the run record, not `STATE.md`, at the'],
   ]) {
     const dir = copyRepo(t)
-    mutate(dir, LOOP_SKILL, 'One Edit of `STATE.md` writes the full `sha` at the', to)
+    mutate(dir, LOOP_FAILURE, 'One Edit of `STATE.md` writes the full `sha` at the', to)
     r = runCheck(dir)
     assert.equal(r.status, 1, `${label}: ${r.stdout}`)
     assert.match(failBlock(r.stdout, name) ?? '', /no step between the save and the reset writes the sha into `STATE\.md` with one Edit/, label)
@@ -622,11 +632,11 @@ test('fails when the Save and reset procedure resets before it saves, or writes 
 
 test('fails when the panel snapshot may refresh <P>/.git/index', t => {
   const dir = copyRepo(t)
-  mutate(dir, LOOP_SKILL, 'git -c diff.autoRefreshIndex=false diff HEAD', 'git diff HEAD')
+  mutate(dir, LOOP_HIGH_STAKES, 'git -c diff.autoRefreshIndex=false diff HEAD', 'git diff HEAD')
   const r = runCheck(dir)
   assert.equal(r.status, 1)
   assert.match(failBlock(r.stdout, 'loop: the panel snapshot never refreshes <P>/.git/index (diff.autoRefreshIndex=false)') ?? '',
-    /SKILL\.md:\d+: the panel snapshot runs git diff without -c diff\.autoRefreshIndex=false/)
+    /skills\/loop\/references\/high-stakes\.md:\d+: the panel snapshot runs git diff without -c diff\.autoRefreshIndex=false/)
 })
 
 test('fails when the Lost-lock rule drops the loop-clone.mjs or reflex-bundle.mjs not-holder answer', t => {
@@ -709,7 +719,7 @@ test('fails and names the file when a doc says a blocker is finished by its titl
   assert.doesNotMatch(block, /decision-contracts\.md/)
 })
 
-test('fails when SKILL.md section 3.2 keys the blocker on a title again, though its sentence holds a negation elsewhere (PDC-1)', t => {
+test('fails when section 3.2 (picking.md) keys the blocker on a title again, though its sentence holds a negation elsewhere (PDC-1)', t => {
   // The live blocker sentence already says "no open item ...": a negation in another clause
   // must not hide a clause that finishes the blocker by its title.
   const name = 'loop: no doc says a blocker is finished by its title'
@@ -719,10 +729,10 @@ test('fails when SKILL.md section 3.2 keys the blocker on a title again, though 
     ['Done title and ledger task', 'no open item has its id; its\ntitle is in `## Done`, or a ledger entry records it done (`outcome` `done` with\nthat `task`'],
   ]) {
     const dir = copyRepo(t)
-    mutate(dir, LOOP_SKILL, ID_RULE, to)
+    mutate(dir, LOOP_PICKING, ID_RULE, to)
     const r = runCheck(dir)
     assert.equal(r.status, 1, `${label}: ${r.stdout}`)
-    assert.match(failBlock(r.stdout, name) ?? '', /skills\/loop\/SKILL\.md:\d+: A blocker is finished when/, label)
+    assert.match(failBlock(r.stdout, name) ?? '', /skills\/loop\/references\/picking\.md:\d+: A blocker is finished when/, label)
   }
 })
 
@@ -746,16 +756,16 @@ test('judges the clause that finishes the blocker: a negation elsewhere in it ne
 })
 
 test('fails and names the line when a reflex-bundle.mjs save drops --item <id>', t => {
-  const name = 'loop: every reflex-bundle.mjs save in skills/ passes --item <id> (SKILL.md section 7 runs one)'
+  const name = 'loop: every reflex-bundle.mjs save in skills/ passes --item <id> (failure.md, section 7\'s Save and reset, runs one)'
   const dir = copyRepo(t)
-  mutate(dir, LOOP_SKILL, `${SAVE_CMD} --item <id>`, SAVE_CMD)
+  mutate(dir, LOOP_FAILURE, `${SAVE_CMD} --item <id>`, SAVE_CMD)
   append(dir, 'skills/quick/SKILL.md', `\nThen \`${SAVE_CMD}\`.\n`)
   const r = runCheck(dir)
   assert.equal(r.status, 1, r.stdout)
   const block = failBlock(r.stdout, name) ?? ''
-  assert.match(block, /skills\/loop\/SKILL\.md:\d+: reflex-bundle\.mjs save without --item <id>/)
+  assert.match(block, /skills\/loop\/references\/failure\.md:\d+: reflex-bundle\.mjs save without --item <id>/)
   assert.match(block, /skills\/quick\/SKILL\.md:\d+: reflex-bundle\.mjs save without --item <id>/)
-  assert.match(block, /section 7 runs no reflex-bundle\.mjs save with --item <id>/)
+  assert.match(block, /failure\.md runs no reflex-bundle\.mjs save with --item <id>/)
 })
 
 test('fails when loop section 3 picks before it normalizes, or applies and checks no edits around normalize and pick', t => {
@@ -779,17 +789,17 @@ test('fails when loop section 3 picks before it normalizes, or applies and check
 test('fails when the follow-up reaches loop-items.mjs followup by a title argument instead of --input <file>', t => {
   const name = 'loop: the follow-up reaches loop-items.mjs followup only through --input <file>, never a title argument'
   const dir = copyRepo(t)
-  mutate(dir, LOOP_SKILL, `${ITEMS} followup <P> --parent <id> --input <S>/briefs/<id>-followup.json`, `${ITEMS} followup <P> --parent <id> --title "<follow-up title>"`)
+  mutate(dir, LOOP_LEVEL3, `${ITEMS} followup <P> --parent <id> --input <S>/briefs/<id>-followup.json`, `${ITEMS} followup <P> --parent <id> --title "<follow-up title>"`)
   append(dir, 'README.md', `\nOr run \`${ITEMS.replace('<T>', '<plugin>')} followup <project> --parent <id> --title <title>\`.\n`)
   let r = runCheck(dir)
   assert.equal(r.status, 1, r.stdout)
   let block = failBlock(r.stdout, name) ?? ''
-  assert.match(block, /skills\/loop\/SKILL\.md:\d+: loop-items\.mjs followup without --input/)
+  assert.match(block, /skills\/loop\/references\/level3\.md:\d+: loop-items\.mjs followup without --input/)
   assert.match(block, /README\.md:\d+: loop-items\.mjs followup without --input/)
-  assert.match(block, /section 5 runs no `node <T>\/scripts\/loop-items\.mjs followup <P> --parent <id> --input /)
+  assert.match(block, /level3\.md runs no `node <T>\/scripts\/loop-items\.mjs followup <P> --parent <id> --input /)
   // The JSON file must be written with the Write tool before the call.
   const noWrite = copyRepo(t)
-  mutate(noWrite, LOOP_SKILL, '-followup.json` with the Write tool', '-followup.json`')
+  mutate(noWrite, LOOP_LEVEL3, '-followup.json` with the Write tool', '-followup.json`')
   r = runCheck(noWrite)
   assert.equal(r.status, 1, r.stdout)
   assert.match(failBlock(r.stdout, name) ?? '', /never says to write the follow-up file with the Write tool/)
@@ -809,12 +819,12 @@ test('fails when bootstrap.md blanks a dependency the sources name instead of ke
   assert.match(failBlock(r.stdout, name) ?? '', /bootstrap\.md step 4 never writes a dependency as `blocked-by: <[^>]*title>`/)
 })
 
-test('fails when loop section 1 step 5 clears the whole ## Now section, skips clear.edits or its check, or never pauses on now-conflict (R29)', t => {
-  const name = 'loop: SKILL.md section 1 step 5 applies the planner\'s clear.edits and checks them, and treats now-conflict as the item-edit incident'
+test('fails when the recovery actions (section 1 step 5, recovery.md) clear the whole ## Now section, skip clear.edits or its check, or never pause on now-conflict (R29)', t => {
+  const name = 'loop: recovery.md (SKILL.md section 1 step 5) applies the planner\'s clear.edits and checks them, and treats now-conflict as the item-edit incident'
   for (const [label, apply, want] of [
-    ['whole section', d => mutate(d, LOOP_SKILL, 'Apply\n     `clear.edits` in order, one Edit each', 'In one Edit,\n     replace the `## Now` block with `(empty)`'), /never applies `clear\.edits`/],
-    ['no check', d => mutate(d, LOOP_SKILL, `${ITEMS} check <P> --expect <clear.expect_sha256>`, `${ITEMS} check <P>`), /never runs `node <T>\/scripts\/loop-items\.mjs check <P> --expect <clear\.expect_sha256>`/],
-    ['no incident', d => mutate(d, LOOP_SKILL, 'It is an\n     item-edit incident (Item edits), named by', 'Note it, named by'), /`now-conflict` bullet never calls it an item-edit incident/],
+    ['whole section', d => mutate(d, LOOP_RECOVERY, 'Apply\n  `clear.edits` in order, one Edit each', 'In one Edit,\n  replace the `## Now` block with `(empty)`'), /never applies `clear\.edits`/],
+    ['no check', d => mutate(d, LOOP_RECOVERY, `${ITEMS} check <P> --expect <clear.expect_sha256>`, `${ITEMS} check <P>`), /never runs `node <T>\/scripts\/loop-items\.mjs check <P> --expect <clear\.expect_sha256>`/],
+    ['no incident', d => mutate(d, LOOP_RECOVERY, 'It is an\n  item-edit incident (Item edits), named by', 'Note it, named by'), /`now-conflict` bullet never calls it an item-edit incident/],
   ]) {
     const dir = copyRepo(t)
     apply(dir)
@@ -855,8 +865,8 @@ test('fails when the ledger entry drops pick\'s unledgered (done_items) or the #
   }
 })
 
-test('fails when SKILL.md section 5 counts only one follow-up answer as a success, as the original prose did (Codex fix1-g2#5)', t => {
-  const name = 'loop: SKILL.md section 5 counts both follow-up answers (reused true and false) as a success, and only a refusal or an error as the incident'
+test('fails when section 5\'s analysis branch (level3.md) counts only one follow-up answer as a success, as the original prose did (Codex fix1-g2#5)', t => {
+  const name = 'loop: level3.md (SKILL.md section 5) counts both follow-up answers (reused true and false) as a success, and only a refusal or an error as the incident'
   const LIVE = 'Both of its `"state": "ok"` answers are a success, and `id` names the\n    follow-up: `"reused": false` is a new follow-up, with its insertion in\n    `edits`; `"reused": true` means an interrupted firing already created\n    it, and `edits` is empty (run the check all the same). Only a refusal\n    (exit 3) or an error (exit 2) is an item-edit incident (Item edits).'
   for (const [label, to, want] of [
     // The prose before the fix pass: a new follow-up (reused false) fell under "any other answer".
@@ -865,7 +875,7 @@ test('fails when SKILL.md section 5 counts only one follow-up answer as a succes
     ['incident widened', LIVE.replace('Only a refusal\n    (exit 3) or an error (exit 2) is', 'A refusal (exit 3), an error\n    (exit 2) or `"reused": false` is'), /an incident sentence names an ok answer/],
   ]) {
     const dir = copyRepo(t)
-    mutate(dir, LOOP_SKILL, LIVE, to)
+    mutate(dir, LOOP_LEVEL3, LIVE, to)
     const r = runCheck(dir)
     assert.equal(r.status, 1, `${label}: ${r.stdout}`)
     assert.match(failBlock(r.stdout, name) ?? '', want, label)
@@ -895,22 +905,22 @@ test('fails when bootstrap.md writes a prerequisite whose title is a none spelli
   assert.doesNotMatch(block, /`none`/)
 })
 
-test('fails when SKILL.md section 1 step 5 drops a now-conflict reason loop-recover.mjs prints, or a field clear-now compares (R29a)', t => {
-  const name = 'loop: SKILL.md section 1 step 5 names every now-conflict reason loop-recover.mjs prints and every field clear-now compares (R29a)'
+test('fails when the recovery actions (section 1 step 5, recovery.md) drop a now-conflict reason loop-recover.mjs prints, or a field clear-now compares (R29a)', t => {
+  const name = 'loop: recovery.md (SKILL.md section 1 step 5) names every now-conflict reason loop-recover.mjs prints and every field clear-now compares (R29a)'
   for (const [label, from, to, want] of [
-    ['reason dropped', '     `origin-differs`; its', '     an origin line; its', /never names the reason `origin-differs`/],
-    ['field dropped', '(same id, title, notes and decision, the same `blocked-by:`,\n     `decided:`', '(same id, title, notes and decision, the same\n     `decided:`', /the `clear-now` bullet never names `blocked-by:`/],
+    ['reason dropped', '  `origin-differs`; its', '  an origin line; its', /never names the reason `origin-differs`/],
+    ['field dropped', '(same id, title, notes and decision, the same `blocked-by:`,\n  `decided:`', '(same id, title, notes and decision, the same\n  `decided:`', /the `clear-now` bullet never names `blocked-by:`/],
   ]) {
     const dir = copyRepo(t)
-    mutate(dir, LOOP_SKILL, from, to)
+    mutate(dir, LOOP_RECOVERY, from, to)
     const r = runCheck(dir)
     assert.equal(r.status, 1, `${label}: ${r.stdout}`)
     assert.match(failBlock(r.stdout, name) ?? '', want, label)
   }
 })
 
-test('fails when README\'s skip table or SKILL.md section 3.1 drops a release refusal pick can report (R30a ambiguous-carrier)', t => {
-  const name = 'loop: README\'s skip table and SKILL.md section 3.1 name every release refusal pick can report'
+test('fails when README\'s skip table or section 3.1 (picking.md) drops a release refusal pick can report (R30a ambiguous-carrier)', t => {
+  const name = 'loop: README\'s skip table and section 3.1 (picking.md) name every release refusal pick can report'
   const readme = copyRepo(t)
   const f = path.join(readme, 'README.md'), s = fs.readFileSync(f, 'utf8')
   const row = s.split('\n').find(l => l.startsWith('| `ambiguous-carrier` |'))
@@ -920,7 +930,7 @@ test('fails when README\'s skip table or SKILL.md section 3.1 drops a release re
   assert.equal(r.status, 1, r.stdout)
   assert.match(failBlock(r.stdout, name) ?? '', /README\.md: Why the loop skips an item has no row for `ambiguous-carrier`/)
   const skill = copyRepo(t)
-  mutate(skill, LOOP_SKILL, '(`ambiguous-carrier`; the decision is', '(the decision is')
+  mutate(skill, LOOP_PICKING, '(`ambiguous-carrier`; the decision is', '(the decision is')
   r = runCheck(skill)
   assert.equal(r.status, 1, r.stdout)
   const block = failBlock(r.stdout, name) ?? ''
@@ -976,6 +986,26 @@ test('fails when README\'s invalid-id fix deletes a valid id, as the original ro
     const r = runCheck(dir)
     assert.equal(r.status, 1, `${label}: ${r.stdout}`)
     assert.match(failBlock(r.stdout, name) ?? '', want, label)
+  }
+})
+
+// The split after 1.0.0: SKILL.md names every reference file, each branch file where its section
+// hands off to it, and no loop doc names a reference that does not exist.
+test('fails when SKILL.md leaves a loop reference unnamed, a section stops naming its branch file, or a loop doc names a reference that does not exist', t => {
+  const name = 'loop: every file in skills/loop/references/ is named in SKILL.md (a branch file where its section hands off), and every references/<name>.md the loop names exists'
+  for (const [label, apply, want, not] of [
+    ['unnamed file', d => fs.writeFileSync(path.join(d, 'skills/loop/references/orphan.md'), '# Orphan\n'), /skills\/loop\/SKILL\.md never names `references\/orphan\.md`/, /never names `references\/(?!orphan)/],
+    ['hand-off dropped', d => mutate(d, LOOP_SKILL, 'Read `references/failure.md` and follow it', 'Read the failure path and follow it'), /SKILL\.md section 7 never names `references\/failure\.md`/, /SKILL\.md never names/],
+    ['missing from SKILL.md', d => append(d, LOOP_SKILL, '\nSee `references/retry.md` first.\n'), /skills\/loop\/SKILL\.md:\d+: names references\/retry\.md, which is not in skills\/loop\/references\//, /never names/],
+    ['missing sibling', d => append(d, LOOP_RECOVERY, '\nSee `retry.md` first.\n'), /skills\/loop\/references\/recovery\.md:\d+: names `retry\.md`, which is not in skills\/loop\/references\//, /never names/],
+  ]) {
+    const dir = copyRepo(t)
+    apply(dir)
+    const r = runCheck(dir)
+    assert.equal(r.status, 1, `${label}: ${r.stdout}`)
+    const block = failBlock(r.stdout, name) ?? ''
+    assert.match(block, want, label)
+    assert.doesNotMatch(block, not, label)
   }
 })
 
@@ -1048,7 +1078,7 @@ test('fails and names the file when a SKILL.md grows past its ceiling, listed or
   const r = runCheck(dir)
   assert.equal(r.status, 1)
   assert.match(r.stdout, /FAIL skills: no SKILL\.md is larger than its ceiling/)
-  assert.match(r.stdout, /skills\/loop\/SKILL\.md: \d+ characters, ceiling 59200/)
+  assert.match(r.stdout, /skills\/loop\/SKILL\.md: \d+ characters, ceiling 41600/)
   assert.match(r.stdout, /skills\/panel\/SKILL\.md: \d+ characters, ceiling 20000/)
 })
 

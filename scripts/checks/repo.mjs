@@ -25,7 +25,7 @@ export const docFiles = root => ['README.md', 'SKILL.md', 'templates/rules-tech-
 // per token, the size agentskills.io recommends. The two listed files were already past it
 // when the ceiling was added (2026-11-20); their numbers only go down.
 const SKILL_SIZE_DEFAULT = 20000
-const SKILL_SIZE_CEILING = { 'SKILL.md': 31200, 'skills/loop/SKILL.md': 59200 }
+const SKILL_SIZE_CEILING = { 'SKILL.md': 31200, 'skills/loop/SKILL.md': 41600 }
 
 export async function checkRepo(ctx, r) {
   const { root, rd } = ctx
