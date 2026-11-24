@@ -183,11 +183,17 @@ export function start(fx, o = {}) {
   let buf = ''
   let stderr = ''
   let exit = null
+  // Arrival time of each event, by index: kept beside events, which tests compare whole.
+  const arrived = []
+  const t0 = Date.now()
   // Set once the driver's group is known to be empty: no later kill can then be aimed at it.
   let disarmed = false
   c.stdout.on('data', d => {
     buf += d
-    for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) events.push(JSON.parse(buf.slice(0, i)))
+    for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) {
+      events.push(JSON.parse(buf.slice(0, i)))
+      arrived.push(Date.now() - t0)
+    }
   })
   c.stderr.on('data', d => { stderr += d })
   const exited = new Promise(resolve => c.on('exit', (code, signal) => {
@@ -206,7 +212,10 @@ export function start(fx, o = {}) {
     c.stdout.destroy()
     c.stderr.destroy()
   })
-  const describe = () => `events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
+  // When each event arrived, in ms since the firing started, and how long ago that start was:
+  // a firing that stalls shows its last event and how long nothing has followed it.
+  const timeline = () => `timeline ${events.map((e, i) => `${e.event}@${arrived[i]}`).join(' ')} now@${Date.now() - t0}`
+  const describe = () => `${timeline()}, events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
   const event = async (name, ms = 60000) => {
     const e = await waitFor(() => events.find(x => x.event === name) || (exit && 'exit'), ms)
     assert.ok(e && e !== 'exit', `no ${name} event from the firing (${describe()})`)
