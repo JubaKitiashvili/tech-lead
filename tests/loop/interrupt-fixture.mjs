@@ -215,10 +215,23 @@ export function start(fx, o = {}) {
   // When each event arrived, in ms since the firing started, and how long ago that start was:
   // a firing that stalls shows its last event and how long nothing has followed it.
   const timeline = () => `timeline ${events.map((e, i) => `${e.event}@${arrived[i]}`).join(' ')} now@${Date.now() - t0}`
+  // The firing's processes right now (the driver and everything under it): a firing that
+  // stalls is waiting on one of them, and this names it. Diagnostic only, so a failed ps is text.
+  const running = () => {
+    const r = spawnSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat=,etime=,command='], { encoding: 'utf8', timeout: 10000 })
+    if (r.error || r.status !== 0) return `running: ps failed (${r.error ? r.error.message : r.status})`
+    const rows = r.stdout.split('\n').map(l => l.trim().split(/\s+/)).filter(p => p.length >= 6)
+    const keep = new Set([String(c.pid)])
+    for (let grew = true; grew;) {
+      grew = false
+      for (const p of rows) if (!keep.has(p[0]) && (keep.has(p[1]) || p[2] === String(c.pid))) { keep.add(p[0]); grew = true }
+    }
+    return `running ${rows.filter(p => keep.has(p[0])).map(p => `[pid ${p[0]} ppid ${p[1]} pgid ${p[2]} ${p[3]} ${p[4]} ${p.slice(5).join(' ').slice(0, 160)}]`).join(' ')}`
+  }
   const describe = () => `${timeline()}, events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
   const event = async (name, ms = 60000) => {
     const e = await waitFor(() => events.find(x => x.event === name) || (exit && 'exit'), ms)
-    assert.ok(e && e !== 'exit', `no ${name} event from the firing (${describe()})`)
+    assert.ok(e && e !== 'exit', `no ${name} event from the firing (${exit ? '' : `${running()}, `}${describe()})`)
     return e
   }
   const kill = async () => {
