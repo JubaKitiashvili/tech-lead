@@ -186,6 +186,12 @@ export function start(fx, o = {}) {
   // Arrival time of each event, by index: kept beside events, which tests compare whole.
   const arrived = []
   const t0 = Date.now()
+  // The exit can be seen before the driver's last lines are read. The firing is over for a
+  // waiting test only once its stdout has ended too (or 2 s after the exit, should a process
+  // the firing left behind still hold the pipe).
+  let outEnded = false
+  let exitAt = null
+  const drained = () => exit !== null && (outEnded || Date.now() - exitAt > 2000)
   // Set once the driver's group is known to be empty: no later kill can then be aimed at it.
   let disarmed = false
   c.stdout.on('data', d => {
@@ -195,9 +201,11 @@ export function start(fx, o = {}) {
       arrived.push(Date.now() - t0)
     }
   })
+  c.stdout.on('end', () => { outEnded = true })
   c.stderr.on('data', d => { stderr += d })
   const exited = new Promise(resolve => c.on('exit', (code, signal) => {
     exit = { code, signal }
+    exitAt = Date.now()
     if (groupAlive(c.pid) === false) disarmed = true
     resolve(exit)
   }))
@@ -230,8 +238,9 @@ export function start(fx, o = {}) {
   }
   const describe = () => `${timeline()}, events ${JSON.stringify(events).slice(0, 6000)}, exit ${JSON.stringify(exit)}, stderr ${stderr.slice(0, 3000)}`
   const event = async (name, ms = 60000) => {
-    const e = await waitFor(() => events.find(x => x.event === name) || (exit && 'exit'), ms)
-    assert.ok(e && e !== 'exit', `no ${name} event from the firing (${exit ? '' : `${running()}, `}${describe()})`)
+    const e = await waitFor(() => events.find(x => x.event === name) || (drained() && 'exit'), ms)
+    // The text is built only on a failure: running() starts ps, which blocks this process.
+    if (!e || e === 'exit') assert.fail(`no ${name} event from the firing (${exit ? '' : `${running()}, `}${describe()})`)
     return e
   }
   const kill = async () => {

@@ -581,6 +581,9 @@ test('ancestry is unknown for a pid it cannot walk: a bad pid or a gone one', as
     assert.match(r.detail, /^bad pid: /, String(bad))
   }
   const dead = await deadPid(t)
+  // deadPid waits for a token that reads gone, and a zombie already does. On linux ancestry
+  // still reads a zombie's parent, so wait until the pid is reaped.
+  assert.ok(await waitFor(() => ancestry(dead).state === 'unknown'), 'the killed sleeper was never reaped')
   assert.deepEqual(ancestry(dead), { state: 'unknown', detail: `cannot read the parent of pid ${dead}` })
 })
 
